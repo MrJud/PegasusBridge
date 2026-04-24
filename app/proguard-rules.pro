@@ -1,0 +1,3 @@
+-keep class com.pegasus.bridge.** { *; }
+-keep class org.json.** { *; }
+-dontwarn okhttp3.**

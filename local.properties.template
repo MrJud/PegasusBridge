@@ -1,0 +1,5 @@
+## This file must be copied to local.properties and filled in before building.
+## Do NOT commit local.properties to version control.
+
+# Path to the Android SDK on this machine:
+sdk.dir=C\:\\Users\\<YOUR_USER>\\AppData\\Local\\Android\\Sdk

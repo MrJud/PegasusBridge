@@ -1,0 +1,58 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "media",
+  "type": "object",
+  "required": ["schemaVersion", "gameId"],
+  "properties": {
+    "schemaVersion": { "type": "integer", "const": 1 },
+    "gameId":        { "type": "string" },
+    "fetchedAt":     { "type": "integer" },
+    "sources":       { "type": "array", "items": { "type": "string" } },
+    "cover": {
+      "type": "object",
+      "properties": {
+        "url":    { "type": "string" },
+        "thumb":  { "type": "string" },
+        "source": { "type": "string" }
+      }
+    },
+    "video": {
+      "type": "object",
+      "properties": {
+        "mp4":    { "type": "string" },
+        "hls":    { "type": "string" },
+        "dash":   { "type": "string" },
+        "thumb":  { "type": "string" },
+        "source": { "type": "string" }
+      }
+    },
+    "description": {
+      "type": "object",
+      "properties": {
+        "text":   { "type": "string" },
+        "source": { "type": "string" }
+      }
+    },
+    "rating": {
+      "type": "object",
+      "properties": {
+        "value":  { "type": "string" },
+        "source": { "type": "string" }
+      }
+    },
+    "screenshots": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "url":    { "type": "string" },
+          "thumb":  { "type": "string" },
+          "source": { "type": "string" }
+        }
+      }
+    },
+    "genres":      { "type": "array", "items": { "type": "string" } },
+    "developer":   { "type": "string" },
+    "releaseDate": { "type": ["string", "null"] }
+  }
+}

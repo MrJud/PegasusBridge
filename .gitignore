@@ -1,0 +1,24 @@
+# Gradle
+.gradle/
+build/
+**/build/
+
+# Local config (contiene path SDK locali — usa local.properties.template)
+local.properties
+
+# Android Studio / IntelliJ
+*.iml
+.idea/
+*.iws
+*.ipr
+.DS_Store
+
+# Native build artifacts
+.externalNativeBuild/
+.cxx/
+
+# APK / AAB / mappings
+*.apk
+*.aab
+*.ap_
+output-metadata.json

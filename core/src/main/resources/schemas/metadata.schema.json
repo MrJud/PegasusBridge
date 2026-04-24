@@ -1,0 +1,33 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "metadata",
+  "type": "object",
+  "required": ["schemaVersion", "gameId"],
+  "properties": {
+    "schemaVersion": { "type": "integer", "const": 1 },
+    "gameId":        { "type": "integer" },
+    "title":         { "type": "string" },
+    "platform":      { "type": "string" },
+    "cacheKey":      { "type": "string" },
+    "ra": {
+      "type": "object",
+      "properties": {
+        "points":     { "type": "number" },
+        "progress":   { "type": "number" },
+        "unlocked":   { "type": "integer" },
+        "total":      { "type": "integer" },
+        "imageIcon":  { "type": "string" },
+        "fetchedAt":  { "type": "integer" }
+      }
+    },
+    "rom": {
+      "type": "object",
+      "properties": {
+        "hash":         { "type": "string" },
+        "fileSize":     { "type": "integer" },
+        "lastModified": { "type": "integer" }
+      }
+    },
+    "fetchedAt": { "type": "integer" }
+  }
+}

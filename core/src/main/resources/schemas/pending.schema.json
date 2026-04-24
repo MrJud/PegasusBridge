@@ -1,0 +1,17 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "pending",
+  "type": "object",
+  "required": ["schemaVersion", "jobId", "verb", "status"],
+  "properties": {
+    "schemaVersion": { "type": "integer", "const": 1 },
+    "jobId":         { "type": "string" },
+    "verb":          { "type": "string", "enum": ["scan", "refresh-ra", "scrape-media", "search-video", "play-video", "download-video"] },
+    "status":        { "type": "string", "enum": ["running", "error"] },
+    "progress":      { "type": "number", "minimum": 0, "maximum": 1 },
+    "message":       { "type": ["string", "null"] },
+    "error":         { "type": ["string", "null"] },
+    "startedAt":     { "type": "integer" },
+    "updatedAt":     { "type": "integer" }
+  }
+}

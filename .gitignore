@@ -22,3 +22,10 @@ local.properties
 *.aab
 *.ap_
 output-metadata.json
+
+# Android SDK platform-tools, downloaded locally — not part of the source
+platform-tools/
+platform-tools.zip
+
+# Scan index copied out of a data root while debugging
+/_index.json

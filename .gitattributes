@@ -1,0 +1,7 @@
+# rcheevos is vendored upstream and ships CRLF in places. Without this, a
+# checkout on a machine configured to normalise line endings rewrites all 116
+# files and every diff drowns in 81k lines of nothing.
+hasher/src/main/cpp/rcheevos/** -text
+
+# Windows batch files are CRLF by definition; normalising them churns the diff.
+*.bat -text

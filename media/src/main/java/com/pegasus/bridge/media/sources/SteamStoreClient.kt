@@ -18,9 +18,11 @@ object SteamStoreClient {
         val id: Int,
         val name: String,
         val thumbnail: String,
-        val mp4: String,   // hls || dash || legacy mp4 (seguendo la logica del JS)
+        val mp4: String,     // preferred: hls || dash || legacy max/480 (come nel JS)
         val hls: String,
-        val dash: String
+        val dash: String,
+        val mp4_480: String, // legacy API: raw m.mp4.480  (usato dal theme per quality="Low")
+        val mp4_max: String  // legacy API: raw m.mp4.max  (usato dal theme per quality="Max")
     )
 
     data class SteamAssets(
@@ -76,10 +78,12 @@ object SteamStoreClient {
                     // Preferisci HLS/DASH (2024+), poi mp4 legacy — identico al JS
                     val hls  = m.optString("hls_h264").replace("http:", "https:", ignoreCase = true)
                     val dash = m.optString("dash_h264").replace("http:", "https:", ignoreCase = true)
-                    val legacyMp4 = m.optJSONObject("mp4")?.let {
-                        (it.optString("480").ifEmpty { it.optString("max") })
-                            .replace("http:", "https:", ignoreCase = true)
-                    } ?: ""
+                    val mp4Obj = m.optJSONObject("mp4")
+                    val mp4_480 = mp4Obj?.optString("480").orEmpty()
+                        .replace("http:", "https:", ignoreCase = true)
+                    val mp4_max = mp4Obj?.optString("max").orEmpty()
+                        .replace("http:", "https:", ignoreCase = true)
+                    val legacyMp4 = mp4_480.ifEmpty { mp4_max }
                     val primary = hls.ifEmpty { dash.ifEmpty { legacyMp4 } }
                     SteamMovie(
                         id        = m.optInt("id"),
@@ -87,7 +91,9 @@ object SteamStoreClient {
                         thumbnail = m.optString("thumbnail"),
                         mp4       = primary,
                         hls       = hls,
-                        dash      = dash
+                        dash      = dash,
+                        mp4_480   = mp4_480,
+                        mp4_max   = mp4_max
                     )
                 }
             } ?: emptyList()

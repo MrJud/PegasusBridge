@@ -3,3 +3,12 @@
 
 # Path to the Android SDK on this machine:
 sdk.dir=C\:\\Users\\<YOUR_USER>\\AppData\\Local\\Android\\Sdk
+
+# Release signing (optional; only needed to build a distributable APK).
+# Generate the keystore yourself — see app/build.gradle.kts:
+#   keytool -genkeypair -v -keystore pegasus-bridge.jks -alias pegasus-bridge \
+#           -keyalg RSA -keysize 4096 -validity 10000
+#RELEASE_STORE_FILE=/absolute/path/to/pegasus-bridge.jks
+#RELEASE_STORE_PASSWORD=
+#RELEASE_KEY_ALIAS=pegasus-bridge
+#RELEASE_KEY_PASSWORD=

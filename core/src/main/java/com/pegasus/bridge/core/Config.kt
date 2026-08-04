@@ -33,6 +33,91 @@ object Config {
         return Credentials()
     }
 
+    /**
+     * Merges the supplied credentials into credentials.json. Every argument is
+     * optional and a null one leaves its block untouched, so the theme can save
+     * one settings field at a time without clobbering the others.
+     *
+     * Before this existed nothing ever wrote the steamGridDb or igdb blocks —
+     * those keys lived only in the theme's own storage, so every SGDB and IGDB
+     * call failed with "missing steamGridDb.apiKey in credentials.json".
+     */
+    fun writeCredentials(
+        raUser: String? = null,
+        raApiKey: String? = null,
+        sgdbKey: String? = null,
+        igdbClientId: String? = null,
+        igdbClientSecret: String? = null
+    ) {
+        val current = Paths.CREDENTIALS
+        val json = if (current.exists()) {
+            try { JSONObject(current.readText()) } catch (e: Exception) { JSONObject() }
+        } else {
+            JSONObject()
+        }
+        if (!json.has("schemaVersion")) json.put("schemaVersion", SchemaVersion.CURRENT)
+
+        if (!raUser.isNullOrEmpty() || !raApiKey.isNullOrEmpty()) {
+            val ra = json.optJSONObject("ra") ?: JSONObject()
+            raUser?.takeIf   { it.isNotEmpty() }?.let { ra.put("user", it) }
+            raApiKey?.takeIf { it.isNotEmpty() }?.let { ra.put("apiKey", it) }
+            json.put("ra", ra)
+        }
+
+        sgdbKey?.takeIf { it.isNotEmpty() }?.let {
+            val sgdb = json.optJSONObject("steamGridDb") ?: JSONObject()
+            sgdb.put("apiKey", it)
+            json.put("steamGridDb", sgdb)
+        }
+
+        if (!igdbClientId.isNullOrEmpty() || !igdbClientSecret.isNullOrEmpty()) {
+            val igdb = json.optJSONObject("igdb") ?: JSONObject()
+            igdbClientId?.takeIf     { it.isNotEmpty() }?.let { igdb.put("clientId", it) }
+            igdbClientSecret?.takeIf { it.isNotEmpty() }?.let { igdb.put("clientSecret", it) }
+            // Credentials changed, so any cached Twitch token is no longer ours.
+            igdb.remove("cachedToken")
+            igdb.remove("cachedTokenExp")
+            json.put("igdb", igdb)
+        }
+
+        json.put("updatedAt", System.currentTimeMillis() / 1000L)
+        atomicWrite(current, json.toString(2))
+    }
+
+    /**
+     * Forgets one credential block — what a theme's "log out" has to do now that
+     * the Bridge, not the theme, is where credentials live. Writing blanks could
+     * not express this: writeCredentials deliberately ignores them.
+     */
+    fun clearBlock(block: String): Boolean {
+        if (block !in KNOWN_BLOCKS) return false
+        val current = Paths.CREDENTIALS
+        val json = if (current.exists()) JSONObject(current.readText()) else JSONObject()
+        json.remove(block)
+        json.put("updatedAt", System.currentTimeMillis() / 1000L)
+        atomicWrite(current, json.toString(2))
+        return true
+    }
+
+    /**
+     * Which credentials are configured, and the RA username. Presence only —
+     * never the secrets. This is what a theme binds its settings UI to.
+     */
+    fun status(): JSONObject {
+        val c = load()
+        return JSONObject()
+            .put("ra", JSONObject()
+                .put("configured", c.ra?.user?.isNotEmpty() == true && c.ra.apiKey.isNotEmpty())
+                .put("user", c.ra?.user.orEmpty()))
+            .put("steamGridDb", JSONObject()
+                .put("configured", c.steamGridDb?.apiKey?.isNotEmpty() == true))
+            .put("igdb", JSONObject()
+                .put("configured", c.igdb?.clientId?.isNotEmpty() == true
+                                && c.igdb.clientSecret.isNotEmpty()))
+    }
+
+    private val KNOWN_BLOCKS = setOf("ra", "steamGridDb", "igdb")
+
     // Atomic write: write temp file then rename to avoid torn reads during overlap phase
     fun saveToken(source: String, token: String, expiresAt: Long) {
         val current = Paths.CREDENTIALS

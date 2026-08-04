@@ -27,7 +27,7 @@ static void jni_error_message(const char* message, const rc_hash_iterator_t* ite
 }
 
 JNIEXPORT jstring JNICALL
-Java_com_ra_romhasher_NativeHasher_hashFile(JNIEnv *env, jclass clazz, jstring jpath) {
+Java_com_pegasus_bridge_hasher_NativeHasher_hashFile(JNIEnv *env, jclass clazz, jstring jpath) {
     (void)clazz;
 
     const char *path = (*env)->GetStringUTFChars(env, jpath, NULL);

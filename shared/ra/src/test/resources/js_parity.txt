@@ -1,0 +1,34 @@
+TITLE	Super Mario World (USA) (Rev 1).sfc	Super Mario World
+TITLE	/roms/nes/Castlevania III - Dracula's Curse (USA).nes	Castlevania III - Dracula's Curse
+TITLE	/roms/nes/Metroid (Europe) (Virtual Console).nes	Metroid
+TITLE	/roms/Legend of Zelda, The (USA) (En,Fr).z64	Legend of Zelda
+TITLE	C:\roms\nes\Contra (USA).nes	Contra
+TITLE	Mike Tyson's Punch-Out!! (Japan, USA) (Rev A).nes	Mike Tyson's Punch-Out!!
+ID	nes	7
+ID	snes	3
+ID	genesis	1
+ID	megadrive	1
+ID	gba	5
+ID	psx	12
+ID	n64	2
+ID	gb	4
+ID	gbc	6
+ID	switch	0
+ID	NES	7
+ID		0
+NAME	nes	NES
+NAME	snes	SNES
+NAME	genesis	Mega Drive
+NAME	megadrive	Mega Drive
+NAME	gba	Game Boy Advance
+NAME	psx	PlayStation
+NAME	n64	Nintendo 64
+NAME	gb	Game Boy
+NAME	gbc	Game Boy Color
+NAME	switch	switch
+NAME	NES	NES
+NAME		
+KEY	Castlevania III - Dracula's Curse (USA)	castlevaniaiiidraculascurse|nes
+KEY	Super Mario Bros. (World)	supermariobros|nes
+KEY	Legend of Zelda, The (USA) (Rev 1)	legendofzeldathe|nes
+KEY	Mike Tyson's Punch-Out!! (Japan, USA) (Rev A)	miketysonspunchout|nes

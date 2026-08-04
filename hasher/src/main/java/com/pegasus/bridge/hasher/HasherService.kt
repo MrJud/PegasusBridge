@@ -36,7 +36,18 @@ class HasherService : Service() {
         private const val IO_COOLDOWN_MS  = 500L
         private const val IO_SEVERE_MS    = 1500L
 
-        const val EXTRA_ROOTS  = "roots"   // CSV of directories
+        // Parallelism tuning
+        private const val NUM_HASH_PRODUCERS = 4   // parallel hash workers (CPU+IO bound)
+        private const val NUM_API_WORKERS    = 8   // parallel RA hash-lookup workers (network)
+
+        // Platforms RetroAchievements does not cover today — skip them entirely to save IO.
+        // Conservative denylist: only entries that are clearly out of scope.
+        private val RA_UNSUPPORTED_PLATFORMS = setOf(
+            "switch", "psvita", "wiiu", "pc", "windows", "android", "ios",
+            "3ds", "n3ds"
+        )
+
+        const val EXTRA_ROOTS  = "roots"   // pipe- or comma-separated directories
         const val EXTRA_JOB_ID = "jobId"
 
         @Volatile var isRunning = false
@@ -61,11 +72,16 @@ class HasherService : Service() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         if (intent?.action == "CANCEL") { scanJob?.cancel(); return START_NOT_STICKY }
-        if (isRunning) { stopSelf(); return START_NOT_STICKY }
+        if (isRunning) {
+            Log.i(TAG, "Scan already in progress, ignoring duplicate start request")
+            // Do NOT call stopSelf(startId) here — startId is the latest, so Android
+            // would tear down the whole service, cancelling the running scan.
+            return START_NOT_STICKY
+        }
 
         val rootsCsv = intent?.getStringExtra(EXTRA_ROOTS) ?: run { stopSelf(); return START_NOT_STICKY }
         val jobId    = intent.getStringExtra(EXTRA_JOB_ID) ?: java.util.UUID.randomUUID().toString()
-        val roots    = rootsCsv.split(",").map { it.trim() }.filter { it.isNotEmpty() }
+        val roots    = rootsCsv.split('|', ',').map { it.trim() }.filter { it.isNotEmpty() }
 
         val creds = Config.load()
         val raUser   = creds.ra?.user   ?: ""
@@ -91,7 +107,7 @@ class HasherService : Service() {
             } finally {
                 isRunning = false
                 releaseWakeLock()
-                Paths.done(jobId).createNewFile()
+                Paths.markDone(jobId)
                 Paths.pending(jobId).delete()
                 stopForeground(STOP_FOREGROUND_REMOVE)
                 stopSelf(startId)
@@ -112,7 +128,45 @@ class HasherService : Service() {
         val file: File, val cacheKey: String, val hash: HashResult,
         val platform: String, val fileKB: Long, val fileSize: Long, val lastModified: Long
     )
-    private data class ResultJob(val job: HashJob, val meta: GameMetadata?)
+    private data class ResultJob(
+        val job: HashJob,
+        val meta: GameMetadata?,
+        val cached:  Boolean = false,   // file unchanged since last scan; metadata already on disk
+        val skipped: Boolean = false    // platform not on RA
+    )
+
+    // Snapshot of `metadata/{gameId}.json` used for incremental scans.
+    private data class CachedMeta(
+        val gameId:       Int,
+        val hash:         String,
+        val fileSize:     Long,
+        val lastModified: Long
+    )
+
+    // Reads every per-game metadata file once at scan start so we can skip files
+    // whose (cacheKey, fileSize, lastModified) triple is unchanged. Cuts re-scan
+    // time from minutes to seconds on stable libraries.
+    private fun preloadMetadataCache(): Map<String, CachedMeta> {
+        val map = HashMap<String, CachedMeta>()
+        val files = Paths.METADATA.listFiles { f ->
+            f.isFile && f.name.endsWith(".json") && !f.name.startsWith("_")
+        } ?: return map
+        for (f in files) {
+            try {
+                val j        = JSONObject(f.readText())
+                val cacheKey = j.optString("cacheKey")
+                val rom      = j.optJSONObject("rom") ?: continue
+                if (cacheKey.isEmpty()) continue
+                map[cacheKey] = CachedMeta(
+                    gameId       = j.optInt("gameId"),
+                    hash         = rom.optString("hash"),
+                    fileSize     = rom.optLong("fileSize"),
+                    lastModified = rom.optLong("lastModified")
+                )
+            } catch (_: Exception) {}
+        }
+        return map
+    }
 
     private suspend fun runScan(roots: List<String>, jobId: String, raUser: String, raApiKey: String) = coroutineScope {
         Paths.ensureAll()
@@ -124,41 +178,80 @@ class HasherService : Service() {
         if (total == 0) { writePending(jobId, "scan", "running", 1.0, "No ROMs found"); return@coroutineScope }
 
         val apiClient   = RAApiClient(raUser, raApiKey)
-        val hashChannel = Channel<HashJob>(capacity = 16)
-        val resultChannel = Channel<ResultJob>(capacity = 64)
+        val hashChannel = Channel<HashJob>(capacity = 32)
+        val resultChannel = Channel<ResultJob>(capacity = 128)
         val hashDedup   = mutableMapOf<String, GameMetadata?>()
 
-        // Producer: sequential hash with thermal+IO throttle
-        val producer = launch(Dispatchers.Default) {
-            for (file in romFiles) {
-                if (!isActive) break
-                val platform = file.parentFile?.name ?: "unknown"
-                val cacheKey = FuzzyMatch.makeCacheKey(
-                    file.nameWithoutExtension, platform
-                )
-                val fileSize     = file.length()
-                val fileKB       = fileSize / 1024
-                val lastModified = file.lastModified()
+        // Pre-load existing metadata so unchanged files can skip hash + API entirely.
+        val metaCache = preloadMetadataCache()
+        Log.i(TAG, "Loaded ${metaCache.size} cached metadata entries for incremental scan")
 
-                val t0     = System.nanoTime()
-                val result = try { withContext(Dispatchers.IO) { hashFile(file) } } catch (e: Exception) { null }
-                val hashMs = (System.nanoTime() - t0) / 1_000_000
+        // ── Pipeline:
+        //   feeder  → fileQueue → N parallel hash producers → hashChannel → API workers → resultChannel → collector
+        // Cached/skipped entries bypass hashChannel and go straight to resultChannel.
+        val fileQueue = Channel<File>(capacity = 64)
+        val feeder = launch(Dispatchers.IO) {
+            for (f in romFiles) fileQueue.send(f)
+            fileQueue.close()
+        }
 
-                if (result == null) {
-                    resultChannel.send(ResultJob(HashJob(file, cacheKey, HashResult("", 0), platform, fileKB, fileSize, lastModified), null))
-                    continue
+        val numProducers = NUM_HASH_PRODUCERS.coerceAtMost(Runtime.getRuntime().availableProcessors())
+        val producers = List(numProducers) {
+            launch(Dispatchers.Default) {
+                for (file in fileQueue) {
+                    if (!isActive) break
+                    val rawPlatform  = file.parentFile?.name ?: "unknown"
+                    val normPlatform = FuzzyMatch.normalizePlatform(rawPlatform)
+
+                    // Pre-filter: skip platforms RA does not cover
+                    if (normPlatform in RA_UNSUPPORTED_PLATFORMS) {
+                        resultChannel.send(ResultJob(
+                            HashJob(file, "", HashResult("", 0), rawPlatform, 0, 0, 0),
+                            null, skipped = true
+                        ))
+                        continue
+                    }
+
+                    val cacheKey     = FuzzyMatch.makeCacheKey(file.nameWithoutExtension, rawPlatform)
+                    val fileSize     = file.length()
+                    val fileKB       = fileSize / 1024
+                    val lastModified = file.lastModified()
+
+                    // Incremental skip: file matched in a previous scan and hasn't changed.
+                    // Metadata is already on disk; writeDiscoveryIndex() will pick it up.
+                    val cached = metaCache[cacheKey]
+                    if (cached != null
+                        && cached.hash.isNotEmpty()
+                        && cached.fileSize == fileSize
+                        && cached.lastModified == lastModified) {
+                        resultChannel.send(ResultJob(
+                            HashJob(file, cacheKey, HashResult(cached.hash, 0), rawPlatform, fileKB, fileSize, lastModified),
+                            null, cached = true
+                        ))
+                        continue
+                    }
+
+                    // Hash (uncached path)
+                    val result = try { withContext(Dispatchers.IO) { hashFile(file) } } catch (e: Exception) { null }
+                    if (result == null) {
+                        resultChannel.send(ResultJob(
+                            HashJob(file, cacheKey, HashResult("", 0), rawPlatform, fileKB, fileSize, lastModified),
+                            null
+                        ))
+                        continue
+                    }
+
+                    // Throttle — thermal only (ioDelay removed: too aggressive on SD cards)
+                    val delay = thermalDelayMs()
+                    if (delay > 0) delay(delay)
+
+                    hashChannel.send(HashJob(file, cacheKey, result, rawPlatform, fileKB, fileSize, lastModified))
                 }
-
-                val delay = maxOf(ioDelayMs(hashMs, fileKB), thermalDelayMs())
-                if (delay > 0) delay(delay)
-
-                hashChannel.send(HashJob(file, cacheKey, result, platform, fileKB, fileSize, lastModified))
             }
-            hashChannel.close()
         }
 
         // Workers: parallel API lookups
-        val workers = List(8) {
+        val workers = List(NUM_API_WORKERS) {
             launch(Dispatchers.IO) {
                 for (hj in hashChannel) {
                     val meta = synchronized(hashDedup) { hashDedup[hj.hash.hash] }
@@ -170,26 +263,104 @@ class HasherService : Service() {
             }
         }
 
-        launch { producer.join(); workers.forEach { it.join() }; resultChannel.close() }
+        // Coordinator: close channels in the correct order as upstream stages finish
+        launch {
+            feeder.join()
+            producers.forEach { it.join() }
+            hashChannel.close()
+            workers.forEach { it.join() }
+            resultChannel.close()
+        }
 
         // Collector: write per-game metadata/{gameId}.json
-        var processed = 0; var newEntries = 0
+        var processed = 0; var newEntries = 0; var cachedHits = 0; var skippedPlat = 0
+        // Aim for ~50 progress updates over the whole scan, with a sane minimum.
+        val writeStep = (total / 50).coerceAtLeast(10)
         for (r in resultChannel) {
-            if (r.meta != null && r.meta.gameId > 0) {
-                writeMetadata(r.job, r.meta)
-                newEntries++
+            when {
+                r.skipped -> skippedPlat++
+                r.cached  -> cachedHits++
+                r.meta != null && r.meta.gameId > 0 -> {
+                    writeMetadata(r.job, r.meta)
+                    newEntries++
+                }
             }
             processed++
-            if (processed % 5 == 0 || processed == total) {
+            if (processed % writeStep == 0 || processed == total) {
                 val pct = processed.toDouble() / total
                 writePending(jobId, "scan", "running", pct,
-                    "[$processed/$total] ${r.job.file.name}")
+                    "[$processed/$total] ${r.job.file.name}",
+                    newEntries, cachedHits, skippedPlat)
                 updateNotification("[$processed/$total] ${r.job.file.name}", processed, total)
             }
         }
 
-        writePending(jobId, "scan", "running", 1.0, "Done — $newEntries new games found")
-        Log.i(TAG, "Scan complete: $processed processed, $newEntries written")
+        writeDiscoveryIndex()
+        writePending(jobId, "scan", "running", 1.0,
+            "Done — $newEntries new, $cachedHits cached, $skippedPlat skipped",
+            newEntries, cachedHits, skippedPlat)
+        Log.i(TAG, "Scan complete: $processed processed, $newEntries new, $cachedHits cached, $skippedPlat skipped")
+    }
+
+    // Enumera metadata/*.json ed emette metadata/_index.json con:
+    //   • games[]  — lista per "Discovered Games"
+    //   • byKey{}  — reverse lookup cacheKey → { gameId, title, platform, imageIcon, total }
+    // Sostituisce il legacy /sdcard/ReStory/ra_hashes_cache.json (struttura external_hashes).
+    private fun writeDiscoveryIndex() {
+        try {
+            val dir = Paths.METADATA
+            val files = dir.listFiles { f ->
+                f.isFile && f.name.endsWith(".json") && !f.name.startsWith("_")
+            } ?: return
+            val games = org.json.JSONArray()
+            val byKey = JSONObject()
+            for (f in files) {
+                try {
+                    val j        = JSONObject(f.readText())
+                    val ra       = j.optJSONObject("ra") ?: continue
+                    val gameId   = j.optInt("gameId")
+                    val title    = j.optString("title")
+                    val platform = j.optString("platform")
+                    val total    = ra.optInt("total")
+                    val icon     = ra.optString("imageIcon")
+                    if (gameId <= 0 || title.isEmpty()) continue
+
+                    games.put(JSONObject()
+                        .put("gameId",    gameId)
+                        .put("title",     title)
+                        .put("platform",  platform)
+                        .put("total",     total)
+                        .put("imageIcon", icon))
+
+                    // cacheKey è scritto dal hasher in formato "normalizedTitle|shortName" —
+                    // lo usiamo verbatim come chiave per il reverse lookup.
+                    val cacheKey = j.optString("cacheKey")
+                    if (cacheKey.isNotEmpty()) {
+                        byKey.put(cacheKey, JSONObject()
+                            .put("gameId",    gameId)
+                            .put("title",     title)
+                            .put("platform",  platform)
+                            .put("imageIcon", icon)
+                            .put("total",     total))
+                    }
+                } catch (e: Exception) {
+                    Log.w(TAG, "Index skip ${f.name}: ${e.message}")
+                }
+            }
+            val payload = JSONObject()
+                .put("schemaVersion", SchemaVersion.CURRENT)
+                .put("fetchedAt", System.currentTimeMillis() / 1000L)
+                .put("count",     games.length())
+                .put("games",     games)
+                .put("byKey",     byKey)
+            val out = File(Paths.METADATA, "_index.json")
+            val tmp = File(out.parent, "_index.json.tmp")
+            tmp.writeText(payload.toString(2))
+            tmp.renameTo(out)
+            Log.i(TAG, "Discovery index written: ${games.length()} games, ${byKey.length()} keys")
+        } catch (e: Exception) {
+            Log.e(TAG, "writeDiscoveryIndex failed", e)
+        }
     }
 
     // Writes /sdcard/PegasusData/metadata/{gameId}.json per contratto Phase 2
@@ -219,7 +390,10 @@ class HasherService : Service() {
         tmp.renameTo(out)
     }
 
-    private fun writePending(jobId: String, verb: String, status: String, progress: Double, message: String) {
+    private fun writePending(
+        jobId: String, verb: String, status: String, progress: Double, message: String,
+        newEntries: Int = 0, cachedHits: Int = 0, skippedPlatforms: Int = 0
+    ) {
         val now = System.currentTimeMillis() / 1000L
         val j = JSONObject()
             .put("schemaVersion", SchemaVersion.CURRENT)
@@ -228,6 +402,9 @@ class HasherService : Service() {
             .put("status",    status)
             .put("progress",  progress)
             .put("message",   message)
+            .put("newEntries",        newEntries)
+            .put("cachedHits",        cachedHits)
+            .put("skippedPlatforms",  skippedPlatforms)
             .put("startedAt", now)
             .put("updatedAt", now)
         val f = Paths.pending(jobId)
@@ -243,7 +420,7 @@ class HasherService : Service() {
             .put("jobId",     jobId).put("verb", verb)
             .put("status",    "error").put("error", error)
             .put("startedAt", now).put("updatedAt", now).toString())
-        Paths.done(jobId).createNewFile()
+        Paths.markDone(jobId)
     }
 
     // ── File hashing ──────────────────────────────────────────────────────
@@ -295,11 +472,11 @@ class HasherService : Service() {
         val status = try { powerManager.currentThermalStatus } catch (_: Exception) { PowerManager.THERMAL_STATUS_NONE }
         return when (status) {
             PowerManager.THERMAL_STATUS_NONE     -> 0L
-            PowerManager.THERMAL_STATUS_LIGHT    -> 150L
-            PowerManager.THERMAL_STATUS_MODERATE -> 600L
-            PowerManager.THERMAL_STATUS_SEVERE   -> 2000L
-            PowerManager.THERMAL_STATUS_CRITICAL -> 5000L
-            else                                  -> 10000L
+            PowerManager.THERMAL_STATUS_LIGHT    -> 0L      // softened
+            PowerManager.THERMAL_STATUS_MODERATE -> 200L    // softened (was 600)
+            PowerManager.THERMAL_STATUS_SEVERE   -> 800L    // softened (was 2000)
+            PowerManager.THERMAL_STATUS_CRITICAL -> 3000L   // softened (was 5000)
+            else                                  -> 5000L
         }
     }
 

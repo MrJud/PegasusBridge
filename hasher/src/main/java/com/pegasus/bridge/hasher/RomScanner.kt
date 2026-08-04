@@ -9,7 +9,7 @@ object RomScanner {
         "md", "gen", "smd", "n64", "z64", "v64", "nds", "3ds",
         "psp", "a26", "a78", "lnx", "pce", "sgx", "ws", "wsc",
         "32x", "gg", "sms", "sg", "col", "ngp", "ngc", "vb",
-        "fig", "swc", "zip", "7z", "chd", "cso", "pbp", "cue"
+        "fig", "swc", "zip", "7z", "chd", "cso", "pbp", "cue", "m3u", "gdi", "cdi", "rvz", "gcm", "mdf", "img", "wad", "wbfs"
     )
 
     fun scan(dirs: List<String>): List<File> {

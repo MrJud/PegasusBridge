@@ -1,49 +1,49 @@
 <?xml version="1.0" encoding="utf-8"?>
-<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
 
     <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+
+    <!-- Foreground services (API 28+) + data-sync subtype (API 34+) -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
-    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" android:maxSdkVersion="32" />
-    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" android:maxSdkVersion="29" />
-    <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+
+    <!-- Notification permission (API 33+) -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+
+    <!-- Storage for /sdcard/PegasusData/ direct I/O -->
+    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE"
+        android:maxSdkVersion="32" />
+    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE"
+        android:maxSdkVersion="29" />
+    <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE"
+        tools:ignore="ScopedStorage" />
 
     <application
         android:name=".DataLayerApp"
         android:label="Pegasus Bridge"
-        android:icon="@android:drawable/sym_def_app_icon">
+        android:icon="@android:drawable/sym_def_app_icon"
+        android:allowBackup="false"
+        android:requestLegacyExternalStorage="true"
+        tools:targetApi="35">
 
-        <!-- ── Router principale ─────────────────────────────────── -->
+        <!-- ── Router principale (unico scheme: pegasus-data://) ───────── -->
         <activity
             android:name=".DataLayerRouter"
             android:exported="true"
             android:theme="@android:style/Theme.NoDisplay">
 
-            <!-- pegasus-data:// (nuovo scheme) -->
             <intent-filter>
                 <action android:name="android.intent.action.VIEW" />
                 <category android:name="android.intent.category.DEFAULT" />
                 <category android:name="android.intent.category.BROWSABLE" />
                 <data android:scheme="pegasus-data" />
             </intent-filter>
-
-            <!-- rahasher:// (alias backward-compat — Phase 7 lo rimuove) -->
-            <intent-filter>
-                <action android:name="android.intent.action.VIEW" />
-                <category android:name="android.intent.category.DEFAULT" />
-                <category android:name="android.intent.category.BROWSABLE" />
-                <data android:scheme="rahasher" />
-            </intent-filter>
-
-            <!-- pegasus-video:// (alias backward-compat — Phase 7 lo rimuove) -->
-            <intent-filter>
-                <action android:name="android.intent.action.VIEW" />
-                <category android:name="android.intent.category.DEFAULT" />
-                <category android:name="android.intent.category.BROWSABLE" />
-                <data android:scheme="pegasus-video" />
-            </intent-filter>
         </activity>
 
-        <!-- ── Services ──────────────────────────────────────────── -->
+        <!-- ── Services ──────────────────────────────────────────────── -->
         <service
             android:name="com.pegasus.bridge.media.MediaService"
             android:foregroundServiceType="dataSync"
@@ -58,6 +58,9 @@
             android:name="com.pegasus.bridge.ra.RaService"
             android:foregroundServiceType="dataSync"
             android:exported="false" />
+
+        <!-- VideoService + VideoPlayerActivity are declared in :video manifest
+             and merged in automatically via Gradle manifest merger. -->
 
     </application>
 </manifest>

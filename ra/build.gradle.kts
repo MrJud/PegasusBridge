@@ -13,6 +13,9 @@ android {
         targetCompatibility = JavaVersion.VERSION_17
     }
     kotlinOptions { jvmTarget = "17" }
+
+    // Same reason as :core — the console table has one home, under shared/.
+    sourceSets["main"].java.srcDir("../shared/ra/src/android-shared/kotlin")
 }
 
 dependencies {

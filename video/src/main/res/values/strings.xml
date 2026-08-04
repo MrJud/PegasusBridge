@@ -1,0 +1,13 @@
+<resources>
+    <!-- Video player UI -->
+    <string name="close">Chiudi</string>
+
+    <!-- Error toasts -->
+    <string name="err_invalid_uri">URI non valido o URL mancante</string>
+    <string name="err_yt_unavailable">Video YouTube non disponibile o rimosso</string>
+    <string name="err_yt_age_gate">Video con restrizione d\'età — non supportato</string>
+    <string name="err_yt_region">Video non disponibile in questa regione</string>
+    <string name="err_yt_no_stream">Nessuno stream riproducibile trovato</string>
+    <string name="err_yt_generic">Impossibile risolvere il video YouTube</string>
+    <string name="err_yt_sign_in">YouTube richiede verifica anti-bot — cambia rete o riprova</string>
+</resources>

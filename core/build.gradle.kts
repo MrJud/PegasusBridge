@@ -12,6 +12,11 @@ android {
         targetCompatibility = JavaVersion.VERSION_17
     }
     kotlinOptions { jvmTarget = "17" }
+
+    // FuzzyMatch is plain Kotlin and the desktop shell needs the identical
+    // behaviour, so both shells compile the one copy under shared/ rather than
+    // each keeping a version that drifts.
+    sourceSets["main"].java.srcDir("../shared/core/src/android-shared/kotlin")
 }
 
 dependencies {

@@ -50,8 +50,13 @@ class RAApiClient(private val raUser: String, private val raApiKey: String) {
         } catch (e: Exception) { 0 }
     }
 
+    // API_GetGame.php does not return NumAchievements at all — its response has
+    // only Title/Console/Image*/Developer/Publisher/Genre/Released. Reading the
+    // field from there always yielded 0, so every scanned game was recorded with
+    // zero achievements, in metadata/{gameId}.json and in the discovery index.
+    // API_GetGameExtended.php returns the same fields plus the real count.
     private suspend fun fetchMetadata(gameId: Int): GameMetadata? {
-        val url  = "$BASE/API/API_GetGame.php?z=$raUser&y=$raApiKey&i=$gameId"
+        val url  = "$BASE/API/API_GetGameExtended.php?z=$raUser&y=$raApiKey&i=$gameId"
         val body = httpGetWithRetry(url) ?: return null
         return try {
             val obj = parseResponseObject(body) ?: return GameMetadata(gameId = gameId)

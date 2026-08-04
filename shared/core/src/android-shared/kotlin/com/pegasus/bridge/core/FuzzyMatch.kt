@@ -125,4 +125,79 @@ object FuzzyMatch {
         val prefixScore = prefixLen.toDouble() / maxLen
         return maxOf(containsScore * 0.95, levScore * 0.85 + prefixScore * 0.15)
     }
+
+    // ── ROM filename parsing ────────────────────────────────────────────────
+    //
+    // Ported from the theme's RAFuzzyMatch.js so this knowledge lives on the
+    // Bridge side only. A theme should not have to know how No-Intro names files
+    // to ask which RetroAchievements game it owns.
+
+    /**
+     * A clean title from a ROM path.
+     *
+     * "Super Mario World (USA) (Rev 1).sfc"            -> "Super Mario World"
+     * "/roms/Legend of Zelda, The (USA) (En,Fr).z64"   -> "Legend of Zelda"
+     */
+    fun extractTitleFromFilename(filePath: String?): String {
+        if (filePath.isNullOrEmpty()) return ""
+        var name = filePath.substringAfterLast('/').substringAfterLast('\\')
+        val dot = name.lastIndexOf('.')
+        if (dot > 0) name = name.substring(0, dot)
+        name = name.replace(Regex("""\s*[\(\[][^\)\]]*[\)\]]"""), "")
+        name = name.replace(
+            Regex(",\\s*(The|A|An|Le|La|Les|El|Los|Das|Der|Die)\\s*$", RegexOption.IGNORE_CASE), "")
+        return name.replace(Regex("""\s+"""), " ").trim()
+    }
+
+    /** The parenthesised tags of a ROM filename: "(USA) (Rev 1)" -> [USA, Rev 1]. */
+    fun extractTagsFromFilename(filePath: String?): List<String> {
+        if (filePath.isNullOrEmpty()) return emptyList()
+        val name = filePath.substringAfterLast('/').substringAfterLast('\\')
+        return Regex("""[\(\[]([^\)\]]+)[\)\]]""").findAll(name).map { it.groupValues[1] }.toList()
+    }
+
+    data class Match<T>(val value: T, val score: Double, val method: String)
+
+    /** Best candidate by title similarity, or null when none reaches [minScore]. */
+    fun <T> findBestMatch(searchTitle: String, candidates: List<T>, minScore: Double = 0.6,
+                          titleOf: (T) -> String): Match<T>? {
+        var best: T? = null
+        var bestScore = 0.0
+        for (c in candidates) {
+            val score = similarity(searchTitle, titleOf(c))
+            if (score > bestScore) { bestScore = score; best = c }
+            if (score >= 1.0) break
+        }
+        return if (best != null && bestScore >= minScore) Match(best, bestScore, "title") else null
+    }
+
+    /**
+     * Matches a Pegasus game to a candidate list, trying the ROM filename before
+     * the library title.
+     *
+     * The filename is usually the better key — it carries the original release
+     * name, where a Pegasus title may have been edited — so a strong filename
+     * match wins outright; otherwise the title is tried, and only then the
+     * filename again at a lower bar.
+     */
+    fun <T> multiMatchSearch(pegasusTitle: String, romFilePath: String?, candidates: List<T>,
+                             minScore: Double = 0.60, titleOf: (T) -> String): Match<T>? {
+        if (candidates.isEmpty()) return null
+
+        val romTitle = extractTitleFromFilename(romFilePath)
+        if (romTitle.isNotEmpty()) {
+            val r = findBestMatch(romTitle, candidates, minScore, titleOf)
+            if (r != null && r.score >= 0.85) return r.copy(method = "rom_filename")
+        }
+
+        findBestMatch(pegasusTitle, candidates, minScore, titleOf)
+            ?.let { return it.copy(method = "pegasus_title") }
+
+        if (romTitle.isNotEmpty()) {
+            findBestMatch(romTitle, candidates, 0.50, titleOf)
+                ?.let { return it.copy(method = "rom_filename_loose") }
+        }
+        return null
+    }
+
 }

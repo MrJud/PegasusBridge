@@ -165,8 +165,11 @@ class RomScanPipeline(
             return
         }
 
+        // Throwable: one file that cannot be read must cost that file, not the
+        // scan. Cancellation still propagates.
         val result = try { withContext(Dispatchers.IO) { hasher.hash(file.absolutePath) } }
-                     catch (e: Exception) { BridgeLog.w(TAG, "hash failed: ${file.name}", e); null }
+                     catch (c: kotlinx.coroutines.CancellationException) { throw c }
+                     catch (t: Throwable) { BridgeLog.w(TAG, "hash failed: ${file.name}", t); null }
 
         if (result == null) {
             resultQueue.send(ResultJob(

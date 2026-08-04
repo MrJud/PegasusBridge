@@ -426,8 +426,13 @@ class HasherService : Service() {
     // ── File hashing ──────────────────────────────────────────────────────
 
     private fun hashFile(file: File): HashResult? = when (file.extension.lowercase()) {
-        "zip" -> hashZip(file)
-        "7z"  -> hash7z(file)
+        // A failed extraction falls back to hashing the file as-is, because the
+        // extension is a claim and not a fact: a plain ROM renamed .7z is common
+        // enough that refusing it loses real games. The fallback cannot produce a
+        // wrong match, only a miss — a compressed byte stream hashes to nothing
+        // RetroAchievements knows.
+        "zip" -> hashZip(file) ?: NativeHasher.hash(file.absolutePath)
+        "7z"  -> hash7z(file)  ?: NativeHasher.hash(file.absolutePath)
         else  -> NativeHasher.hash(file.absolutePath)
     }
 
@@ -441,7 +446,8 @@ class HasherService : Service() {
                 NativeHasher.hash(tmp.absolutePath)
             } finally { tmp.delete() }
         }
-    } catch (e: Exception) { Log.e(TAG, "ZIP failed: ${zipFile.name}", e); null }
+    } catch (c: kotlinx.coroutines.CancellationException) { throw c
+    } catch (t: Throwable) { Log.e(TAG, "ZIP failed: ${zipFile.name}", t); null }
 
     private fun hash7z(sevenZ: File): HashResult? = try {
         SevenZFile(sevenZ).use { archive ->
@@ -453,7 +459,12 @@ class HasherService : Service() {
                 NativeHasher.hash(tmp.absolutePath)
             } finally { tmp.delete() }
         }
-    } catch (e: Exception) { Log.e(TAG, "7z failed: ${sevenZ.name}", e); null }
+    // Throwable, not Exception: a missing optional codec arrives as
+    // NoClassDefFoundError, which is an Error. Catching only Exception let it
+    // escape the worker and take the whole scan down with it — the symptom was
+    // a scan that reported "complete, 0/0" a second after starting.
+    } catch (c: kotlinx.coroutines.CancellationException) { throw c
+    } catch (t: Throwable) { Log.e(TAG, "7z failed: ${sevenZ.name}", t); null }
 
     // ── Throttle ─────────────────────────────────────────────────────────
 

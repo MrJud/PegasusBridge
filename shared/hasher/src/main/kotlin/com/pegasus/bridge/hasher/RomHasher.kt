@@ -37,8 +37,12 @@ class ArchiveAwareHasher(
     override fun hash(path: String): HashResult? {
         val file = File(path)
         return when (file.extension.lowercase()) {
-            "zip" -> hashArchive(file, ::zipLargest)
-            "7z"  -> hashArchive(file, ::sevenZLargest)
+            // A failed extraction falls back to hashing the file as-is: the
+            // extension is a claim, not a fact, and a plain ROM renamed .7z is
+            // common enough that refusing it loses real games. The fallback
+            // cannot produce a wrong match, only a miss.
+            "zip" -> hashArchive(file, ::zipLargest) ?: delegate.hash(path)
+            "7z"  -> hashArchive(file, ::sevenZLargest) ?: delegate.hash(path)
             else  -> delegate.hash(path)
         }
     }
@@ -51,8 +55,12 @@ class ArchiveAwareHasher(
         } finally {
             tmp.delete()
         }
-    } catch (e: Exception) {
-        BridgeLog.e(TAG, "archive failed: ${file.name}", e)
+    } catch (t: Throwable) {
+        // Throwable, not Exception: a missing optional codec arrives as
+        // NoClassDefFoundError, which is an Error. Catching only Exception let it
+        // escape and kill the whole scan over one unreadable archive.
+        if (t is kotlinx.coroutines.CancellationException) throw t
+        BridgeLog.e(TAG, "archive failed: ${file.name}", t)
         null
     }
 

@@ -29,4 +29,8 @@ dependencies {
     implementation("org.json:json:20240303")
     // 7z support (LGPLv2.1)
     implementation("org.apache.commons:commons-compress:1.26.1")
+    // commons-compress declares xz as an *optional* dependency, so Gradle does
+    // not fetch it and 7z archives using LZMA2 — most of them — fail at runtime
+    // with NoClassDefFoundError rather than at build time.
+    implementation("org.tukaani:xz:1.9")
 }

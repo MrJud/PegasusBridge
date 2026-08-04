@@ -28,7 +28,12 @@
 -dontwarn java.beans.Introspector
 -dontwarn java.beans.PropertyDescriptor
 -dontwarn javax.script.**
--dontwarn org.tukaani.xz.**
+
+# xz is NOT unused: commons-compress needs it to read LZMA2, which is what most
+# 7z ROMs are. It was silenced here on R8's own suggestion, and that hid a
+# missing dependency until a scan died on the first archive. missing_rules.txt
+# lists what R8 wants quiet, not what is safe to quieten.
+-keep class org.tukaani.xz.** { *; }
 
 # Rhino's optimising compiler links call sites through jdk.dynalink, a JVM-only
 # API. On Android it falls back to the interpreter, which is the path

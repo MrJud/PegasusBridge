@@ -89,11 +89,17 @@ class RomScanPipeline(
             launch(Dispatchers.IO) {
                 for (job in hashQueue) {
                     // One network call per distinct hash, however many files share it.
-                    val meta = synchronized(hashDedup) { hashDedup[job.hash.hash] }
-                        ?: lookup.lookup(job.hash.hash).also {
-                            synchronized(hashDedup) { hashDedup[job.hash.hash] = it }
-                        }
-                    resultQueue.send(ResultJob(job, meta))
+                    val known = synchronized(hashDedup) { hashDedup[job.hash.hash] }
+                    if (known != null) { resultQueue.send(ResultJob(job, known)); continue }
+
+                    val meta = lookup.lookup(job.hash.hash)
+                    if (meta != null) {
+                        // Only a real answer is worth remembering. A failure is
+                        // left uncached and unrecorded so the next scan asks
+                        // again — recording it would write the game off for good.
+                        synchronized(hashDedup) { hashDedup[job.hash.hash] = meta }
+                    }
+                    resultQueue.send(ResultJob(job, meta, failed = meta == null))
                 }
             }
         }
@@ -107,11 +113,13 @@ class RomScanPipeline(
         }
 
         var processed = 0; var newEntries = 0; var cached = 0; var skipped = 0
+        var failedLookups = 0
         val step = (total / 50).coerceAtLeast(1)
         for (r in resultQueue) {
             when {
                 r.skipped -> skipped++
                 r.cached  -> cached++
+                r.failed  -> failedLookups++
                 // A usable match needs a title, not just an id. RA's dorequest can
                 // answer Success with an id the Web API does not know — a Virtual
                 // Console dump of Metroid returns 1100001487, for which
@@ -127,11 +135,22 @@ class RomScanPipeline(
             if (processed % step == 0 || processed == total) {
                 onProgress(Progress(processed, total, r.job.file.name, newEntries, cached, skipped))
             }
+
+            // Once RetroAchievements has stopped answering there is nothing to
+            // gain from grinding through the rest of the library: every file
+            // would be recorded as unknown. Stop, keep what was found, say so.
+            if (lookup.consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
+                BridgeLog.e(TAG, "aborting scan after $processed/$total: " +
+                                 "$failedLookups lookups failed, " +
+                                 "${lookup.consecutiveFailures} in a row")
+                break
+            }
         }
 
         val indexed = writeDiscoveryIndex()
         BridgeLog.i(TAG, "scan complete: $processed processed, $newEntries new, " +
-                         "$cached cached, $skipped skipped, $indexed indexed")
+                         "$cached cached, $skipped skipped, $indexed indexed, " +
+                         "$failedLookups lookups failed")
         Summary(total, newEntries, cached, skipped, indexed)
     }
 
@@ -269,14 +288,18 @@ class RomScanPipeline(
     )
     private data class ResultJob(
         val job: HashJob, val meta: GameMetadata?,
-        val cached: Boolean = false, val skipped: Boolean = false
+        val cached: Boolean = false, val skipped: Boolean = false,
+        val failed: Boolean = false   // never got an answer — not the same as "unknown"
     )
     private data class CachedMeta(val hash: String, val fileSize: Long, val lastModified: Long)
 
     companion object {
         private const val TAG = "RomScanPipeline"
         const val DEFAULT_HASH_WORKERS = 4
-        const val DEFAULT_API_WORKERS  = 8
+        // Matches RaHashLookup.MAX_PARALLEL: more workers than permits only
+        // queues them behind the semaphore.
+        const val DEFAULT_API_WORKERS  = 2
+        const val MAX_CONSECUTIVE_FAILURES = 8
 
         /** Platforms RetroAchievements does not cover — skipped before any I/O. */
         val UNSUPPORTED_PLATFORMS = setOf(

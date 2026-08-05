@@ -157,6 +157,43 @@ class RaSyncTest {
         assertTrue(paths.profile("MrJud").readText().contains("stale"), "cache must be preserved")
     }
 
+    // A partial failure is the common one: RetroAchievements throttles during a
+    // ROM scan and the summary call comes back empty while completion succeeds.
+    // Guarding on "all three empty" let that overwrite a good profile with an
+    // empty one, and the user lost their avatar and points with no error shown.
+    @Test fun `an empty summary does not wipe the cached profile`() {
+        BridgePaths.writeAtomic(paths.profile("MrJud"),
+            """{"summary":{"User":"MrJud","TotalPoints":105},"good":true}""")
+        route(mapOf(
+            "API_GetUserSummary"            to "",
+            "API_GetUserCompletionProgress" to """{"Count":5}""",
+            "API_GetUserRecentlyPlayedGames" to """[]"""
+        ))
+
+        val r = runBlocking { sync.refreshProfile("MrJud") }
+        assertTrue(r is RaSync.Result.Ok, "the run partly succeeded, so it is not a failure")
+
+        val kept = JSONObject(paths.profile("MrJud").readText())
+        assertTrue(kept.optBoolean("good"), "the profile must survive an empty summary")
+        assertEquals(105, kept.getJSONObject("summary").getInt("TotalPoints"))
+        assertEquals(5, JSONObject(paths.completion("MrJud").readText())
+            .getJSONObject("data").getInt("Count"), "completion still updates")
+    }
+
+    @Test fun `an empty completion does not wipe the cached completion`() {
+        BridgePaths.writeAtomic(paths.completion("MrJud"), """{"data":{"Count":9},"good":true}""")
+        route(mapOf(
+            "API_GetUserSummary"            to """{"User":"MrJud"}""",
+            "API_GetUserCompletionProgress" to "",
+            "API_GetUserRecentlyPlayedGames" to """[]"""
+        ))
+
+        runBlocking { sync.refreshProfile("MrJud") }
+        assertTrue(JSONObject(paths.completion("MrJud").readText()).optBoolean("good"))
+        assertEquals("MrJud", JSONObject(paths.profile("MrJud").readText())
+            .getJSONObject("summary").getString("User"), "the profile still updates")
+    }
+
     // ── refreshGameDetail ───────────────────────────────────────────────────
 
     @Test fun `detail merges into existing metadata without losing fields`() {

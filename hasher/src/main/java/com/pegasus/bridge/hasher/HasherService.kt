@@ -38,7 +38,10 @@ class HasherService : Service() {
 
         // Parallelism tuning
         private const val NUM_HASH_PRODUCERS = 4   // parallel hash workers (CPU+IO bound)
-        private const val NUM_API_WORKERS    = 8   // parallel RA hash-lookup workers (network)
+        // Matches RAApiClient.MAX_PARALLEL: more workers than permits only queues
+        // them up behind the semaphore.
+        private const val NUM_API_WORKERS    = 2   // parallel RA hash-lookup workers (network)
+        private const val MAX_CONSECUTIVE_FAILURES = 8
 
         // Platforms RetroAchievements does not cover today — skip them entirely to save IO.
         // Conservative denylist: only entries that are clearly out of scope.
@@ -132,7 +135,8 @@ class HasherService : Service() {
         val job: HashJob,
         val meta: GameMetadata?,
         val cached:  Boolean = false,   // file unchanged since last scan; metadata already on disk
-        val skipped: Boolean = false    // platform not on RA
+        val skipped: Boolean = false,   // platform not on RA
+        val failed:  Boolean = false    // lookup never got an answer — not the same as "unknown"
     )
 
     // Snapshot of `metadata/{gameId}.json` used for incremental scans.
@@ -254,11 +258,25 @@ class HasherService : Service() {
         val workers = List(NUM_API_WORKERS) {
             launch(Dispatchers.IO) {
                 for (hj in hashChannel) {
-                    val meta = synchronized(hashDedup) { hashDedup[hj.hash.hash] }
-                        ?: apiClient.lookupHash(hj.hash.hash).also {
-                            synchronized(hashDedup) { hashDedup[hj.hash.hash] = it }
+                    val known = synchronized(hashDedup) { hashDedup[hj.hash.hash] }
+                    if (known != null) { resultChannel.send(ResultJob(hj, known)); continue }
+
+                    when (val r = apiClient.lookupHash(hj.hash.hash)) {
+                        is RAApiClient.Lookup.Hit -> {
+                            synchronized(hashDedup) { hashDedup[hj.hash.hash] = r.meta }
+                            resultChannel.send(ResultJob(hj, r.meta))
                         }
-                    resultChannel.send(ResultJob(hj, meta))
+                        RAApiClient.Lookup.Miss -> {
+                            // A real answer, worth remembering for this run.
+                            val miss = GameMetadata(gameId = 0)
+                            synchronized(hashDedup) { hashDedup[hj.hash.hash] = miss }
+                            resultChannel.send(ResultJob(hj, miss))
+                        }
+                        RAApiClient.Lookup.Failed ->
+                            // Deliberately not cached and not counted as an
+                            // answer: the next scan must ask again.
+                            resultChannel.send(ResultJob(hj, null, failed = true))
+                    }
                 }
             }
         }
@@ -274,18 +292,34 @@ class HasherService : Service() {
 
         // Collector: write per-game metadata/{gameId}.json
         var processed = 0; var newEntries = 0; var cachedHits = 0; var skippedPlat = 0
+        var failedLookups = 0
         // Aim for ~50 progress updates over the whole scan, with a sane minimum.
         val writeStep = (total / 50).coerceAtLeast(10)
         for (r in resultChannel) {
             when {
                 r.skipped -> skippedPlat++
                 r.cached  -> cachedHits++
+                r.failed  -> failedLookups++
                 r.meta != null && r.meta.gameId > 0 -> {
                     writeMetadata(r.job, r.meta)
                     newEntries++
                 }
             }
             processed++
+
+            // Once RetroAchievements has stopped answering there is nothing to
+            // gain from grinding through the rest of the library: every file
+            // would be recorded as unknown. Stop and say so.
+            if (apiClient.consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
+                Log.e(TAG, "aborting scan: $failedLookups lookups failed, " +
+                           "${apiClient.consecutiveFailures} in a row")
+                writeDiscoveryIndex()
+                writeError(jobId, "scan",
+                    "RetroAchievements stopped responding after $processed of $total files " +
+                    "($newEntries identified). Nothing was recorded as missing. " +
+                    "Wait a few minutes and scan again — it will resume where it left off.")
+                return@coroutineScope
+            }
             if (processed % writeStep == 0 || processed == total) {
                 val pct = processed.toDouble() / total
                 writePending(jobId, "scan", "running", pct,
@@ -299,7 +333,8 @@ class HasherService : Service() {
         writePending(jobId, "scan", "running", 1.0,
             "Done — $newEntries new, $cachedHits cached, $skippedPlat skipped",
             newEntries, cachedHits, skippedPlat)
-        Log.i(TAG, "Scan complete: $processed processed, $newEntries new, $cachedHits cached, $skippedPlat skipped")
+        Log.i(TAG, "Scan complete: $processed processed, $newEntries new, $cachedHits cached, " +
+                   "$skippedPlat skipped, $failedLookups lookups failed")
     }
 
     // Enumera metadata/*.json ed emette metadata/_index.json con:

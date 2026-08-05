@@ -83,28 +83,31 @@ class RaService : Service() {
         val completion   = completionDeferred.await()
         val recentPlayed = recentPlayedDeferred.await()
 
-        // Skip write se tutte e tre le chiamate sono tornate vuote (errore network/auth).
-        // Evita di sovrascrivere una cache buona con una vuota.
-        val allEmpty = summary.length() == 0 && completion.length() == 0 && recentPlayed.length() == 0
-        if (allEmpty) {
-            Log.w(TAG, "Profile job: all API calls empty — skipping file write for user=$user")
-            return@coroutineScope
+        // Each file is guarded on its own data, not on all three together.
+        // The old all-or-nothing check let a run where only the summary failed
+        // overwrite a good profile with an empty one — which is exactly what
+        // happens when RA throttles mid-scan, and it cost the user their avatar
+        // and points with no error shown anywhere.
+        if (summary.length() > 0) {
+            Paths.profile(user).writeText(JSONObject()
+                .put("schemaVersion",  SchemaVersion.CURRENT)
+                .put("fetchedAt",      now)
+                .put("summary",        summary)
+                .put("recentlyPlayed", recentPlayed)
+                .toString(2))
+        } else {
+            Log.w(TAG, "Profile job: empty summary — keeping the cached profile for $user")
         }
 
-        // Write profile/{user}.json — include summary + recentlyPlayed
-        val profileJson = JSONObject()
-            .put("schemaVersion",  SchemaVersion.CURRENT)
-            .put("fetchedAt",      now)
-            .put("summary",        summary)
-            .put("recentlyPlayed", recentPlayed)
-        Paths.profile(user).writeText(profileJson.toString(2))
-
-        // Write completion/{user}.json
-        val completionJson = JSONObject()
-            .put("schemaVersion", SchemaVersion.CURRENT)
-            .put("fetchedAt",     now)
-            .put("data",          completion)
-        Paths.completion(user).writeText(completionJson.toString(2))
+        if (completion.length() > 0) {
+            Paths.completion(user).writeText(JSONObject()
+                .put("schemaVersion", SchemaVersion.CURRENT)
+                .put("fetchedAt",     now)
+                .put("data",          completion)
+                .toString(2))
+        } else {
+            Log.w(TAG, "Profile job: empty completion — keeping the cached one for $user")
+        }
 
         Log.d(TAG, "Profile job done for user=$user")
     }

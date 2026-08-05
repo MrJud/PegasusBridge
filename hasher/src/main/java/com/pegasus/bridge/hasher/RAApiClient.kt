@@ -4,6 +4,7 @@ import android.util.Log
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
@@ -18,8 +19,27 @@ class RAApiClient(private val raUser: String, private val raApiKey: String) {
         private const val TAG         = "RAApiClient"
         private const val BASE        = "https://retroachievements.org"
         private const val USER_AGENT  = "PegasusBridge/1.0"
-        private const val MAX_PARALLEL = 8
-        private const val MAX_RETRIES  = 3
+        // Eight in flight with no pacing got this client refused by RA after
+        // about 85 requests, and every lookup after that failed silently. Two in
+        // flight, at most one every 250 ms, is ~4 req/s — enough to scan a large
+        // library in minutes without looking like an attack.
+        private const val MAX_PARALLEL   = 2
+        private const val MIN_INTERVAL_MS = 250L
+        private const val MAX_RETRIES    = 4
+    }
+
+    /**
+     * The three outcomes a lookup can have.
+     *
+     * [Failed] exists because it used to be indistinguishable from [Miss]: a
+     * refused request was recorded as "RetroAchievements does not know this
+     * game", the file was marked processed, and an incremental rescan would
+     * never try it again. Hundreds of games were written off that way.
+     */
+    sealed class Lookup {
+        data class Hit(val meta: GameMetadata) : Lookup()
+        object Miss : Lookup()
+        object Failed : Lookup()
     }
 
     private val client = OkHttpClient.Builder()
@@ -29,25 +49,50 @@ class RAApiClient(private val raUser: String, private val raApiKey: String) {
 
     private val semaphore = Semaphore(MAX_PARALLEL)
 
-    suspend fun lookupHash(hash: String): GameMetadata? = semaphore.withPermit {
+    private val paceMutex = kotlinx.coroutines.sync.Mutex()
+    private var lastRequestAt = 0L
+
+    /** Consecutive failures. A caller watches this to stop a doomed scan early. */
+    @Volatile var consecutiveFailures = 0
+        private set
+
+    /** Spaces requests out, whatever the parallelism, so RA sees a steady trickle. */
+    private suspend fun pace() = paceMutex.withLock {
+        val now = System.currentTimeMillis()
+        val wait = MIN_INTERVAL_MS - (now - lastRequestAt)
+        if (wait > 0) delay(wait)
+        lastRequestAt = System.currentTimeMillis()
+    }
+
+    suspend fun lookupHash(hash: String): Lookup = semaphore.withPermit {
         withContext(Dispatchers.IO) {
             try {
-                val gameId = fetchGameId(hash) ?: return@withContext null
-                if (gameId == 0) return@withContext GameMetadata(gameId = 0)
-                fetchMetadata(gameId)
+                when (val id = fetchGameId(hash)) {
+                    null -> Lookup.Failed
+                    0    -> Lookup.Miss.also { consecutiveFailures = 0 }
+                    else -> {
+                        val meta = fetchMetadata(id)
+                        if (meta == null) Lookup.Failed
+                        else { consecutiveFailures = 0; Lookup.Hit(meta) }
+                    }
+                }
             } catch (e: Exception) {
                 Log.e(TAG, "lookupHash failed for $hash", e)
-                null
+                Lookup.Failed
             }
         }
     }
 
+    /** null means the request failed; 0 means RetroAchievements does not know it. */
     private suspend fun fetchGameId(hash: String): Int? {
         val body = httpGetWithRetry("$BASE/dorequest.php?r=gameid&m=$hash") ?: return null
         return try {
             val obj = JSONObject(body)
             if (obj.optBoolean("Success")) obj.optInt("GameID", 0) else 0
-        } catch (e: Exception) { 0 }
+        } catch (e: Exception) {
+            // Unparseable is a failed request, not an answer.
+            null
+        }
     }
 
     // API_GetGame.php does not return NumAchievements at all — its response has
@@ -90,12 +135,17 @@ class RAApiClient(private val raUser: String, private val raApiKey: String) {
         var lastEx: Exception? = null
         for (attempt in 0 until MAX_RETRIES) {
             try {
+                pace()
                 val req = Request.Builder().url(url).header("User-Agent", USER_AGENT).build()
                 client.newCall(req).execute().use { resp ->
                     when {
-                        resp.isSuccessful -> return resp.body?.string()
-                        resp.code == 429 || resp.code >= 500 -> delay(1000L shl attempt)
-                        else -> return null
+                        resp.isSuccessful -> { consecutiveFailures = 0; return resp.body?.string() }
+                        // 403 belongs here: that is what being refused for too
+                        // many requests looks like, and treating it as fatal made
+                        // the client give up on the first one.
+                        resp.code == 403 || resp.code == 429 || resp.code >= 500 ->
+                            delay(1000L shl attempt)
+                        else -> { consecutiveFailures++; return null }
                     }
                 }
             } catch (e: Exception) {
@@ -103,6 +153,7 @@ class RAApiClient(private val raUser: String, private val raApiKey: String) {
                 delay(1000L shl attempt)
             }
         }
+        consecutiveFailures++
         Log.e(TAG, "All retries exhausted for $url", lastEx)
         return null
     }

@@ -47,23 +47,32 @@ class RaSync(
         val completion = completionD.await()
         val recent     = recentD.await()
 
-        // All three empty means the network or the credentials failed. Writing
-        // that would replace a good cache with an empty one.
         if (summary.length() == 0 && completion.length() == 0 && recent.length() == 0)
             return@coroutineScope Result.Failed("all RA calls returned empty for $user")
 
+        // Guarded per file, not on all three together: a run where only the
+        // summary failed used to overwrite a good profile with an empty one,
+        // which is what RA throttling during a scan produces.
         val now = BridgePaths.epochSeconds()
-        BridgePaths.writeAtomic(paths.profile(user), JSONObject()
-            .put("schemaVersion",  SchemaVersion.CURRENT)
-            .put("fetchedAt",      now)
-            .put("summary",        summary)
-            .put("recentlyPlayed", recent)
-            .toString(2))
-        BridgePaths.writeAtomic(paths.completion(user), JSONObject()
-            .put("schemaVersion", SchemaVersion.CURRENT)
-            .put("fetchedAt",     now)
-            .put("data",          completion)
-            .toString(2))
+        if (summary.length() > 0) {
+            BridgePaths.writeAtomic(paths.profile(user), JSONObject()
+                .put("schemaVersion",  SchemaVersion.CURRENT)
+                .put("fetchedAt",      now)
+                .put("summary",        summary)
+                .put("recentlyPlayed", recent)
+                .toString(2))
+        } else {
+            BridgeLog.w(TAG, "empty summary — keeping the cached profile for $user")
+        }
+        if (completion.length() > 0) {
+            BridgePaths.writeAtomic(paths.completion(user), JSONObject()
+                .put("schemaVersion", SchemaVersion.CURRENT)
+                .put("fetchedAt",     now)
+                .put("data",          completion)
+                .toString(2))
+        } else {
+            BridgeLog.w(TAG, "empty completion — keeping the cached one for $user")
+        }
 
         Result.Ok("profile refreshed for $user")
     }

@@ -58,6 +58,10 @@ chmod +x "$out/pegasus-bridge"
 cp "$here/install.sh" "$out/install.sh" 2>/dev/null || true
 chmod +x "$out/install.sh" 2>/dev/null || true
 
+# GPLv3 requires the licence to travel with the binary, and this bundle is a
+# binary: without it the only licence texts inside are the JDK runtime's own.
+cp "$here/../LICENSE" "$out/LICENSE" 2>/dev/null || true
+
 size="$(du -sh "$out" | cut -f1)"
 echo
 echo "done: $out ($size)"

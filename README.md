@@ -111,6 +111,39 @@ Enter them from the theme's own settings screen. What you need:
 
 Steam and IGN need no key.
 
+### Developer credentials, if a source ever needs them
+
+Some databases issue a *developer* credential to the application itself, separate
+from the user's own account. Such a credential is never committed: it is read at
+build time from `local.properties` or the environment, exactly as the Android
+release signing config already reads `RELEASE_STORE_FILE`. A build with none set
+simply omits that source.
+
+This matters because the repository is public — anything committed here is
+extractable by anyone, and an application-wide credential that leaks gets revoked
+for every user of the app, not just the one who leaked it.
+
+---
+
+## Behaving well against remote APIs
+
+Every source here is someone else's server, usually run for a community rather
+than for profit, and the scan is the part that could hurt one. So the hash lookup
+is paced rather than parallelised as hard as the network allows:
+
+- at most **2 requests in flight**, spaced **≥250 ms** apart;
+- "the request failed" and "the answer is no" are kept apart, and a failure is
+  **never cached** — otherwise a refused request is remembered as *this game does
+  not exist* and no later scan ever asks again;
+- a rejection is retried, and after **8 consecutive failures** the scan stops with
+  a message instead of grinding through the rest of the library;
+- results are cached locally and rescans are incremental, so a second scan of an
+  unchanged library makes no network calls at all.
+
+Measured on a 913-ROM library against RetroAchievements: **913 processed, 0 lookups
+failed**, first scan ~6.5 min, incremental rescan 32 s with no requests. Before the
+pacing existed the same library got roughly 85 answers and refusals for the rest.
+
 ---
 
 ## The API
@@ -187,3 +220,48 @@ journalctl --user -u pegasus-bridge -f
 
 **Scanning does nothing.** The native hasher failed to load; `/health` says so.
 Scraping and RetroAchievements still work without it.
+
+---
+
+## Licence
+
+**GNU General Public License v3.0** — see [LICENSE](LICENSE).
+
+The choice is not arbitrary: the Bridge bundles NewPipeExtractor, which is GPLv3,
+in both the Android APK and the desktop archive. Distributing those artifacts
+under anything more permissive would not be allowed, so the whole is GPLv3 and
+stays free for everyone downstream.
+
+### Third-party components
+
+| component | licence | how it is used |
+| --- | --- | --- |
+| [rcheevos](https://github.com/RetroAchievements/rcheevos) | MIT | vendored C sources, built into the native hasher |
+| [NewPipeExtractor](https://github.com/TeamNewPipe/NewPipeExtractor) | GPL-3.0 | YouTube search and stream resolution |
+| [OkHttp](https://square.github.io/okhttp/) | Apache-2.0 | every HTTP call |
+| [Apache Commons Compress](https://commons.apache.org/proper/commons-compress/) | Apache-2.0 | reading zip and 7z ROM archives |
+| [XZ for Java](https://tukaani.org/xz/java.html) | public domain | LZMA2, which most 7z ROMs use |
+| [JSON-java](https://github.com/stleary/JSON-java) | JSON licence | parsing, on desktop; Android supplies its own |
+
+Data and media fetched from third-party databases stay under their own terms —
+they are cached locally for the user who requested them and are never
+redistributed by this project.
+
+### Verifying what you run
+
+Dependencies are pinned by version *and* by checksum. `gradle/verification-metadata.xml`
+records a SHA-256 for every artifact Gradle downloads — one for the Android build
+and one for `shared/`, since they are separate Gradle builds — so a build fails
+loudly if any of them ever changes underneath you. This matters most for
+NewPipeExtractor, which comes from JitPack and is built from a git tag rather
+than served as an immutable published artifact.
+
+Regenerate them by running the real build tasks, not `help`: some artifacts —
+`aapt2` among them — are only resolved once resource processing actually runs.
+
+```bash
+./gradlew --write-verification-metadata sha256 :app:assembleDebug :app:assembleRelease
+cd shared && ./gradlew --write-verification-metadata sha256 build
+```
+
+Released binaries ship a `.sha256` next to them, and the Android APK is signed.

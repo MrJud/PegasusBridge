@@ -24,7 +24,19 @@ theme sees is the same on both, so a theme written against it works on either.
 | Android (arm64, API 26+) | working, verified on device |
 | Windows | not started |
 
-The only theme using it today is **ReStory**. Any theme can: see [The API](#the-api).
+---
+
+## Compatible themes
+
+| theme | uses the Bridge for |
+| --- | --- |
+| [ReStory](https://github.com/MrJud/ReStory) | RetroAchievements, scraping, trailers |
+| *your theme* | anything in [The API](#the-api) |
+
+Nothing here is specific to one theme. ReStory is simply the first, and it is the
+shortest way to see the API used in practice — it holds no matching or scraping
+logic of its own, it asks and renders. If you have wired up another theme, open a
+pull request and add it here.
 
 ---
 

@@ -175,8 +175,12 @@ class RomScanPipeline(
 
         // Unchanged since the last scan: the metadata is already on disk and the
         // index rebuild will pick it up, so skip both hashing and the network.
+        // `fileMd5` is also required: metadata written before plain hashes
+        // existed would otherwise be cached forever, and a field added to the
+        // schema would stay empty on every library that had already been
+        // scanned once — the incremental skip is what would hide it.
         val known = metaCache[cacheKey]
-        if (known != null && known.hash.isNotEmpty() &&
+        if (known != null && known.hash.isNotEmpty() && known.fileMd5.isNotEmpty() &&
             known.fileSize == size && known.lastModified == modified) {
             resultQueue.send(ResultJob(
                 HashJob(file, cacheKey, HashResult(known.hash, 0), rawPlatform, size, modified),
@@ -215,6 +219,11 @@ class RomScanPipeline(
                 .put("fetchedAt", now))
             .put("rom", JSONObject()
                 .put("hash", job.hash.hash)
+                // Plain hashes of the ROM bytes, for databases that match by
+                // file rather than by title. Distinct from `hash`, which is the
+                // rcheevos one — see HashResult for why they cannot be shared.
+                .put("fileMd5", job.hash.fileMd5)
+                .put("fileCrc32", job.hash.fileCrc32)
                 .put("fileSize", job.fileSize)
                 .put("lastModified", job.lastModified))
             .put("fetchedAt", now)
@@ -275,8 +284,8 @@ class RomScanPipeline(
                 val rom = j.optJSONObject("rom") ?: continue
                 val key = j.optString("cacheKey")
                 if (key.isEmpty()) continue
-                map[key] = CachedMeta(rom.optString("hash"), rom.optLong("fileSize"),
-                                      rom.optLong("lastModified"))
+                map[key] = CachedMeta(rom.optString("hash"), rom.optString("fileMd5"),
+                                      rom.optLong("fileSize"), rom.optLong("lastModified"))
             } catch (_: Exception) {}
         }
         return map
@@ -291,7 +300,8 @@ class RomScanPipeline(
         val cached: Boolean = false, val skipped: Boolean = false,
         val failed: Boolean = false   // never got an answer — not the same as "unknown"
     )
-    private data class CachedMeta(val hash: String, val fileSize: Long, val lastModified: Long)
+    private data class CachedMeta(val hash: String, val fileMd5: String,
+                                  val fileSize: Long, val lastModified: Long)
 
     companion object {
         private const val TAG = "RomScanPipeline"

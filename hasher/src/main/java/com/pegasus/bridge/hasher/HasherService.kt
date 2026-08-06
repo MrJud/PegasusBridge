@@ -143,6 +143,7 @@ class HasherService : Service() {
     private data class CachedMeta(
         val gameId:       Int,
         val hash:         String,
+        val fileMd5:      String,
         val fileSize:     Long,
         val lastModified: Long
     )
@@ -164,6 +165,7 @@ class HasherService : Service() {
                 map[cacheKey] = CachedMeta(
                     gameId       = j.optInt("gameId"),
                     hash         = rom.optString("hash"),
+                    fileMd5      = rom.optString("fileMd5"),
                     fileSize     = rom.optLong("fileSize"),
                     lastModified = rom.optLong("lastModified")
                 )
@@ -223,9 +225,13 @@ class HasherService : Service() {
 
                     // Incremental skip: file matched in a previous scan and hasn't changed.
                     // Metadata is already on disk; writeDiscoveryIndex() will pick it up.
+                    // fileMd5 is required too: metadata written before plain
+                    // hashes existed would otherwise stay cached forever, and a
+                    // library already scanned once would never gain the field.
                     val cached = metaCache[cacheKey]
                     if (cached != null
                         && cached.hash.isNotEmpty()
+                        && cached.fileMd5.isNotEmpty()
                         && cached.fileSize == fileSize
                         && cached.lastModified == lastModified) {
                         resultChannel.send(ResultJob(
@@ -416,6 +422,10 @@ class HasherService : Service() {
                 .put("fetchedAt", now))
             .put("rom", JSONObject()
                 .put("hash",         job.hash.hash)
+                // Plain hashes of the ROM bytes, for databases that match by
+                // file rather than title. Distinct from `hash`, the rcheevos one.
+                .put("fileMd5",      job.hash.fileMd5)
+                .put("fileCrc32",    job.hash.fileCrc32)
                 .put("fileSize",     job.fileSize)
                 .put("lastModified", job.lastModified))
             .put("fetchedAt", now)
@@ -466,9 +476,36 @@ class HasherService : Service() {
         // enough that refusing it loses real games. The fallback cannot produce a
         // wrong match, only a miss — a compressed byte stream hashes to nothing
         // RetroAchievements knows.
-        "zip" -> hashZip(file) ?: NativeHasher.hash(file.absolutePath)
-        "7z"  -> hash7z(file)  ?: NativeHasher.hash(file.absolutePath)
-        else  -> NativeHasher.hash(file.absolutePath)
+        "zip" -> hashZip(file) ?: withPlainHashes(NativeHasher.hash(file.absolutePath), file)
+        "7z"  -> hash7z(file)  ?: withPlainHashes(NativeHasher.hash(file.absolutePath), file)
+        else  -> withPlainHashes(NativeHasher.hash(file.absolutePath), file)
+    }
+
+    /** Hashes the ROM itself — the extracted entry for an archive, else the file. */
+    private fun withPlainHashes(result: HashResult?, romFile: File): HashResult? {
+        if (result == null) return null
+        return try {
+            val md = java.security.MessageDigest.getInstance("MD5")
+            val crc = java.util.zip.CRC32()
+            romFile.inputStream().use { input ->
+                val buf = ByteArray(64 * 1024)
+                while (true) {
+                    val n = input.read(buf)
+                    if (n <= 0) break
+                    md.update(buf, 0, n)
+                    crc.update(buf, 0, n)
+                }
+            }
+            result.copy(
+                fileMd5 = md.digest().joinToString("") { "%02x".format(it) },
+                fileCrc32 = "%08x".format(crc.value)
+            )
+        } catch (c: kotlinx.coroutines.CancellationException) { throw c
+        } catch (t: Throwable) {
+            // Costs a scraper lookup, never the RA match the scan exists for.
+            Log.w(TAG, "plain hash failed: ${romFile.name}: ${t.message}")
+            result
+        }
     }
 
     private fun hashZip(zipFile: File): HashResult? = try {
@@ -478,7 +515,7 @@ class HasherService : Service() {
             val tmp = File.createTempFile("bridge_", ".$ext", cacheDir)
             try {
                 zf.getInputStream(largest).use { input -> tmp.outputStream().use { input.copyTo(it) } }
-                NativeHasher.hash(tmp.absolutePath)
+                withPlainHashes(NativeHasher.hash(tmp.absolutePath), tmp)
             } finally { tmp.delete() }
         }
     } catch (c: kotlinx.coroutines.CancellationException) { throw c
@@ -491,7 +528,7 @@ class HasherService : Service() {
             val tmp = File.createTempFile("bridge_", ".$ext", cacheDir)
             try {
                 archive.getInputStream(largest).use { input -> tmp.outputStream().use { input.copyTo(it) } }
-                NativeHasher.hash(tmp.absolutePath)
+                withPlainHashes(NativeHasher.hash(tmp.absolutePath), tmp)
             } finally { tmp.delete() }
         }
     // Throwable, not Exception: a missing optional codec arrives as

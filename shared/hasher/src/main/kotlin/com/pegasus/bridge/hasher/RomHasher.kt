@@ -5,7 +5,19 @@ import org.apache.commons.compress.archivers.sevenz.SevenZFile
 import java.io.File
 import java.util.zip.ZipFile
 
-data class HashResult(val hash: String, val consoleId: Int)
+/**
+ * [hash] is the RetroAchievements one, from rcheevos, which transforms the data
+ * per console before hashing — NES skips the iNES header, SNES a copier header.
+ * [fileMd5] and [fileCrc32] describe the file itself, which is what ROM databases
+ * match on. The two coincide on consoles rcheevos hashes whole, and differ on
+ * NES and SNES, so they are not interchangeable.
+ */
+data class HashResult(
+    val hash: String,
+    val consoleId: Int,
+    val fileMd5: String = "",
+    val fileCrc32: String = ""
+)
 
 /**
  * Computes a RetroAchievements-compatible hash for one ROM file.
@@ -41,9 +53,40 @@ class ArchiveAwareHasher(
             // extension is a claim, not a fact, and a plain ROM renamed .7z is
             // common enough that refusing it loses real games. The fallback
             // cannot produce a wrong match, only a miss.
-            "zip" -> hashArchive(file, ::zipLargest) ?: delegate.hash(path)
-            "7z"  -> hashArchive(file, ::sevenZLargest) ?: delegate.hash(path)
-            else  -> delegate.hash(path)
+            "zip" -> hashArchive(file, ::zipLargest) ?: withPlainHashes(delegate.hash(path), file)
+            "7z"  -> hashArchive(file, ::sevenZLargest) ?: withPlainHashes(delegate.hash(path), file)
+            else  -> withPlainHashes(delegate.hash(path), file)
+        }
+    }
+
+    /**
+     * [romFile] is whatever the delegate was given — the extracted entry for an
+     * archive, the file itself otherwise — so the hashes describe the ROM and
+     * not its container.
+     */
+    private fun withPlainHashes(result: HashResult?, romFile: File): HashResult? {
+        if (result == null) return null
+        return try {
+            val md = java.security.MessageDigest.getInstance("MD5")
+            val crc = java.util.zip.CRC32()
+            romFile.inputStream().use { input ->
+                val buf = ByteArray(64 * 1024)
+                while (true) {
+                    val n = input.read(buf)
+                    if (n <= 0) break
+                    md.update(buf, 0, n)
+                    crc.update(buf, 0, n)
+                }
+            }
+            result.copy(
+                fileMd5 = md.digest().joinToString("") { "%02x".format(it) },
+                fileCrc32 = "%08x".format(crc.value)
+            )
+        } catch (t: Throwable) {
+            if (t is kotlinx.coroutines.CancellationException) throw t
+            // Costs a scraper lookup, never the RA match the scan exists for.
+            BridgeLog.w(TAG, "plain hash failed: ${romFile.name}: ${t.message}")
+            result
         }
     }
 
@@ -51,7 +94,7 @@ class ArchiveAwareHasher(
         tempDir.mkdirs()
         val tmp = File.createTempFile("bridge_", ".bin", tempDir)
         try {
-            if (extract(file, tmp)) delegate.hash(tmp.absolutePath) else null
+            if (extract(file, tmp)) withPlainHashes(delegate.hash(tmp.absolutePath), tmp) else null
         } finally {
             tmp.delete()
         }

@@ -22,7 +22,14 @@ class RomScanPipelineTest {
     private lateinit var romRoot: File
     private lateinit var paths: BridgePaths
 
-    /** Hashes a file to its own content, so tests control matching exactly. */
+    /**
+     * Hashes a file to its own content, so tests control matching exactly.
+     *
+     * It also fills the plain hashes, because in production every hasher reaches
+     * the pipeline wrapped in [ArchiveAwareHasher], which supplies them. A double
+     * that left them empty would look like pre-plain-hash metadata and be
+     * rescanned forever.
+     */
     private class ContentHasher : RomHasher {
         val calls = AtomicInteger()
         override fun hash(path: String): HashResult? {
@@ -30,7 +37,8 @@ class RomScanPipelineTest {
             val f = File(path)
             if (!f.exists()) return null
             val text = f.readText().trim()
-            return if (text == "UNHASHABLE") null else HashResult(text, 7)
+            if (text == "UNHASHABLE") return null
+            return HashResult(text, 7, fileMd5 = "md5-$text", fileCrc32 = "crc-$text")
         }
     }
 
@@ -130,6 +138,29 @@ class RomScanPipelineTest {
         assertEquals(0, h2.calls.get(), "unchanged file must not be re-hashed")
         assertEquals(0, l2.calls.get(), "unchanged file must not hit the API")
         assertEquals(1, s2.indexed, "the index must still list it")
+    }
+
+    // Metadata written before the plain hashes existed carries no fileMd5. The
+    // incremental skip must not preserve that gap forever, or a library already
+    // scanned once would never gain the field a scraper needs.
+    @Test fun `metadata without a plain hash is rescanned once`() = runBlocking {
+        rom("nes", "Super Mario Bros. (World).nes", "hash-smb")
+        pipeline(ContentHasher(), MapLookup(catalogue)).scan(listOf(romRoot.absolutePath))
+
+        // Strip the field, imitating a file from the previous schema.
+        val meta = paths.metadata.listFiles { f -> !f.name.startsWith("_") }!!.first()
+        val j = JSONObject(meta.readText())
+        j.getJSONObject("rom").remove("fileMd5")
+        meta.writeText(j.toString(2))
+
+        val h2 = ContentHasher()
+        val s2 = pipeline(h2, MapLookup(catalogue)).scan(listOf(romRoot.absolutePath))
+
+        assertEquals(0, s2.cachedHits, "stale-schema metadata must not count as a cache hit")
+        assertEquals(1, h2.calls.get(), "the file must be hashed again to backfill")
+        val after = JSONObject(meta.readText()).getJSONObject("rom")
+        assertEquals("md5-hash-smb", after.getString("fileMd5"))
+        assertEquals("crc-hash-smb", after.getString("fileCrc32"))
     }
 
     @Test fun `an edited file is rescanned`() = runBlocking {

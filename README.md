@@ -158,6 +158,45 @@ pacing existed the same library got roughly 85 answers and refusals for the rest
 
 ---
 
+## Sources being considered
+
+The four sources above cover modern games well and retro games poorly, because they
+match on the title. Two databases would fix that; neither is implemented, and neither
+will be started before its credentials exist — writing a client against an API you
+cannot call produces hundreds of lines nobody can verify.
+
+**[ScreenScraper.fr](https://www.screenscraper.fr)** is the one that matters. It
+matches **by ROM hash**, which is what lets ES-DE and Skraper identify a retro dump
+that no title search would find, and the Bridge already computes those hashes for
+RetroAchievements — the rcheevos hash plus the file's own MD5 and CRC32. Its media
+map onto this project's categories one for one: `box-2D` to cover, `wheel`/`wheel-hd`
+to logo, `fanart` to wallpaper, `ss`/`sstitle` to screenshots, and `video`. It also
+answers with region- and language-aware metadata, which is the only route to
+descriptions in a language other than English.
+
+Access needs a `devid`/`devpassword` issued to the application, on the condition that
+it is integrated only into entirely free software — this project is GPL-3.0, is not
+sold, and carries no advertising. Each user additionally supplies their own account
+to raise their quota, which the existing `credentials.json` model already handles.
+The application credential itself would be read at build time and never committed,
+as described under [Developer credentials](#developer-credentials-if-a-source-ever-needs-them).
+
+Its quotas are per-thread and per-day, and the refusals are specific: **429** too many
+threads, **430** the daily allowance, **431** too many unrecognised ROMs. The last one
+matters here, because a real library contains bad dumps and placeholder files that will
+never be recognised, and hammering on them is exactly the behaviour a quota is meant to
+stop. The pacing above already covers all three — two requests in flight, spaced, no
+failure ever cached as a negative, and a stop after eight consecutive refusals.
+
+**[TheGamesDB](https://thegamesdb.net)** would come second and stay small. It has no
+hash lookup at all, only name search, so it forfeits the advantage that motivates the
+work, and its public key allows roughly 1000–1500 requests per month per IP — a single
+scan of a 913-ROM library would spend a month's allowance in one go. It belongs as a
+per-game source inside the Game Database panel, used when someone opens one game and
+asks, never as a bulk scanner.
+
+---
+
 ## The API
 
 Desktop: HTTP on loopback. The daemon writes its port to

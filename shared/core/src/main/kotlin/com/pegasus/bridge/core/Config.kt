@@ -12,10 +12,37 @@ data class IgdbCreds(
     val cachedTokenExp: Long = 0L
 )
 
+/**
+ * ScreenScraper wants two pairs and they are not interchangeable.
+ *
+ * [devId] and [devPassword] identify the *application* and are what the API
+ * refuses without. [ssid] and [ssPassword] are a member login, optional, and
+ * what lifts the request quota off the anonymous floor — they may well name the
+ * same account that owns the devid, but the API takes them as separate
+ * parameters and so does this.
+ *
+ * [softname] is the name registered with the devid. ScreenScraper checks it and
+ * refuses a mismatch, so it is not decoration and not the user's to invent — it
+ * has a default and is stored only if it ever has to differ.
+ */
+data class ScreenScraperCreds(
+    val devId: String,
+    val devPassword: String,
+    val ssid: String = "",
+    val ssPassword: String = "",
+    val softname: String = DEFAULT_SOFTNAME
+) {
+    companion object {
+        /** Registered with the devid on 2026-08-07. Not a secret; it travels in every URL. */
+        const val DEFAULT_SOFTNAME = "PegasusBridge"
+    }
+}
+
 data class Credentials(
     val ra: RaCreds? = null,
     val steamGridDb: SgdbCreds? = null,
-    val igdb: IgdbCreds? = null
+    val igdb: IgdbCreds? = null,
+    val screenScraper: ScreenScraperCreds? = null
 )
 
 /**
@@ -45,6 +72,18 @@ class Config(private val paths: BridgePaths) {
                         cachedToken    = it.optString("cachedToken"),
                         cachedTokenExp = it.optLong("cachedTokenExp")
                     )
+                },
+                screenScraper = j.optJSONObject("screenScraper")?.let {
+                    ScreenScraperCreds(
+                        devId       = it.optString("devId"),
+                        devPassword = it.optString("devPassword"),
+                        ssid        = it.optString("ssid"),
+                        ssPassword  = it.optString("ssPassword"),
+                        // An older file has no softname, and the registered one is
+                        // the right answer for every caller that does not override it.
+                        softname    = it.optString("softname")
+                                        .ifBlank { ScreenScraperCreds.DEFAULT_SOFTNAME }
+                    )
                 }
             )
         } catch (e: Exception) {
@@ -63,7 +102,12 @@ class Config(private val paths: BridgePaths) {
         raApiKey: String? = null,
         sgdbKey: String? = null,
         igdbClientId: String? = null,
-        igdbClientSecret: String? = null
+        igdbClientSecret: String? = null,
+        ssDevId: String? = null,
+        ssDevPassword: String? = null,
+        ssUser: String? = null,
+        ssPassword: String? = null,
+        ssSoftname: String? = null
     ) {
         val json = readOrEmpty()
 
@@ -86,6 +130,18 @@ class Config(private val paths: BridgePaths) {
             igdb.remove("cachedToken")
             igdb.remove("cachedTokenExp")
             json.put("igdb", igdb)
+        }
+
+        if (!ssDevId.isNullOrBlank() || !ssDevPassword.isNullOrBlank()
+            || !ssUser.isNullOrBlank() || !ssPassword.isNullOrBlank()
+            || !ssSoftname.isNullOrBlank()) {
+            val ss = json.optJSONObject("screenScraper") ?: JSONObject()
+            ssDevId?.takeIf       { it.isNotBlank() }?.let { ss.put("devId", it) }
+            ssDevPassword?.takeIf { it.isNotBlank() }?.let { ss.put("devPassword", it) }
+            ssUser?.takeIf        { it.isNotBlank() }?.let { ss.put("ssid", it) }
+            ssPassword?.takeIf    { it.isNotBlank() }?.let { ss.put("ssPassword", it) }
+            ssSoftname?.takeIf    { it.isNotBlank() }?.let { ss.put("softname", it) }
+            json.put("screenScraper", ss)
         }
 
         persist(json)
@@ -124,6 +180,16 @@ class Config(private val paths: BridgePaths) {
             .put("igdb", JSONObject()
                 .put("configured", c.igdb?.clientId?.isNotEmpty() == true
                                 && c.igdb.clientSecret.isNotEmpty()))
+            // Two flags, because the two pairs mean different things: without the
+            // developer pair the API answers nothing at all, while the member login
+            // only lifts the quota. Reporting one flag would make a working setup on
+            // the anonymous floor look identical to a broken one.
+            .put("screenScraper", JSONObject()
+                .put("configured", c.screenScraper?.devId?.isNotEmpty() == true
+                                && c.screenScraper.devPassword.isNotEmpty())
+                .put("hasUser", c.screenScraper?.ssid?.isNotEmpty() == true
+                             && c.screenScraper.ssPassword.isNotEmpty())
+                .put("user", c.screenScraper?.ssid.orEmpty()))
     }
 
     /** Caches an OAuth token next to the credentials that obtained it. */
@@ -152,6 +218,6 @@ class Config(private val paths: BridgePaths) {
 
     private companion object {
         const val TAG = "Config"
-        val KNOWN_BLOCKS = setOf("ra", "steamGridDb", "igdb")
+        val KNOWN_BLOCKS = setOf("ra", "steamGridDb", "igdb", "screenScraper")
     }
 }

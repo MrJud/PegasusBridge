@@ -11,6 +11,7 @@ import com.pegasus.bridge.ra.RaConsoleMap
 import com.pegasus.bridge.ra.RaMatcher
 import com.pegasus.bridge.ra.RaSync
 import com.pegasus.bridge.scrapers.ScrapeSourceDispatcher
+import com.pegasus.bridge.scrapers.ScreenScraperClient
 import com.pegasus.bridge.video.SearchCallback
 import com.pegasus.bridge.video.TrailerDownloader
 import com.pegasus.bridge.video.VideoRequest
@@ -60,6 +61,7 @@ class BridgeRouter(
         "/credentials"        -> credentials(req)
         "/credentials/status" -> credentialsStatus()
         "/credentials/clear"  -> credentialsClear(req)
+        "/screenscraper/user" -> screenScraperUser()
         "/scan"           -> scan(req)
         else              -> jobStatus(req) ?: Response.notFound("no endpoint ${req.path}")
     }
@@ -184,6 +186,37 @@ class BridgeRouter(
         .put("credentials", config.status())
         .toString())
 
+    /**
+     * Proves the ScreenScraper credentials and reports the quota.
+     *
+     * Synchronous, like the other credential verbs: it is one cheap call, and a settings
+     * screen asking "are these right" should not have to poll a job file for it. This is
+     * the ScreenScraper equivalent of `/ra/profile` — the only call whose failure means
+     * "your credentials are wrong" rather than "no such game", so it is what the login
+     * card should ask before claiming a green tick.
+     */
+    private fun screenScraperUser(): Response {
+        val r = ScreenScraperClient.userInfo(config)
+        val q = r.getOrElse {
+            // 200 with status "error", not an HTTP failure: the request reached us and
+            // was answered — what failed is upstream, and the message is the useful part.
+            return Response.json(JSONObject()
+                .put("schemaVersion", SchemaVersion.CURRENT)
+                .put("status", "error")
+                .put("error", it.message ?: "ScreenScraper refused the credentials")
+                .toString())
+        }
+        return Response.json(JSONObject()
+            .put("schemaVersion", SchemaVersion.CURRENT)
+            .put("status", "ok")
+            .put("user", q.user)
+            .put("maxThreads", q.maxThreads)
+            .put("requestsToday", q.requestsToday)
+            .put("maxRequestsPerDay", q.maxRequestsPerDay)
+            .put("maxRequestsPerMinute", q.maxRequestsPerMinute)
+            .toString())
+    }
+
     /** Forgets one block — what "log out" means once the Bridge holds the keys. */
     private fun credentialsClear(req: Request): Response {
         val block = req.param("block") ?: return Response.badRequest("missing block")
@@ -293,7 +326,8 @@ class BridgeRouter(
             }
         } else req.query
 
-        val known = listOf("user", "apiKey", "sgdbKey", "igdbClientId", "igdbClientSecret")
+        val known = listOf("user", "apiKey", "sgdbKey", "igdbClientId", "igdbClientSecret",
+                           "ssDevId", "ssDevPassword", "ssUser", "ssPassword", "ssSoftname")
         if (known.none { !fields[it].isNullOrBlank() })
             return Response.badRequest("no credential fields supplied")
 
@@ -302,13 +336,20 @@ class BridgeRouter(
             raApiKey         = fields["apiKey"],
             sgdbKey          = fields["sgdbKey"],
             igdbClientId     = fields["igdbClientId"],
-            igdbClientSecret = fields["igdbClientSecret"]
+            igdbClientSecret = fields["igdbClientSecret"],
+            ssDevId          = fields["ssDevId"],
+            ssDevPassword    = fields["ssDevPassword"],
+            ssUser           = fields["ssUser"],
+            ssPassword       = fields["ssPassword"],
+            ssSoftname       = fields["ssSoftname"]
         )
         // Report which blocks changed, never the values.
         val updated = JSONArray().apply {
             if (!fields["user"].isNullOrBlank() || !fields["apiKey"].isNullOrBlank()) put("ra")
             if (!fields["sgdbKey"].isNullOrBlank()) put("steamGridDb")
             if (!fields["igdbClientId"].isNullOrBlank() || !fields["igdbClientSecret"].isNullOrBlank()) put("igdb")
+            if (listOf("ssDevId", "ssDevPassword", "ssUser", "ssPassword", "ssSoftname")
+                    .any { !fields[it].isNullOrBlank() }) put("screenScraper")
         }
         return Response.json(JSONObject()
             .put("schemaVersion", SchemaVersion.CURRENT)

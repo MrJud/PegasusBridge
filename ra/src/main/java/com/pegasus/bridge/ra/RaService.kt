@@ -178,19 +178,31 @@ class RaService : Service() {
         val sgdb   = intent.getStringExtra(EXTRA_SGDB_KEY)
         val igdbId = intent.getStringExtra(EXTRA_IGDB_CLIENT_ID)
         val igdbSc = intent.getStringExtra(EXTRA_IGDB_CLIENT_SECRET)
+        val ssDev  = intent.getStringExtra(EXTRA_SS_DEV_ID)
+        val ssDevP = intent.getStringExtra(EXTRA_SS_DEV_PASSWORD)
+        val ssUser = intent.getStringExtra(EXTRA_SS_USER)
+        val ssPass = intent.getStringExtra(EXTRA_SS_PASSWORD)
+        val ssSoft = intent.getStringExtra(EXTRA_SS_SOFTNAME)
 
         Config.writeCredentials(
             raUser           = user,
             raApiKey         = apiKey,
             sgdbKey          = sgdb,
             igdbClientId     = igdbId,
-            igdbClientSecret = igdbSc
+            igdbClientSecret = igdbSc,
+            ssDevId          = ssDev,
+            ssDevPassword    = ssDevP,
+            ssUser           = ssUser,
+            ssPassword       = ssPass,
+            ssSoftname       = ssSoft
         )
 
         val touched = listOfNotNull(
             if (!user.isNullOrEmpty() || !apiKey.isNullOrEmpty()) "ra" else null,
             if (!sgdb.isNullOrEmpty()) "steamGridDb" else null,
-            if (!igdbId.isNullOrEmpty() || !igdbSc.isNullOrEmpty()) "igdb" else null
+            if (!igdbId.isNullOrEmpty() || !igdbSc.isNullOrEmpty()) "igdb" else null,
+            if (listOf(ssDev, ssDevP, ssUser, ssPass, ssSoft).any { !it.isNullOrEmpty() })
+                "screenScraper" else null
         )
         Log.d(TAG, "SetCredentials job done, blocks updated: $touched")
     }
@@ -291,6 +303,11 @@ class RaService : Service() {
         const val EXTRA_SGDB_KEY           = "sgdbKey"
         const val EXTRA_IGDB_CLIENT_ID     = "igdbClientId"
         const val EXTRA_IGDB_CLIENT_SECRET = "igdbClientSecret"
+        const val EXTRA_SS_DEV_ID       = "ssDevId"
+        const val EXTRA_SS_DEV_PASSWORD = "ssDevPassword"
+        const val EXTRA_SS_USER         = "ssUser"
+        const val EXTRA_SS_PASSWORD     = "ssPassword"
+        const val EXTRA_SS_SOFTNAME     = "ssSoftname"
         const val EXTRA_GAME_ID    = "gameId"
         const val EXTRA_CONSOLE_ID = "consoleId"
         const val EXTRA_TERM       = "term"

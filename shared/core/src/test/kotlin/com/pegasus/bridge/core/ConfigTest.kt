@@ -141,6 +141,60 @@ class ConfigTest {
         assertEquals("SGKEY", config.load().steamGridDb?.apiKey)
     }
 
+    // ── ScreenScraper ───────────────────────────────────────
+    // Two pairs that mean different things, and a softname the API checks. Each of
+    // those is a way to look configured and be refused, so each is asserted.
+
+    @Test fun `the developer pair alone is configured, on the anonymous quota`() {
+        config.writeCredentials(ssDevId = "DEV", ssDevPassword = "DEVPW")
+        val ss = config.status().getJSONObject("screenScraper")
+        assertTrue(ss.getBoolean("configured"), "the API answers with the developer pair")
+        assertFalse(ss.getBoolean("hasUser"), "but the quota is still the anonymous one")
+        assertEquals("", ss.getString("user"))
+    }
+
+    @Test fun `a member login is reported separately from the developer pair`() {
+        config.writeCredentials(ssDevId = "DEV", ssDevPassword = "DEVPW",
+                                ssUser = "MrJud", ssPassword = "USERPW")
+        val ss = config.status().getJSONObject("screenScraper")
+        assertTrue(ss.getBoolean("configured"))
+        assertTrue(ss.getBoolean("hasUser"))
+        assertEquals("MrJud", ss.getString("user"))
+    }
+
+    @Test fun `a member login without the developer pair is not configured`() {
+        // The reverse of the case above, and the one that would otherwise read as
+        // working: the API refuses every request that carries no devid.
+        config.writeCredentials(ssUser = "MrJud", ssPassword = "USERPW")
+        val ss = config.status().getJSONObject("screenScraper")
+        assertFalse(ss.getBoolean("configured"))
+        assertTrue(ss.getBoolean("hasUser"))
+    }
+
+    @Test fun `softname defaults to the registered name and can be overridden`() {
+        config.writeCredentials(ssDevId = "DEV", ssDevPassword = "DEVPW")
+        assertEquals(ScreenScraperCreds.DEFAULT_SOFTNAME, config.load().screenScraper?.softname,
+                     "a file with no softname must still send the registered one")
+        config.writeCredentials(ssSoftname = "SomethingElse")
+        assertEquals("SomethingElse", config.load().screenScraper?.softname)
+    }
+
+    @Test fun `one ScreenScraper field at a time leaves the others alone`() {
+        config.writeCredentials(ssDevId = "DEV", ssDevPassword = "DEVPW")
+        config.writeCredentials(ssUser = "MrJud")
+        val c = config.load().screenScraper
+        assertEquals("DEV", c?.devId)
+        assertEquals("DEVPW", c?.devPassword)
+        assertEquals("MrJud", c?.ssid)
+    }
+
+    @Test fun `the ScreenScraper block can be forgotten`() {
+        config.writeCredentials(ssDevId = "DEV", ssDevPassword = "DEVPW", sgdbKey = "SGKEY")
+        assertTrue(config.clearBlock("screenScraper"), "it has to be a known block")
+        assertNull(config.load().screenScraper)
+        assertEquals("SGKEY", config.load().steamGridDb?.apiKey, "unrelated blocks survive")
+    }
+
     @Test fun `written file carries a schema version`() {
         config.writeCredentials(sgdbKey = "SGKEY")
         val j = JSONObject(paths.credentials.readText())

@@ -13,11 +13,43 @@ data class IgdbCreds(
 )
 data class RawgCreds(val apiKey: String)
 
+/**
+ * ScreenScraper wants two pairs and they are not interchangeable.
+ *
+ * [devId] and [devPassword] identify the *application* and are what the API
+ * refuses without. [ssid] and [ssPassword] are a member login, optional, and
+ * what lifts the request quota off the anonymous floor — they may well name the
+ * same account that owns the devid, but the API takes them as separate
+ * parameters and so does this.
+ *
+ * [softname] is the name registered with the devid. ScreenScraper checks it and
+ * refuses a mismatch, so it is not decoration and not the user's to invent — it
+ * has a default and is stored only if it ever has to differ.
+ *
+ * **Kept byte-identical to the daemon's copy in shared/core.** The two Config.kt
+ * are separate files, not one shared source — only FuzzyMatch.kt lives in
+ * android-shared — so a change here that is not mirrored there gives the two
+ * platforms different credential stores, silently.
+ */
+data class ScreenScraperCreds(
+    val devId: String,
+    val devPassword: String,
+    val ssid: String = "",
+    val ssPassword: String = "",
+    val softname: String = DEFAULT_SOFTNAME
+) {
+    companion object {
+        /** Registered with the devid on 2026-08-07. Not a secret; it travels in every URL. */
+        const val DEFAULT_SOFTNAME = "PegasusBridge"
+    }
+}
+
 data class Credentials(
     val ra: RaCreds? = null,
     val steamGridDb: SgdbCreds? = null,
     val igdb: IgdbCreds? = null,
-    val rawg: RawgCreds? = null
+    val rawg: RawgCreds? = null,
+    val screenScraper: ScreenScraperCreds? = null
 )
 
 object Config {
@@ -47,7 +79,12 @@ object Config {
         raApiKey: String? = null,
         sgdbKey: String? = null,
         igdbClientId: String? = null,
-        igdbClientSecret: String? = null
+        igdbClientSecret: String? = null,
+        ssDevId: String? = null,
+        ssDevPassword: String? = null,
+        ssUser: String? = null,
+        ssPassword: String? = null,
+        ssSoftname: String? = null
     ) {
         val current = Paths.CREDENTIALS
         val json = if (current.exists()) {
@@ -78,6 +115,18 @@ object Config {
             igdb.remove("cachedToken")
             igdb.remove("cachedTokenExp")
             json.put("igdb", igdb)
+        }
+
+        if (!ssDevId.isNullOrEmpty() || !ssDevPassword.isNullOrEmpty()
+            || !ssUser.isNullOrEmpty() || !ssPassword.isNullOrEmpty()
+            || !ssSoftname.isNullOrEmpty()) {
+            val ss = json.optJSONObject("screenScraper") ?: JSONObject()
+            ssDevId?.takeIf       { it.isNotEmpty() }?.let { ss.put("devId", it) }
+            ssDevPassword?.takeIf { it.isNotEmpty() }?.let { ss.put("devPassword", it) }
+            ssUser?.takeIf        { it.isNotEmpty() }?.let { ss.put("ssid", it) }
+            ssPassword?.takeIf    { it.isNotEmpty() }?.let { ss.put("ssPassword", it) }
+            ssSoftname?.takeIf    { it.isNotEmpty() }?.let { ss.put("softname", it) }
+            json.put("screenScraper", ss)
         }
 
         json.put("updatedAt", System.currentTimeMillis() / 1000L)
@@ -114,9 +163,19 @@ object Config {
             .put("igdb", JSONObject()
                 .put("configured", c.igdb?.clientId?.isNotEmpty() == true
                                 && c.igdb.clientSecret.isNotEmpty()))
+            // Two flags, because the two pairs mean different things: without the
+            // developer pair the API answers nothing at all, while the member login
+            // only lifts the quota. Reporting one flag would make a working setup on
+            // the anonymous floor look identical to a broken one.
+            .put("screenScraper", JSONObject()
+                .put("configured", c.screenScraper?.devId?.isNotEmpty() == true
+                                && c.screenScraper.devPassword.isNotEmpty())
+                .put("hasUser", c.screenScraper?.ssid?.isNotEmpty() == true
+                             && c.screenScraper.ssPassword.isNotEmpty())
+                .put("user", c.screenScraper?.ssid.orEmpty()))
     }
 
-    private val KNOWN_BLOCKS = setOf("ra", "steamGridDb", "igdb")
+    private val KNOWN_BLOCKS = setOf("ra", "steamGridDb", "igdb", "screenScraper")
 
     // Atomic write: write temp file then rename to avoid torn reads during overlap phase
     fun saveToken(source: String, token: String, expiresAt: Long) {
@@ -159,6 +218,18 @@ object Config {
                 rawg = j.optJSONObject("rawg")?.let {
                     val key = it.optString("apiKey")
                     if (key.isNotEmpty()) RawgCreds(key) else null
+                },
+                screenScraper = j.optJSONObject("screenScraper")?.let {
+                    ScreenScraperCreds(
+                        devId       = it.optString("devId"),
+                        devPassword = it.optString("devPassword"),
+                        ssid        = it.optString("ssid"),
+                        ssPassword  = it.optString("ssPassword"),
+                        // An older file has no softname, and the registered one is
+                        // the right answer for every caller that does not override it.
+                        softname    = it.optString("softname")
+                                        .ifBlank { ScreenScraperCreds.DEFAULT_SOFTNAME }
+                    )
                 }
             )
         } catch (e: Exception) {

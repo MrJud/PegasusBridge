@@ -149,7 +149,13 @@ class DataLayerRouter : Activity() {
                 val sgdb   = uri.getQueryParameter("sgdbKey")
                 val igdbId = uri.getQueryParameter("igdbClientId")
                 val igdbSc = uri.getQueryParameter("igdbClientSecret")
-                if (listOfNotNull(user, apiKey, sgdb, igdbId, igdbSc).all { it.isEmpty() })
+                val ssDev  = uri.getQueryParameter("ssDevId")
+                val ssDevP = uri.getQueryParameter("ssDevPassword")
+                val ssUser = uri.getQueryParameter("ssUser")
+                val ssPass = uri.getQueryParameter("ssPassword")
+                val ssSoft = uri.getQueryParameter("ssSoftname")
+                if (listOfNotNull(user, apiKey, sgdb, igdbId, igdbSc,
+                                  ssDev, ssDevP, ssUser, ssPass, ssSoft).all { it.isEmpty() })
                     return stub(jobId, verb)
 
                 startForegroundService(Intent(this, RaService::class.java).apply {
@@ -159,6 +165,11 @@ class DataLayerRouter : Activity() {
                     sgdb?.let   { putExtra(RaService.EXTRA_SGDB_KEY, it) }
                     igdbId?.let { putExtra(RaService.EXTRA_IGDB_CLIENT_ID, it) }
                     igdbSc?.let { putExtra(RaService.EXTRA_IGDB_CLIENT_SECRET, it) }
+                    ssDev?.let  { putExtra(RaService.EXTRA_SS_DEV_ID, it) }
+                    ssDevP?.let { putExtra(RaService.EXTRA_SS_DEV_PASSWORD, it) }
+                    ssUser?.let { putExtra(RaService.EXTRA_SS_USER, it) }
+                    ssPass?.let { putExtra(RaService.EXTRA_SS_PASSWORD, it) }
+                    ssSoft?.let { putExtra(RaService.EXTRA_SS_SOFTNAME, it) }
                     putExtra(RaService.EXTRA_JOB_ID, jobId)
                 })
             }

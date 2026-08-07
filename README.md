@@ -49,7 +49,7 @@ tar xzf pegasus-bridge-<version>-linux-x86_64.tar.gz
 sha256sum -c pegasus-bridge-<version>-linux-x86_64.tar.gz.sha256
 
 cd pegasus-bridge-<version>-linux-x86_64
-./install.sh --theme ~/.config/pegasus-frontend/themes/ReStory
+./install.sh
 ```
 
 Everything lands under `$HOME`; nothing needs root. The archive carries its own
@@ -57,14 +57,34 @@ Java runtime, so **no JDK or JRE is required**.
 
 - `~/.local/share/pegasus-bridge/app` — the daemon
 - `~/.local/share/pegasus-bridge/` — its data (caches, credentials, scan index)
-- `<theme>/bridge.json` — how the theme finds the data root
+- `~/.config/pegasus-frontend/bridge.json` — how a theme finds the data root
+
+### How themes find it
+
+A theme is QML: it cannot expand `~` or read an environment variable, so the
+absolute data root has to be written somewhere it can reach by relative path.
+The installer does that for you, and there is nothing to configure.
+
+It writes `bridge.json` into your Pegasus configuration directory, where every
+theme can see it, and a copy into each installed theme whose own sources ask for
+one. A theme directory that is a symlink to a working copy is left untouched —
+the shared file covers it without the installer writing inside your repository.
+
+Installed a theme afterwards? Point it at the Bridge without reinstalling:
+
+```bash
+~/.local/share/pegasus-bridge/app/install.sh --link-only
+```
+
+`--theme DIR` points one theme explicitly, repeat it for several, and
+`--no-themes` skips this step entirely.
 
 ### Always on, or on demand?
 
 By default the daemon starts at login and stays up, holding about 200 MB.
 
 ```bash
-./install.sh --theme <theme> --on-demand
+./install.sh --on-demand
 ```
 
 installs it socket-activated instead: systemd holds the port, the daemon starts
@@ -78,11 +98,12 @@ the flag.
 ### Uninstall
 
 ```bash
-./install.sh --uninstall --theme <theme>
+./install.sh --uninstall
 ```
 
 Your data under `~/.local/share/pegasus-bridge` is left alone; delete it by hand
-if you want it gone.
+if you want it gone. Pointer files are removed too, but only the ones naming
+this data root — a second install, or a file you wrote yourself, survives.
 
 ---
 
@@ -205,6 +226,28 @@ Desktop: HTTP on loopback. The daemon writes its port to
 Android: `pegasus-data://<verb>?…` intents, with results written as JSON under
 `<dataRoot>`.
 
+### Finding `<dataRoot>` from a theme
+
+On Android it is always `/sdcard/PegasusData`. On desktop it is wherever the
+user installed the Bridge, and QML cannot expand `~` or read the environment, so
+the installer writes it into a `bridge.json` your theme reaches by relative path:
+
+```js
+// from <theme>/components/data/, i.e. two directories below the theme root
+var POINTERS = ["../../bridge.json",        // this theme's own copy
+                "../../../../bridge.json"]; // shared by every theme
+```
+
+Try them in order and take the first with a `dataRoot`. **Read both.** The first
+is absent whenever the theme directory is a symlink to a working copy, which the
+installer will not write into; the second is absent on an install that predates
+it. `Qt.resolvedUrl` works inside a `.pragma library` and resolves against the
+file it is written in — mind the depth of *that* file, not of the caller.
+
+Point the installer at a theme it did not detect with
+`install.sh --link-only --theme <dir>`; a theme is detected by naming
+`bridge.json` in its own `.qml` or `.js` sources.
+
 | what you want | desktop | Android |
 | --- | --- | --- |
 | is it alive, which credentials are set | `GET /health` | — |
@@ -268,6 +311,20 @@ journalctl --user -u pegasus-bridge -f
 ```
 
 `<dataRoot>/daemon.json` must exist and its port must answer `/health`.
+
+**The daemon is healthy and the theme still shows nothing.** Then the theme
+never found the data root, and it has no way to tell you so: every request is
+dropped before it is sent, with no error anywhere. Check that a pointer exists —
+
+```bash
+cat ~/.config/pegasus-frontend/bridge.json
+```
+
+— and if it does not, or names the wrong path, write it again:
+
+```bash
+~/.local/share/pegasus-bridge/app/install.sh --link-only
+```
 
 **Scanning does nothing.** The native hasher failed to load; `/health` says so.
 Scraping and RetroAchievements still work without it.

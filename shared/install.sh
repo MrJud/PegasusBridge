@@ -1,13 +1,38 @@
 #!/usr/bin/env bash
-# Installs the PegasusBridge daemon for the current user and points a theme at it.
+# Installs the PegasusBridge daemon for the current user and points every theme
+# that can use it at the data root.
 #
-#   ./install.sh --theme /path/to/themes/ReStory [--prefix ~/.local/share/pegasus-bridge]
-#                [--no-service] [--on-demand [--idle-time 60s] [--port 38700]]
+#   ./install.sh [--prefix ~/.local/share/pegasus-bridge] [--no-service]
+#                [--on-demand [--idle-time 60s] [--port 38700]]
+#                [--theme DIR]... [--pegasus-config DIR]... [--no-themes]
+#                [--link-only] [--uninstall]
 #
 # What it does, all under $HOME and reversible with --uninstall:
 #   * copies the self-contained bundle to <prefix>/app
-#   * writes <theme>/bridge.json so the theme can find the data root
+#   * writes the pointer files themes need to find the data root (see below)
 #   * installs systemd --user units
+#
+# Pointing themes at the Bridge
+# -----------------------------
+# A theme is QML: it cannot expand ~ nor read the environment, so the absolute
+# data root has to be written where the theme can reach it by relative path.
+# That file is `bridge.json`, and it is written in two places, both of which a
+# theme is expected to try:
+#
+#   <pegasus config>/bridge.json  one pointer shared by every theme, always
+#                                 written — this is what makes a plain
+#                                 `./install.sh` work, and what covers themes
+#                                 installed as a symlink to a working copy
+#   <theme>/bridge.json           a copy inside each theme that asks for it
+#
+# Themes are found by scanning the themes/ directory of every Pegasus config
+# directory that exists, and a theme is written to only when its own sources
+# name `bridge.json` — a theme that cannot use the Bridge gets no file. Pass
+# --theme DIR (repeatable) to point one explicitly; an explicit theme is always
+# written to, symlink or not. --no-themes skips all of it.
+#
+# --link-only rewrites just those pointers: use it after installing a new theme,
+# or to re-point one, without touching the daemon.
 #
 # Two service modes:
 #   default      the daemon starts at login and stays up (~200 MB resident)
@@ -18,7 +43,10 @@
 set -euo pipefail
 
 prefix="$HOME/.local/share/pegasus-bridge"
-theme=""
+themes=()
+extra_configs=()
+write_pointers=1
+link_only=0
 install_service=1
 uninstall=0
 on_demand=0
@@ -29,14 +57,17 @@ here="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        --theme)      theme="$2"; shift 2 ;;
-        --prefix)     prefix="$2"; shift 2 ;;
-        --no-service) install_service=0; shift ;;
-        --on-demand)  on_demand=1; shift ;;
-        --idle-time)  idle_time="$2"; shift 2 ;;
-        --port)       public_port="$2"; shift 2 ;;
-        --uninstall)  uninstall=1; shift ;;
-        -h|--help)    sed -n '2,20p' "$0"; exit 0 ;;
+        --theme)          themes+=("${2%/}"); shift 2 ;;
+        --pegasus-config) extra_configs+=("${2%/}"); shift 2 ;;
+        --no-themes)      write_pointers=0; shift ;;
+        --link-only)      link_only=1; shift ;;
+        --prefix)         prefix="${2%/}"; shift 2 ;;
+        --no-service)     install_service=0; shift ;;
+        --on-demand)      on_demand=1; shift ;;
+        --idle-time)      idle_time="$2"; shift 2 ;;
+        --port)           public_port="$2"; shift 2 ;;
+        --uninstall)      uninstall=1; shift ;;
+        -h|--help)        sed -n '2,42p' "$0"; exit 0 ;;
         *) echo "unknown option: $1" >&2; exit 1 ;;
     esac
 done
@@ -66,6 +97,120 @@ pick_port() {
     echo "$p"
 }
 
+# ── Pointing themes at the data root ───────────────────────────────────────
+
+# Every place Pegasus is known to keep its configuration on Linux, one per line.
+# A running Pegasus cannot be asked which one it uses, so each that exists gets
+# a pointer: they cost nothing, and one naming a data root that no longer exists
+# reads as "no Bridge here", which is the truth.
+config_dirs() {
+    local d real seen=""
+    for d in ${extra_configs[@]+"${extra_configs[@]}"} \
+             "${XDG_CONFIG_HOME:-$HOME/.config}/pegasus-frontend" \
+             "$HOME/.config/pegasus-frontend" \
+             "$HOME/.var/app/org.pegasus_frontend.Pegasus/config/pegasus-frontend"; do
+        [[ -d "$d" ]] || continue
+        real="$(readlink -f "$d")"
+        [[ "$seen" == *"|$real|"* ]] && continue
+        seen="$seen|$real|"
+        printf '%s\n' "$d"
+    done
+}
+
+# A theme opts in by naming the pointer in its own sources — ReStory does it in
+# components/data/BridgeApi.js. A theme that never reads the file gets none: an
+# installer has no business leaving litter in a theme it cannot help.
+theme_uses_bridge() {
+    grep -rqI --exclude-dir=.git --include='*.qml' --include='*.js' \
+        -e 'bridge\.json' "$1" 2>/dev/null
+}
+
+write_pointer() {
+    mkdir -p "$1"
+    cat > "$1/bridge.json" <<EOF
+{
+  "schemaVersion": 1,
+  "dataRoot": "$prefix",
+  "app": "$prefix/app/pegasus-bridge"
+}
+EOF
+}
+
+# Only ever removes a pointer that names *this* data root. A second install with
+# a different --prefix, or a file someone wrote by hand, is left alone.
+remove_pointer() {
+    local f="$1/bridge.json"
+    [[ -f "$f" ]] || return 0
+    grep -q "\"dataRoot\"[[:space:]]*:[[:space:]]*\"$prefix\"" "$f" || return 0
+    rm -f "$f"
+    echo "    removed $f"
+}
+
+# Runs $1 ("write" or "remove") over the shared pointers and every theme that
+# uses the Bridge.
+walk_pointers() {
+    local mode="$1" cfg theme name
+    while IFS= read -r cfg; do
+        [[ -n "$cfg" ]] || continue
+        if [[ "$mode" == write ]]; then
+            write_pointer "$cfg"
+            echo "==> shared pointer: $cfg/bridge.json"
+        else
+            remove_pointer "$cfg"
+        fi
+        [[ -d "$cfg/themes" ]] || continue
+        for theme in "$cfg"/themes/*/; do
+            theme="${theme%/}"
+            [[ -d "$theme" ]] || continue
+            theme_uses_bridge "$theme" || continue
+            name="$(basename "$theme")"
+            if [[ "$mode" != write ]]; then
+                remove_pointer "$theme"
+                continue
+            fi
+            # A theme directory is often a symlink to a working copy, and
+            # writing through it lands inside that repository — so it gets the
+            # shared pointer only. --theme overrides this for a theme that
+            # cannot read the shared one.
+            if [[ -L "$theme" ]]; then
+                echo "    $name: symlink -> $(readlink -f "$theme")"
+                echo "         left untouched; it reads the shared pointer above."
+                echo "         If it only looks in its own directory, re-run with:"
+                echo "           $0 --link-only --theme \"$theme\""
+                continue
+            fi
+            write_pointer "$theme"
+            echo "    $name: pointed at $prefix"
+        done
+    done < <(config_dirs)
+
+    for theme in ${themes[@]+"${themes[@]}"}; do
+        if [[ "$mode" != write ]]; then
+            remove_pointer "$theme"
+            continue
+        fi
+        [[ -d "$theme" ]] || { echo "theme directory not found: $theme" >&2; exit 1; }
+        write_pointer "$theme"
+        echo "==> pointed $(basename "$theme") at $prefix"
+    done
+}
+
+link_themes() {
+    [[ $write_pointers -eq 1 ]] || return 0
+    # The Bridge can be installed before Pegasus has ever run, in which case
+    # there is no config directory yet. Create the standard one so the pointer
+    # is already waiting: Pegasus would create the same directory itself.
+    [[ -n "$(config_dirs)" ]] || mkdir -p "${XDG_CONFIG_HOME:-$HOME/.config}/pegasus-frontend"
+    walk_pointers write
+}
+
+if [[ $link_only -eq 1 && $uninstall -eq 0 ]]; then
+    link_themes
+    echo
+    echo "data root: $prefix"
+    exit 0
+fi
+
 if [[ $uninstall -eq 1 ]]; then
     echo "==> removing"
     systemctl --user disable --now pegasus-bridge-proxy.socket 2>/dev/null || true
@@ -75,7 +220,9 @@ if [[ $uninstall -eq 1 ]]; then
     rm -f "$prefix/daemon.json"
     systemctl --user daemon-reload 2>/dev/null || true
     rm -rf "$prefix/app"
-    [[ -n "$theme" ]] && rm -f "$theme/bridge.json"
+    # `if`, not `&&`: under `set -e` a false test here would end the script with
+    # a failure status and no closing message.
+    if [[ $write_pointers -eq 1 ]]; then walk_pointers remove; fi
     echo "done. Data under $prefix was left alone; delete it by hand if you want it gone."
     exit 0
 fi
@@ -94,19 +241,10 @@ mkdir -p "$prefix/app"
 cp -r "$here/." "$prefix/app/"
 chmod +x "$prefix/app/pegasus-bridge"
 
-# The theme cannot expand ~ or read environment variables, so the absolute data
-# root is written where it can find it: next to its own theme.qml. BridgeApi.js
-# reads this, then reads daemon.json from the data root for the live port.
-if [[ -n "$theme" ]]; then
-    [[ -d "$theme" ]] || { echo "theme directory not found: $theme" >&2; exit 1; }
-    cat > "$theme/bridge.json" <<EOF
-{
-  "dataRoot": "$prefix",
-  "app": "$prefix/app/pegasus-bridge"
-}
-EOF
-    echo "==> pointed $(basename "$theme") at $prefix"
-fi
+# A theme cannot expand ~ or read environment variables, so the absolute data
+# root is written where QML can reach it by relative path. A theme reads this,
+# then reads daemon.json from the data root for the live port.
+link_themes
 
 if [[ $install_service -eq 1 ]] && command -v systemctl >/dev/null 2>&1; then
     mkdir -p "$unit_dir"
@@ -262,6 +400,8 @@ fi
 
 echo
 echo "installed."
-[[ -n "$theme" ]] && echo "theme pointer: $theme/bridge.json"
 echo "data root:     $prefix"
 echo "endpoint file: $prefix/daemon.json  (written once the daemon is up)"
+echo
+echo "Installed a theme since? Point it at the Bridge without reinstalling:"
+echo "    $prefix/app/install.sh --link-only"

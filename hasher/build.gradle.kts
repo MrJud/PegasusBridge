@@ -4,6 +4,7 @@ plugins {
 }
 
 android {
+    sourceSets["main"].java.srcDir("../shared/hasher/src/android-shared/kotlin")
     namespace  = "com.pegasus.bridge.hasher"
     compileSdk = 35
     defaultConfig {

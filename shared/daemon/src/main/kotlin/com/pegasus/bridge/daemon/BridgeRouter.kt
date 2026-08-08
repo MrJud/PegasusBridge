@@ -41,7 +41,7 @@ class BridgeRouter(
     private val jobs: JobRegistry,
     /** Supplied lazily so a scan is only wired up where a hasher exists. */
     private val scanPipeline: (() -> RomScanPipeline)? = null,
-    private val scrapers: ScrapeSourceDispatcher = ScrapeSourceDispatcher(config),
+    private val scrapers: ScrapeSourceDispatcher = ScrapeSourceDispatcher(config, paths),
     private val raSync: RaSync = RaSync(paths, config)
 ) {
 
@@ -102,6 +102,26 @@ class BridgeRouter(
         } catch (e: IllegalStateException) {
             // Missing credentials: the caller can act on this, so say so plainly.
             Response.badRequest(e.message ?: "missing credentials")
+        } catch (e: ScreenScraperClient.ScreenScraperException) {
+            // The one source that distinguishes "no such ROM" from "not answering", and
+            // the distinction has to survive the wire or the theme cannot act on it:
+            // a miss may be remembered and skipped next run, a refusal must be asked
+            // again. Collapsing both into an HTTP error — which is what the generic
+            // branch below does — is how a throttled scan gets recorded as a library
+            // full of unknown games.
+            Response.json(JSONObject()
+                .put("schemaVersion", SchemaVersion.CURRENT)
+                .put("source", source)
+                .put("op", op)
+                .put("status", if (e.refusal.isAnswer) "no_results" else "error")
+                .put("error", e.message ?: "ScreenScraper declined")
+                .put("refusal", e.refusal.name.lowercase())
+                // The signal to stop the whole run rather than spend the rest of a
+                // library discovering the same thing 900 more times.
+                .put("fatal", e.refusal.isFatalToARun)
+                .put("fetchedAt", BridgePaths.epochSeconds())
+                .put("results", JSONArray())
+                .toString())
         } catch (e: Exception) {
             BridgeLog.e(TAG, "scrape $source/$op failed", e)
             Response.serverError(e.message ?: e.javaClass.simpleName)

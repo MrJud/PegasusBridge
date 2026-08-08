@@ -11,3 +11,8 @@ dependencies {
 
     testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.8.1")
 }
+
+// src/android-shared holds the files the Android shell compiles too. Keeping them in
+// their own source root is what lets both shells use the one copy instead of a clone
+// that drifts — which is exactly what happened to Config.kt.
+sourceSets["main"].kotlin.srcDir("src/android-shared/kotlin")

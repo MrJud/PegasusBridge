@@ -23,6 +23,17 @@ class BridgePaths(val root: File) {
     val done       = File(root, "done")
     val profile    = File(root, "profile")
     val completion = File(root, "completion")
+    /** Answers worth keeping but safe to lose — nothing here is user data. */
+    val cache      = File(root, "cache")
+    /**
+     * Pictures the Bridge fetched on the theme's behalf.
+     *
+     * Separate from [media], which holds *descriptions* of media as JSON. These are the
+     * bytes, and they exist because some sources authenticate their media URLs: a
+     * ScreenScraper picture URL carries the developer password in its query string, so
+     * the URL can never cross into the theme and a file path goes instead.
+     */
+    val artwork    = File(root, "artwork")
 
     val credentials = File(config, "credentials.json")
 
@@ -36,13 +47,15 @@ class BridgePaths(val root: File) {
     fun done(jobId: String)        = File(done,       "$jobId.done")
     fun profile(user: String)      = File(profile,    "$user.json")
     fun completion(user: String)   = File(completion, "$user.json")
+    fun cache(name: String)        = File(cache,      name)
+    fun artwork(name: String)      = File(artwork,    name)
 
     /** The discovery index the hasher builds: games[] plus a byKey{} reverse map. */
     val discoveryIndex = File(metadata, "_index.json")
 
     fun ensureAll() {
         listOf(config, metadata, media, search, searchRa, scrape, download,
-               pending, done, profile, completion).forEach { it.mkdirs() }
+               pending, done, profile, completion, cache, artwork).forEach { it.mkdirs() }
     }
 
     /**

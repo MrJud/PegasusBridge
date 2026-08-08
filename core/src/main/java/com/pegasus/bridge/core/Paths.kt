@@ -16,6 +16,17 @@ object Paths {
     val DONE          = File(ROOT, "done")
     val PROFILE       = File(ROOT, "profile")
     val COMPLETION    = File(ROOT, "completion")
+    /** Answers worth keeping but safe to lose — nothing here is user data. */
+    val CACHE         = File(ROOT, "cache")
+    /**
+     * Pictures the Bridge fetched on the theme's behalf.
+     *
+     * Separate from [MEDIA], which holds *descriptions* of media as JSON. These are the
+     * bytes, and they exist because some sources authenticate their media URLs: a
+     * ScreenScraper picture URL carries the developer password in its query string, so
+     * the URL can never cross into the theme and a file path goes instead.
+     */
+    val ARTWORK       = File(ROOT, "artwork")
 
     /** What the ROM scan found, keyed by title+platform. Same name as the daemon's. */
     val discoveryIndex = File(METADATA, "_index.json")
@@ -43,10 +54,12 @@ object Paths {
     fun markDone(jobId: String) = done(jobId).writeText("done")
 
     fun profile(user: String)     = File(PROFILE,    "$user.json")
+    fun cache(name: String)       = File(CACHE,      name)
+    fun artwork(name: String)     = File(ARTWORK,    name)
     fun completion(user: String)  = File(COMPLETION, "$user.json")
 
     fun ensureAll() {
         listOf(CONFIG, METADATA, MEDIA, SEARCH, SEARCH_RA, SCRAPE, DOWNLOAD,
-               PENDING, DONE, PROFILE, COMPLETION).forEach { it.mkdirs() }
+               PENDING, DONE, PROFILE, COMPLETION, CACHE, ARTWORK).forEach { it.mkdirs() }
     }
 }

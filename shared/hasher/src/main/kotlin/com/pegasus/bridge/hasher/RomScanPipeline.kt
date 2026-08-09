@@ -69,7 +69,13 @@ class RomScanPipeline(
         val fileQueue    = Channel<File>(capacity = 64)
         val hashQueue    = Channel<HashJob>(capacity = 32)
         val resultQueue  = Channel<ResultJob>(capacity = 128)
-        val hashDedup    = mutableMapOf<String, GameMetadata?>()
+        // hash -> the one lookup for it, in flight or finished.
+        //
+        // Holding the promise rather than the result is what makes the de-duplication
+        // real. The map used to hold results: a worker read it, released the lock and
+        // then called the network, so a second worker could read the same absent hash
+        // in that gap and call as well. The lock covered the map, never the decision.
+        val hashDedup    = mutableMapOf<String, CompletableDeferred<GameMetadata?>>()
 
         val feeder = launch(Dispatchers.IO) {
             for (f in files) fileQueue.send(f)
@@ -89,15 +95,34 @@ class RomScanPipeline(
             launch(Dispatchers.IO) {
                 for (job in hashQueue) {
                     // One network call per distinct hash, however many files share it.
-                    val known = synchronized(hashDedup) { hashDedup[job.hash.hash] }
-                    if (known != null) { resultQueue.send(ResultJob(job, known)); continue }
+                    // Claiming the hash and registering the promise happen under the
+                    // same lock, so exactly one worker owns the call and the others
+                    // await it instead of racing it.
+                    val hash = job.hash.hash
+                    var mine: CompletableDeferred<GameMetadata?>? = null
+                    val pending = synchronized(hashDedup) {
+                        hashDedup[hash] ?: CompletableDeferred<GameMetadata?>().also {
+                            mine = it
+                            hashDedup[hash] = it
+                        }
+                    }
 
-                    val meta = lookup.lookup(job.hash.hash)
-                    if (meta != null) {
+                    val meta: GameMetadata?
+                    val owned = mine
+                    if (owned != null) {
+                        meta = lookup.lookup(hash)
                         // Only a real answer is worth remembering. A failure is
                         // left uncached and unrecorded so the next scan asks
                         // again — recording it would write the game off for good.
-                        synchronized(hashDedup) { hashDedup[job.hash.hash] = meta }
+                        if (meta == null) synchronized(hashDedup) { hashDedup.remove(hash) }
+                        owned.complete(meta)
+                    } else {
+                        // Someone else is already asking. Note that a file arriving
+                        // while a failing lookup is still in flight now shares that
+                        // failure instead of repeating the call; one that arrives
+                        // after it has finished finds the entry gone and retries, as
+                        // before.
+                        meta = pending.await()
                     }
                     resultQueue.send(ResultJob(job, meta, failed = meta == null))
                 }

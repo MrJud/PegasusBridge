@@ -18,23 +18,53 @@ import kotlin.test.assertTrue
 
 class DaemonPathsTest {
 
+    // `os` is passed explicitly throughout: these ran on Linux only, so the Windows
+    // branch had no coverage and the POSIX ones quietly changed meaning when the host
+    // did. Naming the platform makes every case reachable from either machine.
+    private val POSIX = "Linux"
+    private val WIN   = "Windows 11"
+
     @Test fun `data root follows XDG_DATA_HOME when it is set`() {
         val root = DaemonPaths.defaultDataRoot(
-            env = mapOf("XDG_DATA_HOME" to "/custom/share"), home = "/home/u")
+            env = mapOf("XDG_DATA_HOME" to "/custom/share"), home = "/home/u", os = POSIX)
         assertEquals(File("/custom/share/pegasus-bridge"), root)
     }
 
     @Test fun `data root falls back to the standard share directory`() {
-        val root = DaemonPaths.defaultDataRoot(env = emptyMap(), home = "/home/u")
+        val root = DaemonPaths.defaultDataRoot(env = emptyMap(), home = "/home/u", os = POSIX)
         assertEquals(File("/home/u/.local/share/pegasus-bridge"), root)
     }
 
     // A relative XDG_DATA_HOME is invalid per the spec and must not be honoured.
     @Test fun `a blank or relative XDG_DATA_HOME is ignored`() {
         assertEquals(File("/home/u/.local/share/pegasus-bridge"),
-            DaemonPaths.defaultDataRoot(mapOf("XDG_DATA_HOME" to ""), "/home/u"))
+            DaemonPaths.defaultDataRoot(mapOf("XDG_DATA_HOME" to ""), "/home/u", POSIX))
         assertEquals(File("/home/u/.local/share/pegasus-bridge"),
-            DaemonPaths.defaultDataRoot(mapOf("XDG_DATA_HOME" to "relative/path"), "/home/u"))
+            DaemonPaths.defaultDataRoot(mapOf("XDG_DATA_HOME" to "relative/path"), "/home/u", POSIX))
+    }
+
+    @Test fun `windows uses LOCALAPPDATA`() {
+        val root = DaemonPaths.defaultDataRoot(
+            env = mapOf("LOCALAPPDATA" to "C:\\Users\\u\\AppData\\Local"),
+            home = "C:\\Users\\u", os = WIN)
+        assertEquals(File("C:\\Users\\u\\AppData\\Local", "pegasus-bridge"), root)
+    }
+
+    // XDG is not a thing on Windows: honouring it there would scatter the data into
+    // a directory nothing else on the machine knows about.
+    @Test fun `windows ignores XDG_DATA_HOME`() {
+        val root = DaemonPaths.defaultDataRoot(
+            env = mapOf("XDG_DATA_HOME" to "/custom/share",
+                        "LOCALAPPDATA" to "C:\\Users\\u\\AppData\\Local"),
+            home = "C:\\Users\\u", os = WIN)
+        assertEquals(File("C:\\Users\\u\\AppData\\Local", "pegasus-bridge"), root)
+    }
+
+    // A user profile always has AppData\Local; deriving it beats refusing to start.
+    @Test fun `windows falls back under the home directory when LOCALAPPDATA is missing`() {
+        val root = DaemonPaths.defaultDataRoot(
+            env = emptyMap(), home = "C:\\Users\\u", os = WIN)
+        assertEquals(File("C:\\Users\\u\\AppData\\Local", "pegasus-bridge"), root)
     }
 
     @Test fun `library name matches the host platform`() {

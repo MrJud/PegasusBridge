@@ -29,3 +29,7 @@ platform-tools.zip
 
 # Scan index copied out of a data root while debugging
 /_index.json
+
+# The packaged daemon: a jlink runtime plus the jars, ~150 MB, rebuilt by
+# package.sh whenever it is needed.
+shared/dist/

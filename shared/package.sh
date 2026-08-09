@@ -8,6 +8,16 @@ set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 out="${1:-$here/dist/pegasus-bridge}"
 
+# Under Git Bash / MSYS2 everything below works unchanged — jlink, jdeps, tar and
+# sha256sum are all there — but two things do have to know the host: the bundle
+# needs a launcher Windows can run, and the archive name has to stop claiming to
+# be a Linux build.
+case "$(uname -s)" in
+    MINGW*|MSYS*|CYGWIN*) host_os="windows" ;;
+    Darwin)               host_os="macos"   ;;
+    *)                    host_os="linux"   ;;
+esac
+
 : "${JAVA_HOME:?set JAVA_HOME to a JDK — jlink and jni.h both live there}"
 for tool in jlink jdeps; do
     [[ -x "$JAVA_HOME/bin/$tool" ]] || { echo "$tool not found in $JAVA_HOME/bin" >&2; exit 1; }
@@ -55,6 +65,23 @@ exec "$here/runtime/bin/java" \
 LAUNCHER
 chmod +x "$out/pegasus-bridge"
 
+if [[ "$host_os" == "windows" ]]; then
+    # The bash launcher above only runs under Git Bash, which a user installing a
+    # release has no reason to have. This one uses java.exe on purpose, console and
+    # all: it is the "run it by hand and watch the log" entry point. The Scheduled
+    # Task that install.ps1 registers does not go through here — it points straight
+    # at runtime\bin\javaw.exe, so nothing flashes a console window at every logon.
+    cat > "$out/pegasus-bridge.cmd" <<'LAUNCHER'
+@echo off
+rem Self-contained launcher: uses the bundled runtime, never a system JRE.
+setlocal
+set "HERE=%~dp0"
+"%HERE%runtime\bin\java.exe" --enable-native-access=ALL-UNNAMED -Djava.library.path="%HERE%lib\native" -cp "%HERE%lib\*" com.pegasus.bridge.daemon.BridgeDaemon %*
+exit /b %ERRORLEVEL%
+LAUNCHER
+    cp "$here/install.ps1" "$out/install.ps1" 2>/dev/null || true
+fi
+
 cp "$here/install.sh" "$out/install.sh" 2>/dev/null || true
 chmod +x "$out/install.sh" 2>/dev/null || true
 
@@ -73,7 +100,7 @@ echo "run with: $out/pegasus-bridge"
 if [[ "${MAKE_TARBALL:-0}" == "1" ]]; then
     version="${BRIDGE_VERSION:-$(git -C "$here/.." describe --tags --always 2>/dev/null || echo dev)}"
     arch="$(uname -m)"
-    name="pegasus-bridge-${version}-linux-${arch}"
+    name="pegasus-bridge-${version}-${host_os}-${arch}"
     parent="$(dirname "$out")"
     staged="$parent/$name"
 

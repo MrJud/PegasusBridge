@@ -12,10 +12,32 @@ import java.io.File
  */
 object DaemonPaths {
 
-    /** `$XDG_DATA_HOME/pegasus-bridge`, falling back to `~/.local/share`. */
+    /**
+     * Where the data lives.
+     *
+     * Windows gets `%LOCALAPPDATA%\pegasus-bridge`. XDG means nothing there, and
+     * following it anyway would land the data in `C:\Users\<you>\.local\share`:
+     * it works, but it is not where anything else on that machine looks. Choosing
+     * now is free — there is no Windows install yet whose data this would move.
+     *
+     * Everywhere else, unchanged: `$XDG_DATA_HOME/pegasus-bridge`, falling back to
+     * `~/.local/share`.
+     *
+     * `os` is a parameter so both branches are reachable from either platform. The
+     * absoluteness check is spelled out rather than left to `File.isAbsolute`,
+     * which answers differently per host: a JVM on Windows calls `/custom/share`
+     * relative, so the POSIX branch silently fell through to the fallback and the
+     * test for it could only ever pass on Linux.
+     */
     fun defaultDataRoot(env: Map<String, String> = System.getenv(),
-                        home: String = System.getProperty("user.home")): File {
-        val xdg = env["XDG_DATA_HOME"]?.takeIf { it.isNotBlank() && File(it).isAbsolute }
+                        home: String = System.getProperty("user.home"),
+                        os: String = System.getProperty("os.name")): File {
+        if (os.lowercase().contains("win")) {
+            val local = env["LOCALAPPDATA"]?.takeIf { it.isNotBlank() }
+                ?: File(home, "AppData\\Local").path
+            return File(local, "pegasus-bridge")
+        }
+        val xdg = env["XDG_DATA_HOME"]?.takeIf { it.isNotBlank() && it.startsWith("/") }
         return File(xdg ?: File(home, ".local/share").path, "pegasus-bridge")
     }
 

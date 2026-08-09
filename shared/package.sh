@@ -52,6 +52,37 @@ mkdir -p "$out"
 echo "==> assembling"
 cp -r "$install_dir/lib" "$out/lib"
 
+# Optional: bake the application's own ScreenScraper identity into this bundle.
+#
+# devid/devpassword identify PegasusBridge, not the person running it — `softname`
+# is registered against them and travels in the clear for that reason. So a release
+# carries them and the user brings only their own account, which is also what lifts
+# the request quota off the shared anonymous floor.
+#
+# They come from the environment and are written only into $out, never into the
+# repository: devpassword goes in every request URL, and a public GPLv3 checkout
+# would publish it. Unset — as in any developer build — the bundle carries none and
+# each user supplies their own pair, exactly as before.
+json_escape() { printf '%s' "$1" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g'; }
+
+if [[ -n "${SS_DEV_ID:-}" && -n "${SS_DEV_PASSWORD:-}" ]]; then
+    cat > "$out/lib/app-defaults.json" <<EOF
+{
+  "schemaVersion": 1,
+  "screenScraper": {
+    "devId": "$(json_escape "$SS_DEV_ID")",
+    "devPassword": "$(json_escape "$SS_DEV_PASSWORD")",
+    "softname": "$(json_escape "${SS_SOFTNAME:-PegasusBridge}")"
+  }
+}
+EOF
+    chmod 600 "$out/lib/app-defaults.json"
+    echo "    bundled the application's ScreenScraper identity (softname ${SS_SOFTNAME:-PegasusBridge})"
+else
+    echo "    no SS_DEV_ID / SS_DEV_PASSWORD set: this bundle carries no developer pair,"
+    echo "    so each user supplies their own"
+fi
+
 cat > "$out/pegasus-bridge" <<'LAUNCHER'
 #!/usr/bin/env bash
 # Self-contained launcher: uses the bundled runtime, never a system JRE.

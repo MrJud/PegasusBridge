@@ -45,7 +45,7 @@ class BridgeDaemon(
 
     fun start(): Int {
         paths = DaemonPaths.bridgePaths(dataRoot)
-        val config = Config(paths)
+        val config = Config(paths, DaemonPaths.appDefaultsFile())
         jobs = JobRegistry(paths)
 
         // Scanning is optional: without a native hasher the daemon still serves

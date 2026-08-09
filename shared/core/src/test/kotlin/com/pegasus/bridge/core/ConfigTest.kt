@@ -201,4 +201,83 @@ class ConfigTest {
         assertEquals(SchemaVersion.CURRENT, j.getInt("schemaVersion"))
         assertTrue(j.getLong("updatedAt") > 0)
     }
+
+    // ── The developer pair a release bundle carries ─────────────────────────
+
+    private fun defaultsFile(body: String): File =
+        File(root, "app-defaults.json").also { it.writeText(body) }
+
+    private fun withDefaults(body: String) = Config(paths, defaultsFile(body))
+
+    private val SHIPPED = """
+        { "screenScraper": { "devId": "SHIPPED", "devPassword": "SHIPPEDPW" } }
+    """.trimIndent()
+
+    @Test fun `a user with no developer pair gets the shipped one`() {
+        val c = withDefaults(SHIPPED).load().screenScraper
+        assertEquals("SHIPPED", c?.devId)
+        assertEquals("SHIPPEDPW", c?.devPassword)
+        assertEquals(ScreenScraperCreds.DEFAULT_SOFTNAME, c?.softname,
+            "the registered softname is the point of shipping the pair")
+    }
+
+    // The whole reason for shipping it: the user signs in and nothing else.
+    @Test fun `the member login is kept alongside the shipped pair`() {
+        config.writeCredentials(ssUser = "MrJud", ssPassword = "PW")
+        val c = withDefaults(SHIPPED).load().screenScraper
+        assertEquals("SHIPPED", c?.devId)
+        assertEquals("MrJud", c?.ssid)
+        assertEquals("PW", c?.ssPassword)
+    }
+
+    @Test fun `a user's own developer pair wins`() {
+        config.writeCredentials(ssDevId = "MINE", ssDevPassword = "MINEPW")
+        val c = withDefaults(SHIPPED).load().screenScraper
+        assertEquals("MINE", c?.devId)
+        assertEquals("MINEPW", c?.devPassword)
+    }
+
+    // Uninstalling the bundle has to take the pair with it, so it must never be
+    // copied into the user's file on the way past.
+    @Test fun `the shipped pair is never written to disk`() {
+        val cfg = withDefaults(SHIPPED)
+        cfg.load()
+        cfg.writeCredentials(ssUser = "MrJud", ssPassword = "PW")
+        val onDisk = JSONObject(paths.credentials.readText()).getJSONObject("screenScraper")
+        assertFalse(onDisk.has("devId"), "the shipped devId must not land in credentials.json")
+        assertFalse(onDisk.has("devPassword"))
+    }
+
+    @Test fun `a developer build without the file behaves as before`() {
+        assertNull(Config(paths, File(root, "absent.json")).load().screenScraper)
+        assertNull(Config(paths).load().screenScraper)
+    }
+
+    // The flag the settings UI hides the developer fields on. `configured` cannot
+    // carry it: it is true for a typed pair and a shipped one alike.
+    @Test fun `the status says when the pair came with the build`() {
+        val ss = withDefaults(SHIPPED).status().getJSONObject("screenScraper")
+        assertTrue(ss.getBoolean("configured"))
+        assertTrue(ss.getBoolean("devFromApp"))
+        assertFalse(ss.getBoolean("hasUser"), "signing in is still the user's to do")
+    }
+
+    @Test fun `a typed pair is not reported as the build's`() {
+        config.writeCredentials(ssDevId = "MINE", ssDevPassword = "MINEPW")
+        val ss = withDefaults(SHIPPED).status().getJSONObject("screenScraper")
+        assertTrue(ss.getBoolean("configured"))
+        assertFalse(ss.getBoolean("devFromApp"))
+    }
+
+    @Test fun `no pair anywhere is neither configured nor from the build`() {
+        val ss = config.status().getJSONObject("screenScraper")
+        assertFalse(ss.getBoolean("configured"))
+        assertFalse(ss.getBoolean("devFromApp"))
+    }
+
+    @Test fun `a half-written or unreadable defaults file is ignored`() {
+        assertNull(withDefaults("""{ "screenScraper": { "devId": "X" } }""")
+                       .load().screenScraper, "a pair needs both halves")
+        assertNull(withDefaults("not json at all").load().screenScraper)
+    }
 }

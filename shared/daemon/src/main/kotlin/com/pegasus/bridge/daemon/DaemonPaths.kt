@@ -68,6 +68,19 @@ object DaemonPaths {
         return out.filter { it.isFile }
     }
 
+    /**
+     * The defaults file package.sh writes into a built bundle, or null in a build that
+     * has none — a plain `gradle run`, or a release packaged without the environment
+     * set. It sits beside the jars because it belongs to the application, not to the
+     * user: the data root survives an uninstall and this must not.
+     */
+    fun appDefaultsFile(): File? {
+        val jarDir = runCatching {
+            File(BridgeRouter::class.java.protectionDomain.codeSource.location.toURI()).parentFile
+        }.getOrNull() ?: return null
+        return File(jarDir, "app-defaults.json").takeIf { it.isFile }
+    }
+
     fun libName(): String {
         val os = System.getProperty("os.name").lowercase()
         return when {

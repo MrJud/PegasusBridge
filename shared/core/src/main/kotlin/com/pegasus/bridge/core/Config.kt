@@ -51,9 +51,27 @@ data class Credentials(
  *
  * The `rawg` block the Android version parsed is gone: nothing ever read it.
  */
-class Config(private val paths: BridgePaths) {
+class Config(
+    private val paths: BridgePaths,
+    /**
+     * Credentials that ship with the build rather than belonging to the user.
+     *
+     * Only ScreenScraper's developer pair is read from here, and only when the user
+     * has none of their own. It identifies the *application*, so asking every user to
+     * register as a developer to use a source they did not write is the wrong seam —
+     * `softname` already travels in the clear for exactly this reason.
+     *
+     * Written by package.sh into the built bundle from the environment, never into the
+     * repository: `devpassword` is a secret in every request URL, and a public GPLv3
+     * checkout would publish it. Absent, as it is in any developer build, everything
+     * behaves as before and the user supplies their own pair.
+     */
+    private val appDefaults: File? = null
+) {
 
-    fun load(): Credentials {
+    fun load(): Credentials = withAppDefaults(loadUser())
+
+    private fun loadUser(): Credentials {
         val f = paths.credentials
         if (!f.exists()) return Credentials()
         return try {
@@ -90,6 +108,45 @@ class Config(private val paths: BridgePaths) {
             BridgeLog.w(TAG, "credentials.json unreadable, treating as empty: ${e.message}")
             Credentials()
         }
+    }
+
+    /**
+     * Fills in the shipped developer pair when the user has not supplied one.
+     *
+     * The user's own pair always wins, and their member login is carried across
+     * untouched — the two are separate parameters to the API and separate here. This
+     * only ever reads; the shipped pair is never written back into the user's file,
+     * so uninstalling the bundle takes it with it.
+     */
+    private fun withAppDefaults(c: Credentials): Credentials {
+        val ss = c.screenScraper
+        if (ss != null && ss.devId.isNotBlank() && ss.devPassword.isNotBlank()) return c
+
+        val f = appDefaults ?: return c
+        if (!f.isFile) return c
+        val dev = try {
+            JSONObject(f.readText()).optJSONObject("screenScraper")?.let {
+                ScreenScraperCreds(
+                    devId       = it.optString("devId"),
+                    devPassword = it.optString("devPassword"),
+                    softname    = it.optString("softname")
+                                    .ifBlank { ScreenScraperCreds.DEFAULT_SOFTNAME }
+                )
+            }
+        } catch (e: Exception) {
+            // Deliberately says nothing about the contents: this file is the one place
+            // a secret sits on disk, and a parse error must not become a log line
+            // quoting it.
+            BridgeLog.w(TAG, "bundled defaults unreadable, ignoring them")
+            null
+        } ?: return c
+        if (dev.devId.isBlank() || dev.devPassword.isBlank()) return c
+
+        return c.copy(screenScraper = dev.copy(
+            ssid       = ss?.ssid ?: "",
+            ssPassword = ss?.ssPassword ?: "",
+            softname   = ss?.softname?.takeIf { it.isNotBlank() } ?: dev.softname
+        ))
     }
 
     /**
@@ -184,12 +241,33 @@ class Config(private val paths: BridgePaths) {
             // developer pair the API answers nothing at all, while the member login
             // only lifts the quota. Reporting one flag would make a working setup on
             // the anonymous floor look identical to a broken one.
+            // `devFromApp` distinguishes a pair this build carries from one the user
+            // typed. `configured` cannot: it is true either way, so a UI keyed on it
+            // alone would either keep asking for something already supplied or hide the
+            // fields from someone who needs them — a build packaged without the pair,
+            // and Android, where the shipped one does not reach.
             .put("screenScraper", JSONObject()
                 .put("configured", c.screenScraper?.devId?.isNotEmpty() == true
                                 && c.screenScraper.devPassword.isNotEmpty())
+                .put("devFromApp", devPairIsFromApp())
                 .put("hasUser", c.screenScraper?.ssid?.isNotEmpty() == true
                              && c.screenScraper.ssPassword.isNotEmpty())
                 .put("user", c.screenScraper?.ssid.orEmpty()))
+    }
+
+    /**
+     * True when the developer pair in force is the one this build carries.
+     *
+     * Asked of the user's file rather than tracked through the merge: whether the
+     * pair is theirs is exactly the question "is there one in credentials.json", and
+     * answering it here keeps the merged Credentials free of provenance it would then
+     * have to carry everywhere.
+     */
+    private fun devPairIsFromApp(): Boolean {
+        val merged = load().screenScraper ?: return false
+        if (merged.devId.isBlank() || merged.devPassword.isBlank()) return false
+        val own = loadUser().screenScraper
+        return own == null || own.devId.isBlank() || own.devPassword.isBlank()
     }
 
     /** Caches an OAuth token next to the credentials that obtained it. */

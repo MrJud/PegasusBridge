@@ -1,6 +1,7 @@
 package com.pegasus.bridge.hasher
 
 import com.pegasus.bridge.core.BridgeLog
+import com.pegasus.bridge.core.SafeUrl
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withLock
@@ -66,8 +67,14 @@ class RaApiHashLookup(
             val gameId = fetchGameId(hash) ?: return@withPermit null
             if (gameId == 0) { failures = 0; return@withPermit GameMetadata(gameId = 0) }
             fetchMetadata(gameId)?.also { failures = 0 }
+        } catch (c: kotlinx.coroutines.CancellationException) {
+            // CancellationException is an Exception, so the broad catch below used
+            // to swallow it and answer `null` — which reads as "no answer" and
+            // bumps the failure count. A scan being aborted would then look like a
+            // scan whose source had gone down.
+            throw c
         } catch (e: Exception) {
-            BridgeLog.e(TAG, "lookup failed for $hash", e)
+            BridgeLog.e(TAG, "lookup failed for hash $hash", e)
             null
         }
     }
@@ -132,12 +139,18 @@ class RaApiHashLookup(
                         else -> { failures++; return null }
                     }
                 }
+            } catch (c: kotlinx.coroutines.CancellationException) {
+                throw c
             } catch (e: Exception) {
                 last = e
                 delay(1000L shl attempt)
             }
         }
-        BridgeLog.e(TAG, "all retries exhausted for $url", last)
+        // Redacted, because this URL is `API_GetGameExtended.php?z=…&y=<api key>`
+        // and the desktop log is stderr or a journal that ends up in bug reports.
+        // What survives — host, endpoint and the game id — is what makes the line
+        // worth having; the key never was.
+        BridgeLog.e(TAG, "all retries exhausted for ${SafeUrl.redact(url)}", last)
         failures++
         return null
     }

@@ -46,22 +46,52 @@ class RomScanPipeline(
 
     data class Summary(
         val total: Int,
+        /**
+         * Files whose result the collector actually saw.
+         *
+         * Equal to [total] on a scan that ran to the end, and less than it on one
+         * that was cut short — which is the only honest way to report a partial
+         * run. A summary that reported [total] either way would describe an abort
+         * as a complete scan.
+         */
+        val processed: Int,
         val newEntries: Int,
         val cachedHits: Int,
         val skippedPlatforms: Int,
-        val indexed: Int
+        val indexed: Int,
+        /** True when the scan stopped early. Its useful work is still on disk. */
+        val aborted: Boolean = false,
+        /** Why, in one sentence, when [aborted]. Empty otherwise. */
+        val reason: String = "",
+        /** Lookups that never got an answer — distinct from "not in the database". */
+        val failedLookups: Int = 0
     )
+
+    /**
+     * Cuts a doomed scan short.
+     *
+     * Thrown by the collector *inside* the [coroutineScope], which is the whole
+     * point: `break` only stopped the collector, and the producers went on hashing
+     * and went on sending into a queue nobody was draining. Once the 128-slot
+     * buffer filled they blocked forever, and the scope — which waits for its
+     * children — never returned. The abort that was supposed to save a doomed run
+     * hung it instead, which a 400-file test reproduced in under a second.
+     *
+     * Throwing cancels every child through the ordinary structured-concurrency
+     * path, so a blocked `send` is woken rather than waited on.
+     */
+    private class ScanAborted(val why: String) : Exception(why)
 
     suspend fun scan(
         roots: List<String>,
         onProgress: (Progress) -> Unit = {}
-    ): Summary = coroutineScope {
+    ): Summary {
         paths.ensureAll()
 
         val files = RomScanner.scan(roots)
         val total = files.size
         BridgeLog.i(TAG, "found $total ROM files under ${roots.size} root(s)")
-        if (total == 0) return@coroutineScope Summary(0, 0, 0, 0, writeDiscoveryIndex())
+        if (total == 0) return Summary(0, 0, 0, 0, 0, writeDiscoveryIndex())
 
         val metaCache = preloadMetadataCache()
         BridgeLog.i(TAG, "loaded ${metaCache.size} cached entries for incremental scan")
@@ -77,106 +107,139 @@ class RomScanPipeline(
         // in that gap and call as well. The lock covered the map, never the decision.
         val hashDedup    = mutableMapOf<String, CompletableDeferred<GameMetadata?>>()
 
-        val feeder = launch(Dispatchers.IO) {
-            for (f in files) fileQueue.send(f)
-            fileQueue.close()
-        }
-
-        val producers = List(hashWorkers.coerceAtMost(Runtime.getRuntime().availableProcessors())) {
-            launch(Dispatchers.Default) {
-                for (file in fileQueue) {
-                    if (!isActive) break
-                    processFile(file, metaCache, hashQueue, resultQueue)
-                }
-            }
-        }
-
-        val workers = List(apiWorkers) {
-            launch(Dispatchers.IO) {
-                for (job in hashQueue) {
-                    // One network call per distinct hash, however many files share it.
-                    // Claiming the hash and registering the promise happen under the
-                    // same lock, so exactly one worker owns the call and the others
-                    // await it instead of racing it.
-                    val hash = job.hash.hash
-                    var mine: CompletableDeferred<GameMetadata?>? = null
-                    val pending = synchronized(hashDedup) {
-                        hashDedup[hash] ?: CompletableDeferred<GameMetadata?>().also {
-                            mine = it
-                            hashDedup[hash] = it
-                        }
-                    }
-
-                    val meta: GameMetadata?
-                    val owned = mine
-                    if (owned != null) {
-                        meta = lookup.lookup(hash)
-                        // Only a real answer is worth remembering. A failure is
-                        // left uncached and unrecorded so the next scan asks
-                        // again — recording it would write the game off for good.
-                        if (meta == null) synchronized(hashDedup) { hashDedup.remove(hash) }
-                        owned.complete(meta)
-                    } else {
-                        // Someone else is already asking. Note that a file arriving
-                        // while a failing lookup is still in flight now shares that
-                        // failure instead of repeating the call; one that arrives
-                        // after it has finished finds the entry gone and retries, as
-                        // before.
-                        meta = pending.await()
-                    }
-                    resultQueue.send(ResultJob(job, meta, failed = meta == null))
-                }
-            }
-        }
-
-        launch {
-            feeder.join()
-            producers.forEach { it.join() }
-            hashQueue.close()
-            workers.forEach { it.join() }
-            resultQueue.close()
-        }
-
         var processed = 0; var newEntries = 0; var cached = 0; var skipped = 0
         var failedLookups = 0
-        val step = (total / 50).coerceAtLeast(1)
-        for (r in resultQueue) {
-            when {
-                r.skipped -> skipped++
-                r.cached  -> cached++
-                r.failed  -> failedLookups++
-                // A usable match needs a title, not just an id. RA's dorequest can
-                // answer Success with an id the Web API does not know — a Virtual
-                // Console dump of Metroid returns 1100001487, for which
-                // API_GetGameExtended returns []. Writing that produced a junk
-                // metadata file the index then discarded, and inflated the count.
-                // The same guard also covers a transient metadata failure, which
-                // simply gets retried on the next scan.
-                r.meta != null && r.meta.gameId > 0 && r.meta.title.isNotEmpty() -> {
-                    writeMetadata(r.job, r.meta); newEntries++
+        var abortReason = ""
+
+        try {
+            coroutineScope {
+                val feeder = launch(Dispatchers.IO) {
+                    try {
+                        for (f in files) fileQueue.send(f)
+                    } finally {
+                        fileQueue.close()
+                    }
+                }
+
+                val producers = List(hashWorkers.coerceAtMost(Runtime.getRuntime().availableProcessors())) {
+                    launch(Dispatchers.Default) {
+                        for (file in fileQueue) {
+                            if (!isActive) break
+                            processFile(file, metaCache, hashQueue, resultQueue)
+                        }
+                    }
+                }
+
+                val workers = List(apiWorkers) {
+                    launch(Dispatchers.IO) {
+                        for (job in hashQueue) {
+                            // One network call per distinct hash, however many files share it.
+                            // Claiming the hash and registering the promise happen under the
+                            // same lock, so exactly one worker owns the call and the others
+                            // await it instead of racing it.
+                            val hash = job.hash.hash
+                            var mine: CompletableDeferred<GameMetadata?>? = null
+                            val pending = synchronized(hashDedup) {
+                                hashDedup[hash] ?: CompletableDeferred<GameMetadata?>().also {
+                                    mine = it
+                                    hashDedup[hash] = it
+                                }
+                            }
+
+                            val meta: GameMetadata?
+                            val owned = mine
+                            if (owned != null) {
+                                // The owner must settle its promise on every path.
+                                // Cancelled mid-lookup it used to just stop, leaving
+                                // followers awaiting a promise nobody would ever
+                                // complete — a second way for an abort to hang.
+                                meta = try {
+                                    lookup.lookup(hash)
+                                } catch (t: Throwable) {
+                                    synchronized(hashDedup) { hashDedup.remove(hash) }
+                                    owned.completeExceptionally(t)
+                                    throw t
+                                }
+                                // Only a real answer is worth remembering. A failure is
+                                // left uncached and unrecorded so the next scan asks
+                                // again — recording it would write the game off for good.
+                                if (meta == null) synchronized(hashDedup) { hashDedup.remove(hash) }
+                                owned.complete(meta)
+                            } else {
+                                // Someone else is already asking. Note that a file arriving
+                                // while a failing lookup is still in flight now shares that
+                                // failure instead of repeating the call; one that arrives
+                                // after it has finished finds the entry gone and retries, as
+                                // before.
+                                meta = pending.await()
+                            }
+                            resultQueue.send(ResultJob(job, meta, failed = meta == null))
+                        }
+                    }
+                }
+
+                launch {
+                    feeder.join()
+                    producers.forEach { it.join() }
+                    hashQueue.close()
+                    workers.forEach { it.join() }
+                    resultQueue.close()
+                }
+
+                val step = (total / 50).coerceAtLeast(1)
+                for (r in resultQueue) {
+                    when {
+                        r.skipped -> skipped++
+                        r.cached  -> cached++
+                        r.failed  -> failedLookups++
+                        // A usable match needs a title, not just an id. RA's dorequest can
+                        // answer Success with an id the Web API does not know — a Virtual
+                        // Console dump of Metroid returns 1100001487, for which
+                        // API_GetGameExtended returns []. Writing that produced a junk
+                        // metadata file the index then discarded, and inflated the count.
+                        // The same guard also covers a transient metadata failure, which
+                        // simply gets retried on the next scan.
+                        r.meta != null && r.meta.gameId > 0 && r.meta.title.isNotEmpty() -> {
+                            writeMetadata(r.job, r.meta); newEntries++
+                        }
+                    }
+                    processed++
+                    if (processed % step == 0 || processed == total) {
+                        onProgress(Progress(processed, total, r.job.file.name, newEntries, cached, skipped))
+                    }
+
+                    // Once RetroAchievements has stopped answering there is nothing to
+                    // gain from grinding through the rest of the library: every file
+                    // would be recorded as unknown. Stop, keep what was found, say so.
+                    if (lookup.consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
+                        throw ScanAborted(
+                            "the lookup source stopped answering: $failedLookups of " +
+                            "$processed failed, ${lookup.consecutiveFailures} in a row")
+                    }
                 }
             }
-            processed++
-            if (processed % step == 0 || processed == total) {
-                onProgress(Progress(processed, total, r.job.file.name, newEntries, cached, skipped))
-            }
-
-            // Once RetroAchievements has stopped answering there is nothing to
-            // gain from grinding through the rest of the library: every file
-            // would be recorded as unknown. Stop, keep what was found, say so.
-            if (lookup.consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
-                BridgeLog.e(TAG, "aborting scan after $processed/$total: " +
-                                 "$failedLookups lookups failed, " +
-                                 "${lookup.consecutiveFailures} in a row")
-                break
-            }
+        } catch (a: ScanAborted) {
+            abortReason = a.why
+            BridgeLog.e(TAG, "aborted after $processed/$total: $abortReason")
+        } finally {
+            // Cancel, not close: closing refuses new sends but leaves one already
+            // blocked on a full buffer where it is. Cancelling wakes it. Redundant
+            // after a ScanAborted — the scope has cancelled its children by then —
+            // and not redundant when the *caller* cancels us.
+            fileQueue.cancel(); hashQueue.cancel(); resultQueue.cancel()
         }
 
         val indexed = writeDiscoveryIndex()
-        BridgeLog.i(TAG, "scan complete: $processed processed, $newEntries new, " +
+        BridgeLog.i(TAG, "scan ${if (abortReason.isEmpty()) "complete" else "aborted"}: " +
+                         "$processed/$total processed, $newEntries new, " +
                          "$cached cached, $skipped skipped, $indexed indexed, " +
                          "$failedLookups lookups failed")
-        Summary(total, newEntries, cached, skipped, indexed)
+        return Summary(
+            total = total, processed = processed, newEntries = newEntries,
+            cachedHits = cached, skippedPlatforms = skipped, indexed = indexed,
+            aborted = abortReason.isNotEmpty(), reason = abortReason,
+            failedLookups = failedLookups
+        )
     }
 
     private suspend fun processFile(

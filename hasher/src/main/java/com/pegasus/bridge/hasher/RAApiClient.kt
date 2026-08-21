@@ -1,6 +1,7 @@
 package com.pegasus.bridge.hasher
 
 import android.util.Log
+import com.pegasus.bridge.core.SafeUrl
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.sync.Semaphore
@@ -148,13 +149,18 @@ class RAApiClient(private val raUser: String, private val raApiKey: String) {
                         else -> { consecutiveFailures++; return null }
                     }
                 }
+            } catch (c: kotlinx.coroutines.CancellationException) {
+                throw c
             } catch (e: Exception) {
                 lastEx = e
                 delay(1000L shl attempt)
             }
         }
         consecutiveFailures++
-        Log.e(TAG, "All retries exhausted for $url", lastEx)
+        // Redacted: this URL carries `y=<RetroAchievements API key>`, and Logcat
+        // is readable by anything holding READ_LOGS as well as by every bug
+        // report a user pastes.
+        Log.e(TAG, "All retries exhausted for ${SafeUrl.redact(url)}", lastEx)
         return null
     }
 }

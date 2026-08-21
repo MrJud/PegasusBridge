@@ -400,10 +400,17 @@ class BridgeRouter(
                 }
                 jobs.finish(job, JSONObject()
                     .put("total", summary.total)
+                    // A scan cut short must not report as a complete one. `processed`
+                    // is what the collector actually saw, `aborted` says the rest was
+                    // never looked at, and `reason` is the sentence a user can act on.
+                    .put("processed", summary.processed)
                     .put("newEntries", summary.newEntries)
                     .put("cachedHits", summary.cachedHits)
                     .put("skippedPlatforms", summary.skippedPlatforms)
-                    .put("indexed", summary.indexed))
+                    .put("failedLookups", summary.failedLookups)
+                    .put("indexed", summary.indexed)
+                    .put("aborted", summary.aborted)
+                    .put("reason", summary.reason))
             } catch (t: Throwable) {
                 BridgeLog.e(TAG, "scan failed", t)
                 jobs.fail(job, t.message ?: t.javaClass.simpleName)

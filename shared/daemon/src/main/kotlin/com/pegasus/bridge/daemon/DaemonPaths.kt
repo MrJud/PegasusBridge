@@ -33,8 +33,13 @@ object DaemonPaths {
                         home: String = System.getProperty("user.home"),
                         os: String = System.getProperty("os.name")): File {
         if (os.lowercase().contains("win")) {
+            // Joined with an explicit backslash rather than through `File`, which
+            // uses the *host's* separator: on Linux `File(home, "AppData\\Local")`
+            // produced `C:\Users\u/AppData\Local`, so the one Windows case with no
+            // LOCALAPPDATA could only ever be checked by running on Windows —
+            // which defeats the purpose of `os` being a parameter.
             val local = env["LOCALAPPDATA"]?.takeIf { it.isNotBlank() }
-                ?: File(home, "AppData\\Local").path
+                ?: (home.trimEnd('\\', '/') + "\\AppData\\Local")
             return File(local, "pegasus-bridge")
         }
         val xdg = env["XDG_DATA_HOME"]?.takeIf { it.isNotBlank() && it.startsWith("/") }

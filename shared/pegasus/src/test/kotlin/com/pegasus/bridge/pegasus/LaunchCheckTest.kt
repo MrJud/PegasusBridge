@@ -40,9 +40,42 @@ class LaunchCheckTest {
         assertTrue(r.detail.contains("Android"), r.detail)
     }
 
-    @Test fun `the same command on android is fine`() {
-        val r = LaunchCheck.check("am start -n x/y", isAndroid = true)
+    @Test fun `the same command on android resolves the package it names`() {
+        val r = LaunchCheck.check("am start -n com.retroarch/.Foo", isAndroid = true,
+                                  installedPackage = { it == "com.retroarch" })
         assertEquals(LaunchCheck.Verdict.RUNNABLE, r.verdict)
+        assertEquals("com.retroarch/.Foo", r.executable)
+    }
+
+    /**
+     * The ordinary state of a real Android library, not an edge case: on the
+     * tablet this was written against, eleven of nineteen collections named an
+     * emulator that had been uninstalled, and every one of them reported fine.
+     */
+    @Test fun `an am start naming an uninstalled app is not runnable`() {
+        val r = LaunchCheck.check(
+            "am start\n  -n com.github.stenzek.duckstation/.EmulationActivity\n" +
+            "  -e bootPath \"{file.path}\"",
+            isAndroid = true, installedPackage = { it == "com.retroarch" })
+        assertEquals(LaunchCheck.Verdict.PACKAGE_NOT_INSTALLED, r.verdict)
+        assertFalse(r.runnable)
+        assertTrue(r.detail.contains("com.github.stenzek.duckstation"), r.detail)
+    }
+
+    /** An implicit intent is not resolved rather than guessed at. */
+    @Test fun `an am start with no component is unknown, not broken`() {
+        val r = LaunchCheck.check("am start -a android.intent.action.VIEW -d x",
+                                  isAndroid = true)
+        assertEquals(LaunchCheck.Verdict.UNKNOWN, r.verdict)
+        assertTrue(r.runnable)
+    }
+
+    /** The mirror image of the desktop case, and the reason the file is shared. */
+    @Test fun `a flatpak launch on android is not runnable`() {
+        val r = LaunchCheck.check("flatpak run org.libretro.RetroArch \"{file.path}\"",
+                                  isAndroid = true)
+        assertEquals(LaunchCheck.Verdict.FLATPAK_NOT_INSTALLED, r.verdict)
+        assertFalse(r.runnable)
     }
 
     // The ordinary failure the old check missed entirely.

@@ -16,4 +16,4 @@ dependencyResolutionManagement {
 }
 
 rootProject.name = "PegasusBridge"
-include(":app", ":core", ":media", ":hasher", ":ra", ":video")
+include(":app", ":core", ":media", ":hasher", ":ra", ":video", ":pegasus")

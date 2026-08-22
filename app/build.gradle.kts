@@ -89,6 +89,7 @@ dependencies {
     implementation(project(":hasher"))
     implementation(project(":ra"))
     implementation(project(":video"))
+    implementation(project(":pegasus"))
     implementation("androidx.appcompat:appcompat:1.7.0")
     implementation("androidx.core:core-ktx:1.13.1")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1")

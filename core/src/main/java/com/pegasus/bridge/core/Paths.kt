@@ -27,6 +27,17 @@ object Paths {
      * the URL can never cross into the theme and a file path goes instead.
      */
     val ARTWORK       = File(ROOT, "artwork")
+    /** Answers from the endpoints that reach into the user's own library. */
+    val PEGASUS       = File(ROOT, "pegasus")
+    /**
+     * Pictures an export displaced, kept rather than deleted.
+     *
+     * The daemon calls this `replaced` under its own data root and so does this:
+     * MediaExporter takes the directory as a parameter precisely so the two
+     * shells can disagree about where the root is and agree about everything
+     * else.
+     */
+    val REPLACED      = File(ROOT, "replaced")
 
     /** What the ROM scan found, keyed by title+platform. Same name as the daemon's. */
     val discoveryIndex = File(METADATA, "_index.json")
@@ -41,6 +52,7 @@ object Paths {
     fun scrape(jobId: String)     = File(SCRAPE,     "$jobId.json")
     fun download(jobId: String)   = File(DOWNLOAD,   "$jobId.json")
     fun pending(jobId: String)    = File(PENDING,    "$jobId.json")
+    fun pegasus(jobId: String)    = File(PEGASUS,    "$jobId.json")
     fun done(jobId: String)       = File(DONE,       "$jobId.done")
 
     /**
@@ -60,6 +72,26 @@ object Paths {
 
     fun ensureAll() {
         listOf(CONFIG, METADATA, MEDIA, SEARCH, SEARCH_RA, SCRAPE, DOWNLOAD,
-               PENDING, DONE, PROFILE, COMPLETION, CACHE, ARTWORK).forEach { it.mkdirs() }
+               PENDING, DONE, PROFILE, COMPLETION, CACHE, ARTWORK,
+               PEGASUS, REPLACED).forEach { it.mkdirs() }
+    }
+
+    /**
+     * Write via temp + rename so a reader never sees a half-written file.
+     *
+     * The same contract as `BridgePaths.writeAtomic` on the desktop, and it has
+     * to exist separately because that one lives in the desktop-only source
+     * root. MediaExporter and LaunchPreferences take the function as a parameter
+     * rather than importing either — which is what lets one copy of them serve
+     * both shells.
+     */
+    fun writeAtomic(target: File, content: String) {
+        target.parentFile?.mkdirs()
+        val tmp = File(target.parentFile, "${target.name}.tmp")
+        tmp.writeText(content)
+        if (!tmp.renameTo(target)) {
+            target.writeText(content)
+            tmp.delete()
+        }
     }
 }

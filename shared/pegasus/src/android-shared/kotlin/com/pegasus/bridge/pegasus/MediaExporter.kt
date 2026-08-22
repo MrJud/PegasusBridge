@@ -315,11 +315,15 @@ class MediaExporter(
             // <collection>/<root>/<...>: two levels up from a Skraper path, three
             // from a native one. Derived from the record rather than guessed, so a
             // path the Bridge did not write cannot be moved by accident.
-            val currentRoot = from.parentFile?.parentFile ?: continue
+            // `parentFile` is a platform type on the JVM and @Nullable on Android,
+            // so the same expression compiles silently on one shell and warns on
+            // the other. Bound once, defensively, rather than dereferenced twice.
+            val kindDir = from.parentFile ?: continue
+            val currentRoot = kindDir.parentFile ?: continue
             if (currentRoot.name == toRoot.dirName) { alreadyThere++; continue }
             val collectionDir = currentRoot.parentFile ?: continue
-            val to = File(File(collectionDir, toRoot.dirName), 
-                          from.parentFile.name + File.separator + from.name)
+            val to = File(File(collectionDir, toRoot.dirName),
+                          kindDir.name + File.separator + from.name)
             try {
                 if (!from.isFile) { failed++; continue }
                 to.parentFile?.mkdirs()

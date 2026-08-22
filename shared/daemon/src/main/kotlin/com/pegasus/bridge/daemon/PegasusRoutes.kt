@@ -5,6 +5,7 @@ import com.pegasus.bridge.core.BridgePaths
 import com.pegasus.bridge.daemon.MicroHttpServer.Request
 import com.pegasus.bridge.daemon.MicroHttpServer.Response
 import com.pegasus.bridge.pegasus.AssetLayout
+import com.pegasus.bridge.pegasus.EmulatorCandidate
 import com.pegasus.bridge.pegasus.EmulatorDiscovery
 import com.pegasus.bridge.pegasus.ExportManifest
 import com.pegasus.bridge.pegasus.GameEntry
@@ -12,6 +13,8 @@ import com.pegasus.bridge.pegasus.LaunchCheck
 import com.pegasus.bridge.pegasus.LaunchPreferences
 import com.pegasus.bridge.pegasus.MediaExporter
 import com.pegasus.bridge.pegasus.MetadataFile
+import com.pegasus.bridge.pegasus.toListJson
+import com.pegasus.bridge.pegasus.toProposalJson
 import com.pegasus.bridge.core.SchemaVersion
 import org.json.JSONArray
 import org.json.JSONObject
@@ -88,25 +91,7 @@ class PegasusRoutes(private val paths: BridgePaths) {
         val roots = rootsOf(req).orEmpty()
         val found = EmulatorDiscovery.discover(libraryRoots = roots)
         val arr = JSONArray()
-        for (c in found) {
-            arr.put(JSONObject()
-                .put("id", c.id)
-                .put("displayName", c.displayName)
-                .put("platforms", JSONArray(c.platforms))
-                .put("executable", c.executable)
-                .put("launchCommand", c.launchCommand)
-                .put("kind", c.kind.name.lowercase())
-                // The difference between "this binary told us what it is" and
-                // "a file with the right name exists", which is what decides
-                // whether a person should accept the proposal without checking.
-                .put("verified", c.verified)
-                .put("version", c.version)
-                .put("confidence", c.confidence)
-                .put("canReadLibrary", c.canReadLibrary ?: JSONObject.NULL)
-                // The one command that fixes it, ready to show or to run.
-                .put("grantCommand",
-                     if (c.canReadLibrary == false) c.grantCommand else JSONObject.NULL))
-        }
+        for (c in found) arr.put(c.toListJson())
         Response.json(JSONObject()
             .put("schemaVersion", SchemaVersion.CURRENT)
             .put("status", "ok")
@@ -178,23 +163,12 @@ class PegasusRoutes(private val paths: BridgePaths) {
             .toString())
     }
 
+    /** @see toProposalJson — shared with the Android shell so the shapes cannot diverge. */
     private fun proposalJson(
-        e: EmulatorDiscovery.Candidate,
+        e: EmulatorCandidate,
         position: Int,
-        peers: List<EmulatorDiscovery.Candidate> = emptyList()
-    ): JSONObject =
-        JSONObject()
-            .put("emulator", e.id)
-            .put("displayName", e.displayName)
-            .put("launchCommand", e.launchCommand)
-            .put("verified", e.verified)
-            .put("version", e.version)
-            .put("kind", e.kind.name.lowercase())
-            .put("canReadLibrary", e.canReadLibrary ?: JSONObject.NULL)
-            .put("grantCommand",
-                 if (e.canReadLibrary == false) e.grantCommand else JSONObject.NULL)
-            .put("needsCore", e.launchCommand.contains("{core}"))
-            .put("why", EmulatorDiscovery.rankReason(e, position, peers))
+        peers: List<EmulatorCandidate> = emptyList()
+    ): JSONObject = e.toProposalJson(position, peers)
 
     /**
      * Whether a launch line could run on this machine at all.
@@ -206,7 +180,13 @@ class PegasusRoutes(private val paths: BridgePaths) {
      * than saying nothing.
      */
     private fun launchCheck(launch: String, flatpakIds: Set<String>) =
-        LaunchCheck.check(launch, installedFlatpakIds = flatpakIds)
+        // `pathDirs` is passed rather than defaulted: LaunchCheck moved to the
+        // shared source root and can no longer reach EmulatorDiscovery for it,
+        // which is the point — its default finds nothing, so a shell that
+        // forgets to say how to resolve a command cannot get a false RUNNABLE.
+        LaunchCheck.check(launch,
+                          pathDirs = EmulatorDiscovery.systemPath(),
+                          installedFlatpakIds = flatpakIds)
 
     /**
      * Writes a Bridge-owned overlay for one collection.
@@ -453,7 +433,7 @@ class PegasusRoutes(private val paths: BridgePaths) {
     }
 
     /** The launch command for an emulator id, or empty if it is not installed. */
-    private fun commandFor(emulatorId: String?, known: List<EmulatorDiscovery.Candidate>): String =
+    private fun commandFor(emulatorId: String?, known: List<EmulatorCandidate>): String =
         emulatorId?.let { id -> known.firstOrNull { it.id == id }?.launchCommand }.orEmpty()
 
     // ── Media export ────────────────────────────────────────────────────────

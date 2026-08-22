@@ -59,6 +59,11 @@
             android:foregroundServiceType="dataSync"
             android:exported="false" />
 
+        <service
+            android:name="com.pegasus.bridge.pegasus.PegasusService"
+            android:foregroundServiceType="dataSync"
+            android:exported="false" />
+
         <!-- VideoService + VideoPlayerActivity are declared in :video manifest
              and merged in automatically via Gradle manifest merger. -->
 

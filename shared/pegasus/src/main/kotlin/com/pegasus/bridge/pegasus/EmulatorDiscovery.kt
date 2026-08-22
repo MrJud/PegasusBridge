@@ -37,41 +37,10 @@ import java.util.concurrent.TimeUnit
  */
 object EmulatorDiscovery {
 
-    /**
-     * [verified] is true only when the executable answered a version probe.
-     * [confidence] carries how it was found, because "on PATH" and "guessed from
-     * a Flatpak id" deserve different trust from the person reviewing the list.
-     */
-    data class Candidate(
-        val id: String,
-        val displayName: String,
-        val platforms: List<String>,
-        val executable: String,
-        val launchCommand: String,
-        val kind: Kind,
-        val verified: Boolean,
-        val version: String = "",
-        val confidence: String = "",
-        /**
-         * Whether this candidate can actually read the library.
-         *
-         * Null when it was not checked, which is the honest answer for a native
-         * binary: it runs unsandboxed and reads whatever the user can.
-         *
-         * For a Flatpak it is the difference between installed and usable, and
-         * the two are not the same. Measured on a real install: PCSX2 ships with
-         * `filesystems=xdg-config/kdeglobals:ro;xdg-run/gamescope-0:ro` and
-         * Snes9x with `filesystems=home`, while the library sits on an external
-         * mount under `/run/media`. Both were installed, both were verified, and
-         * neither could open a single ROM. A proposal that launches an emulator
-         * onto a file it cannot see is worse than no proposal.
-         */
-        val canReadLibrary: Boolean? = null,
-        /** What to run to fix [canReadLibrary], when it is false. */
-        val grantCommand: String = ""
-    )
-
-    enum class Kind { NATIVE, FLATPAK, APPIMAGE, DESKTOP_ENTRY, ANDROID_PACKAGE }
+    // The candidate model and the ranking rules are in EmulatorCatalogue.kt,
+    // under src/android-shared, because the Android shell produces the very same
+    // objects from its package manager. Only the finding is platform specific,
+    // and only the finding is in this file.
 
     /**
      * One emulator this knows how to look for.
@@ -184,8 +153,8 @@ object EmulatorDiscovery {
          */
         libraryRoots: List<File> = emptyList(),
         sandboxReader: (String, File) -> Boolean = ::flatpakCanRead
-    ): List<Candidate> {
-        val out = mutableListOf<Candidate>()
+    ): List<EmulatorCandidate> {
+        val out = mutableListOf<EmulatorCandidate>()
         val flatpaks = runCatching(flatpakList).getOrDefault(emptyList()).associateBy { it.id }
 
         for (probe in PROBES) {
@@ -194,13 +163,13 @@ object EmulatorDiscovery {
                 val exe = pathDirs.map { File(it, binary) }
                     .firstOrNull { it.isFile && it.canExecute() } ?: continue
                 val version = probeVersion(exe.absolutePath, probe, runner)
-                out += Candidate(
+                out += EmulatorCandidate(
                     id = probe.id,
                     displayName = probe.displayName,
                     platforms = probe.platforms,
                     executable = exe.absolutePath,
                     launchCommand = "${quoteIfNeeded(exe.absolutePath)} ${probe.argsTemplate}",
-                    kind = Kind.NATIVE,
+                    kind = EmulatorKind.NATIVE,
                     verified = version != null,
                     version = version.orEmpty(),
                     confidence = "on PATH at ${exe.parent}"
@@ -212,13 +181,13 @@ object EmulatorDiscovery {
 
             for (id in probe.flatpakIds) {
                 val installed = flatpaks[id] ?: continue
-                out += Candidate(
+                out += EmulatorCandidate(
                     id = probe.id,
                     displayName = "${probe.displayName} (Flatpak)",
                     platforms = probe.platforms,
                     executable = id,
                     launchCommand = "flatpak run $id ${probe.argsTemplate}",
-                    kind = Kind.FLATPAK,
+                    kind = EmulatorKind.FLATPAK,
                     // Verified from metadata, and deliberately *not* by running it.
                     // `flatpak run <id> --version` was tried and is not safe as a
                     // probe: mGBA answers, PCSX2 prints nothing, and Snes9x ignores
@@ -238,76 +207,30 @@ object EmulatorDiscovery {
                 break
             }
         }
-        return out.sortedWith(compareByDescending<Candidate> { it.verified }.thenBy { it.displayName })
+        return out.sortedWith(compareByDescending<EmulatorCandidate> { it.verified }.thenBy { it.displayName })
     }
 
-    /**
-     * Every candidate that handles [platform], best first.
-     *
-     * All of them, not just the winner. "Propose, never apply" is not honoured by
-     * a proposal whose alternatives are invisible — that is a decision made for
-     * somebody and shown to them afterwards. A review screen needs the list, and
-     * an apply takes whatever the person picked out of it.
-     *
-     * The order, and the reason for each step:
-     *
-     * 1. **Can it read the library.** An emulator that cannot open the ROM fails
-     *    at the moment somebody presses A, whatever else is true of it.
-     * 2. **Did it identify itself.** A binary that answered a version probe, or a
-     *    Flatpak whose metadata names one.
-     * 3. **Is it RetroArch.** Last among equals: it covers every platform, so it
-     *    is never the most specific answer, and its command still needs a core
-     *    that discovery has no way to choose.
-     * 4. **How many platforms it claims.** Fewer means more specialised, and a
-     *    specialist is the better default for its own system.
-     */
-    fun rankedFor(platform: String, candidates: List<Candidate>): List<Candidate> {
-        val norm = FuzzyMatch.normalizePlatform(platform)
-        return candidates.filter { norm in it.platforms }.sortedWith(
-            compareByDescending<Candidate> { it.canReadLibrary != false }
-                .thenByDescending { it.verified }
-                .thenBy { it.id == "retroarch" }
-                .thenBy { it.platforms.size }
-                .thenBy { it.displayName }
-        )
-    }
+    // ── Ordering ────────────────────────────────────────────────────────────
+    //
+    // Kept as forwarders rather than moved wholesale: the rules are shared with
+    // the Android shell and live in EmulatorRanking, but every caller here and
+    // in the daemon already says `EmulatorDiscovery.rankedFor`, and renaming a
+    // call site teaches nobody anything.
 
-    /**
-     * Why a candidate sits where it does, in one sentence a person can read.
-     *
-     * [peers] is the whole ranked list, and it is there for one case: two
-     * candidates that are equally verified, equally able to read the library and
-     * equally specialised are separated only by name. Saying the first is
-     * "dedicated to this platform, and verified" would imply a distinction that
-     * does not exist — measured on a real machine, where Gopher64 and
-     * Mupen64Plus tie exactly for N64 and the order is alphabetical.
-     */
-    fun rankReason(c: Candidate, position: Int, peers: List<Candidate> = emptyList()): String {
-        val tied = peers.count { it.id != c.id && ranksEqually(it, c) }
-        return when {
-            c.canReadLibrary == false -> "cannot read the library as installed"
-            position == 0 && peers.size == 1 -> "the only one installed for this platform"
-            c.id == "retroarch" -> "covers everything, so never the most specific choice"
-            !c.verified -> "installed, but it did not identify itself"
-            tied > 0 && position == 0 ->
-                "as good a fit as the other ${if (tied == 1) "one" else "$tied"}; " +
-                "listed first by name, so either will do"
-            tied > 0 -> "as good a fit as the one above; the order between them is just the name"
-            position == 0 -> "dedicated to this platform, and verified"
-            else -> "also handles this platform"
-        }
-    }
+    /** @see EmulatorRanking.rankedFor */
+    fun rankedFor(platform: String, candidates: List<EmulatorCandidate>): List<EmulatorCandidate> =
+        EmulatorRanking.rankedFor(platform, candidates)
 
-    /** Whether two candidates are separated by nothing but their names. */
-    private fun ranksEqually(a: Candidate, b: Candidate): Boolean =
-        (a.canReadLibrary != false) == (b.canReadLibrary != false) &&
-        a.verified == b.verified &&
-        (a.id == "retroarch") == (b.id == "retroarch") &&
-        a.platforms.size == b.platforms.size
+    /** @see EmulatorRanking.rankReason */
+    fun rankReason(
+        c: EmulatorCandidate,
+        position: Int,
+        peers: List<EmulatorCandidate> = emptyList()
+    ): String = EmulatorRanking.rankReason(c, position, peers)
 
-    /** The best candidate for [platform], or null. Shorthand over [rankedFor]. */
-    fun bestFor(platform: String, candidates: List<Candidate>): Candidate? =
-        rankedFor(platform, candidates).firstOrNull()
+    /** @see EmulatorRanking.bestFor */
+    fun bestFor(platform: String, candidates: List<EmulatorCandidate>): EmulatorCandidate? =
+        EmulatorRanking.bestFor(platform, candidates)
 
     private fun probeVersion(
         exe: String,

@@ -184,7 +184,7 @@ class MetadataAndDiscoveryTest {
         val ra = found.single { it.id == "retroarch" }
         assertTrue(ra.verified)
         assertEquals("RetroArch 1.19.1", ra.version)
-        assertEquals(EmulatorDiscovery.Kind.NATIVE, ra.kind)
+        assertEquals(EmulatorKind.NATIVE, ra.kind)
     }
 
     // A file on PATH called `mame` that is not MAME is a different program with
@@ -218,7 +218,7 @@ class MetadataAndDiscoveryTest {
             runner = { null })
 
         val d = found.single { it.id == "dolphin" }
-        assertEquals(EmulatorDiscovery.Kind.FLATPAK, d.kind)
+        assertEquals(EmulatorKind.FLATPAK, d.kind)
         assertTrue(d.launchCommand.startsWith("flatpak run org.DolphinEmu.dolphin-emu"))
     }
 

@@ -8,6 +8,7 @@ import com.pegasus.bridge.core.Paths
 import com.pegasus.bridge.core.SchemaVersion
 import com.pegasus.bridge.hasher.HasherService
 import com.pegasus.bridge.media.MediaService
+import com.pegasus.bridge.pegasus.PegasusService
 import com.pegasus.bridge.ra.RaConsoleMap
 import com.pegasus.bridge.ra.RaService
 import com.pegasus.bridge.video.VideoPlayerActivity
@@ -198,6 +199,28 @@ class DataLayerRouter : Activity() {
                     putExtra(VideoService.EXTRA_URL,      url)
                     putExtra(VideoService.EXTRA_GAME_KEY, gameKey)
                     putExtra(VideoService.EXTRA_JOB_ID,   jobId)
+                })
+            }
+            /**
+             * The verbs that reach into the user's own library — emulator
+             * discovery, the two exports and the launch choice.
+             *
+             * Matched as a set rather than spelled out one branch at a time,
+             * because every one of them forwards the same thing: the verb, the
+             * job id and whatever else the URI carried. Listing twelve
+             * identical branches would give somebody twelve places to forget.
+             *
+             * Their answers land in `pegasus/{jobId}.json`, not in `search-ra/`
+             * or `scrape/`, and the done marker is written by the service.
+             */
+            in PegasusService.VERBS -> {
+                startForegroundService(Intent(this, PegasusService::class.java).apply {
+                    putExtra(PegasusService.EXTRA_VERB,   verb)
+                    putExtra(PegasusService.EXTRA_JOB_ID, jobId)
+                    for (name in uri.queryParameterNames) {
+                        if (name == "jobId") continue
+                        uri.getQueryParameter(name)?.let { putExtra(name, it) }
+                    }
                 })
             }
             else -> stub(jobId, verb)

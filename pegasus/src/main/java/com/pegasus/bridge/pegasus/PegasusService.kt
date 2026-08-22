@@ -88,6 +88,7 @@ class PegasusService : Service() {
                     VERB_LAUNCH_CLEAR     -> launchClear(p)
                     VERB_PROPOSE_COLLECTIONS -> proposeCollections(p)
                     VERB_APPLY_COLLECTION    -> applyCollection(p)
+                    VERB_LINK_EMULATORS      -> linkEmulators(p)
                     else                  -> error("verb not implemented: $verb")
                 }
                 write(jobId, answer)
@@ -540,6 +541,173 @@ class PegasusService : Service() {
             .put("commentedOutLaunchIn", if (commented) theirFile!!.absolutePath else JSONObject.NULL)
     }
 
+    // ── Linking every broken collection at once ─────────────────────────────
+
+    /**
+     * Points every collection that cannot launch at something that can.
+     *
+     * The batch form of `apply-emulator`, and the reason it exists: eleven of
+     * the nineteen collections on the tablet this was written against named an
+     * emulator that is not installed, and fixing them one review screen at a
+     * time is the manual work the Bridge is supposed to remove.
+     *
+     * Proposes by default. `dryRun=0` is what applies, and a collection whose
+     * own metadata file declares a launch is skipped unless `standAside=1` — the
+     * same rule as the single-collection verb, for the same reason: Pegasus keeps
+     * whichever file it parses last and does not sort them.
+     *
+     * ── Where the core comes from ──
+     *
+     * RetroArch's command is a template with a `{core}` in it, and its cores live
+     * in `/data/user/0/com.retroarch/cores`, which is app-private — nothing here
+     * can list them. ES-DE's `systeminfo.txt` names the core for the platform,
+     * and its alternatives in order, so where the library has one the hole gets
+     * filled with the platform's own answer rather than a guess.
+     *
+     * Where it does not, the link cannot be completed automatically and the
+     * collection is reported as needing a core rather than written with a
+     * placeholder that would reach the emulator verbatim.
+     *
+     * Naming the core is not the same as having it. Nothing here can check that
+     * either, so every core written is also listed under `coresToInstall`, which
+     * is what a person needs in front of them when the launch does nothing.
+     */
+    private fun linkEmulators(p: Map<String, String>): JSONObject {
+        val roots = rootsOf(p) ?: return error("missing roots")
+        val apply = p["dryRun"] == "0"
+        val standAside = p["standAside"] == "1"
+        val found = discover()
+
+        val arr = JSONArray()
+        val cores = LinkedHashSet<String>()
+        var linked = 0; var skipped = 0; var blocked = 0
+
+        for (c in MetadataFile.collectionsUnder(roots)) {
+            val dir = c.directory
+            val platform = c.shortName.ifEmpty { dir.name }
+            val check = launchCheck(c.launch)
+            val entry = JSONObject()
+                .put("directory", dir.absolutePath)
+                .put("collection", c.name)
+                .put("currentLaunch", c.launch)
+                .put("launchRunsHere", check.runnable)
+                .put("launchVerdict", check.verdict.name.lowercase())
+
+            if (check.runnable) {
+                skipped++
+                arr.put(entry.put("action", "left alone").put("why", "its launch already runs here"))
+                continue
+            }
+
+            // ES-DE's order first, filtered to what is installed; the Bridge's
+            // own ranking when the library says nothing. Both end at the same
+            // kind of answer, but a platform's own file knows things a generic
+            // ranking cannot — that `snes` prefers snes9x over eight others.
+            val ranked = EmulatorRanking.rankedFor(platform, found)
+            val esdeOrder = EsDeSystemInfo.emulatorsFor(dir)
+            val best = esdeOrder.firstNotNullOfOrNull { id -> ranked.firstOrNull { it.id == id } }
+                ?: ranked.firstOrNull()
+
+            if (best == null) {
+                blocked++
+                arr.put(entry.put("action", "cannot link")
+                    .put("why", "nothing installed handles '$platform'"))
+                continue
+            }
+
+            var command = best.launchCommand
+            if (command.contains("{core}")) {
+                var core = EsDeSystemInfo.coreFor(dir, best.id, best.executable)
+                var from = "systeminfo"
+                // `useHints=1` is a person saying "the conventional core will
+                // do". Off by default because a hint is a convention and not a
+                // finding, and on request because refusing on principle leaves
+                // three of this library's largest collections unplayable over a
+                // filename everybody already knows — the directories with no
+                // `systeminfo.txt` are exactly the ones nobody set up.
+                if (core.isEmpty() && p["useHints"] == "1") {
+                    // Asked per platform. `best` came from a platform-less
+                    // discovery, so its own hints are the union across every
+                    // system RetroArch handles — and taking the first of those
+                    // offered the NES core for `gba` and for `n64` alike.
+                    core = AndroidEmulators
+                        .coreHintsFor(best.id, best.executable, platform)
+                        .firstOrNull().orEmpty()
+                    from = "hint"
+                }
+                if (core.isEmpty()) {
+                    blocked++
+                    arr.put(entry.put("action", "cannot link")
+                        .put("emulator", best.id)
+                        .put("why", "${best.displayName} needs a libretro core and nothing here " +
+                                    "names one for '$platform' — its cores are app-private. " +
+                                    "Pass useHints=1 to use the conventional core instead")
+                        .put("coreHints", JSONArray(best.coreHints)))
+                    continue
+                }
+                command = command.replace("{core}", core)
+                cores += core
+                entry.put("core", core).put("coreFrom", from)
+            }
+
+            entry.put("emulator", best.id)
+                 .put("emulatorName", best.displayName)
+                 .put("wouldBecome", command)
+                 .put("from", if (esdeOrder.contains(best.id)) "systeminfo" else "ranking")
+
+            val theirFile = c.launchFile ?: c.file
+            val conflicts = theirFile != File(dir, OVERLAY_FILE) &&
+                            MetadataFile.declaresLaunch(theirFile)
+            if (conflicts && !standAside) {
+                blocked++
+                arr.put(entry.put("action", "needs standAside")
+                    .put("why", "${theirFile.name} declares the launch that does not work; " +
+                                "pass standAside=1 to comment it out, with a backup beside it"))
+                continue
+            }
+
+            if (!apply) {
+                linked++
+                arr.put(entry.put("action", "would link"))
+                continue
+            }
+
+            val prefs = preferences()
+            prefs.setCollection(dir, best.id)
+            savePreferences(prefs)
+            var commented = false
+            if (conflicts) commented = MetadataFile.commentOutLaunch(theirFile)
+            Paths.writeAtomic(File(dir, OVERLAY_FILE), MetadataFile.renderCollection(
+                name = c.name, shortName = c.shortName, launch = command,
+                preserve = c.raw,
+                // Naming the overlay itself here is what the first version did,
+                // on a collection the Bridge had already declared: "delete this
+                // file to go back to this file". What it goes back to then is
+                // nothing, and saying so is the useful sentence.
+                note = (if (theirFile == File(dir, OVERLAY_FILE))
+                            "Delete this file and Pegasus stops seeing this collection."
+                        else "Delete this file to go back to " + theirFile.name + ".") +
+                       if (entry.optString("coreFrom") == "hint")
+                           "\nThe libretro core here is the conventional one for this platform, " +
+                           "not one that was found: RetroArch keeps its cores where nothing " +
+                           "else can look."
+                       else ""))
+            linked++
+            arr.put(entry.put("action", "linked")
+                .put("commentedOutLaunchIn", if (commented) theirFile.absolutePath else JSONObject.NULL))
+        }
+
+        return ok()
+            .put("dryRun", !apply)
+            .put("linked", linked)
+            .put("leftAlone", skipped)
+            .put("blocked", blocked)
+            // Named because a link is only as good as the core behind it, and
+            // whether these are installed is not knowable from here.
+            .put("coresToInstall", JSONArray(cores.map { it.substringAfterLast('/') }))
+            .put("collections", arr)
+    }
+
     // ── Media export ────────────────────────────────────────────────────────
 
     /**
@@ -825,6 +993,7 @@ class PegasusService : Service() {
         const val VERB_LAUNCH_CLEAR     = "launch-clear"
         const val VERB_PROPOSE_COLLECTIONS = "propose-collections"
         const val VERB_APPLY_COLLECTION    = "apply-collection"
+        const val VERB_LINK_EMULATORS      = "link-emulators"
 
         /** Written by the scrapers; read here. One name, one place. */
         const val SS_SYSTEMS_FILE = "screenscraper_systems.json"
@@ -834,6 +1003,6 @@ class PegasusService : Service() {
             VERB_EMULATORS, VERB_EMULATORS_APPLY, VERB_EMULATORS_REVERT, VERB_COLLECTIONS,
             VERB_EXPORT_MEDIA, VERB_EXPORT_STATUS, VERB_EXPORT_REVERT, VERB_EXPORT_MIGRATE,
             VERB_EXPORT_METADATA, VERB_LAUNCH_OPTIONS, VERB_LAUNCH_SELECT, VERB_LAUNCH_CLEAR,
-            VERB_PROPOSE_COLLECTIONS, VERB_APPLY_COLLECTION)
+            VERB_PROPOSE_COLLECTIONS, VERB_APPLY_COLLECTION, VERB_LINK_EMULATORS)
     }
 }

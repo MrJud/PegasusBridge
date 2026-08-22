@@ -127,7 +127,7 @@ object CollectionInference {
     fun proposalFor(dir: File, systems: SystemLookup): Proposal? {
         if (!dir.isDirectory) return null
         val files = dir.listFiles { f -> f.isFile }?.toList().orEmpty()
-        val candidates = files.filter { it.extension.lowercase() !in NOT_A_ROM && it.extension.isNotEmpty() }
+        val candidates = files.filter { isCandidate(it) }
         if (candidates.isEmpty()) return null
 
         val existing = MetadataFile.readCollection(dir)
@@ -271,6 +271,23 @@ object CollectionInference {
         .filter { it.isNotEmpty() }
         .joinToString(" ") { w -> w.replaceFirstChar { it.uppercase() } }
 
+    /**
+     * Whether a file could be a game.
+     *
+     * The suffix check is not decoration: `standAside` leaves a
+     * `metadata.pegasus.txt.pegasusbridge-backup` next to the file it stood
+     * aside from, and its "extension" is a word no blocklist would think to
+     * carry. On `megadrive` — whose own ROMs were being dropped by the bug
+     * below — that backup was the only file left, matched nothing, and the
+     * collection was reported broken by the very act of repairing it.
+     */
+    private fun isCandidate(f: File): Boolean {
+        if (f.name.endsWith(MetadataFile.BACKUP_SUFFIX)) return false
+        if (f.name.startsWith(".")) return false
+        val ext = f.extension.lowercase()
+        return ext.isNotEmpty() && ext !in NOT_A_ROM
+    }
+
     private val SKIP_DIRS = setOf("media", ".media", "skraper", "images", "downloaded_media")
 
     /**
@@ -290,7 +307,12 @@ object CollectionInference {
         "st0", "st1", "st2", "st3", "st4", "st5", "st6", "st7", "st8", "st9",
         "ss0", "ss1", "ss2", "ss3", "ss4", "ss5", "ss6", "ss7", "ss8", "ss9",
         "png", "jpg", "jpeg", "gif", "bmp", "webp", "mp4", "webm", "avi", "mkv",
-        "txt", "dat", "xml", "json", "cfg", "ini", "log", "nfo", "db", "md",
+        "txt", "dat", "xml", "json", "cfg", "ini", "log", "nfo", "db",
+        // `md` is deliberately absent. It is Markdown, and it is also every
+        // Mega Drive cartridge — fifteen of them in this library, all dropped
+        // when it was on this list, which reported the collection as holding
+        // nothing but its own backup file. A stray README in a ROM folder is a
+        // far smaller problem than a console that vanishes.
         "cht", "opt", "bak", "tmp", "part", "nomedia", "url", "lnk", "desktop"
     )
 }

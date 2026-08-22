@@ -379,6 +379,18 @@ object AndroidEmulators {
      * Narrowed to [platform] when the caller named one; otherwise every core
      * the probe's platforms could want, which is what a general listing needs.
      */
+    /**
+     * The conventional cores for [emulatorId] on [platform], most usual first.
+     *
+     * Public because a batch link resolves one collection at a time and must ask
+     * per platform. Asking the platform-less [discover] instead returns the union
+     * across everything RetroArch handles, whose first entry is the NES core —
+     * which is how `gba` and `n64` were both once offered `fceumm`.
+     */
+    fun coreHintsFor(emulatorId: String, pkg: String, platform: String): List<String> =
+        PROBES.firstOrNull { it.id == emulatorId }
+            ?.let { coreHintsFor(it, pkg, platform) }.orEmpty()
+
     private fun coreHintsFor(probe: Probe, pkg: String, platform: String?): List<String> {
         val names = platform
             ?.let { com.pegasus.bridge.core.FuzzyMatch.normalizePlatform(it) }

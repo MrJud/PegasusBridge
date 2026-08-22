@@ -16,8 +16,14 @@ object RomScanner {
      * extension for real dumps, the whole platform would scan as zero files and
      * nothing anywhere would say why.
      *
-     * So [scan] takes a resolver, and the daemon points it at the collection's
+     * So [scan] takes a resolver, and both shells point it at the collection's
      * own declaration.
+     *
+     * The home-computer formats are here because leaving them out was not
+     * harmless: `amiga`, `amstradcpc` and `apple2` each hold one real dump and
+     * each scanned as **zero files**, so no hash was taken and no lookup was
+     * ever made — the failure this comment already predicted, found on a real
+     * device rather than reasoned about.
      */
     val ROM_EXTENSIONS = setOf(
         "bin", "iso", "gba", "gbc", "gb", "nes", "sfc", "smc",
@@ -25,7 +31,13 @@ object RomScanner {
         "psp", "a26", "a78", "lnx", "pce", "sgx", "ws", "wsc",
         "32x", "gg", "sms", "sg", "col", "ngp", "ngc", "vb",
         "fig", "swc", "zip", "7z", "chd", "cso", "pbp", "cue",
-        "m3u", "gdi", "cdi", "rvz", "gcm", "mdf", "img", "wad", "wbfs"
+        "m3u", "gdi", "cdi", "rvz", "gcm", "mdf", "img", "wad", "wbfs",
+        // Home computers: Amiga, Amstrad CPC, Apple II, C64, Spectrum, MSX
+        "adf", "adz", "ipf", "hdf", "hdz", "dms", "lha",
+        "dsk", "cpr", "cdt", "sna", "voc",
+        "do", "po", "nib", "woz", "2mg",
+        "d64", "t64", "tap", "prg", "crt",
+        "cv", "rom"
     )
 
     /**
@@ -78,11 +90,3 @@ object RomScanner {
 
     private const val TAG = "RomScanner"
 }
-
-data class GameMetadata(
-    val gameId: Int = 0,
-    val title: String = "",
-    val consoleName: String = "",
-    val imageIcon: String = "",
-    val numAchievements: Int = 0
-)

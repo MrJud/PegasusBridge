@@ -178,7 +178,7 @@ class HasherService : Service() {
         Paths.ensureAll()
         writePending(jobId, "scan", "running", 0.0, "Scanning ROM folders…")
 
-        val romFiles = RomScanner.scan(roots)
+        val romFiles = RomScanner.scan(roots, RomScanExtensions.forScan)
         val total    = romFiles.size
         Log.i(TAG, "Found $total ROM files")
         if (total == 0) { writePending(jobId, "scan", "running", 1.0, "No ROMs found"); return@coroutineScope }
@@ -298,7 +298,7 @@ class HasherService : Service() {
 
         // Collector: write per-game metadata/{gameId}.json
         var processed = 0; var newEntries = 0; var cachedHits = 0; var skippedPlat = 0
-        var failedLookups = 0
+        var failedLookups = 0; var unmatched = 0
         // Aim for ~50 progress updates over the whole scan, with a sane minimum.
         val writeStep = (total / 50).coerceAtLeast(10)
         for (r in resultChannel) {
@@ -310,6 +310,18 @@ class HasherService : Service() {
                     writeMetadata(r.job, r.meta)
                     newEntries++
                 }
+                // RetroAchievements answered, and the answer was no.
+                //
+                // The producer emits a `Miss` as `GameMetadata(gameId = 0)` —
+                // deliberately, because "this ROM is not in the database" is a
+                // result worth remembering. It then matched no branch here, so
+                // it was counted only in `processed` and reported nowhere: a
+                // library of ROMs the database has never heard of finished with
+                // "0 new, 0 cached, 0 skipped, 0 lookups failed" and no hint
+                // that anything had been looked at. Measured on the tablet,
+                // where `amiga`, `amstradcpc` and `arcade` each said exactly
+                // that.
+                else -> unmatched++
             }
             processed++
 
@@ -330,17 +342,18 @@ class HasherService : Service() {
                 val pct = processed.toDouble() / total
                 writePending(jobId, "scan", "running", pct,
                     "[$processed/$total] ${r.job.file.name}",
-                    newEntries, cachedHits, skippedPlat)
+                    newEntries, cachedHits, skippedPlat, unmatched)
                 updateNotification("[$processed/$total] ${r.job.file.name}", processed, total)
             }
         }
 
         writeDiscoveryIndex()
         writePending(jobId, "scan", "running", 1.0,
-            "Done — $newEntries new, $cachedHits cached, $skippedPlat skipped",
-            newEntries, cachedHits, skippedPlat)
+            "Done — $newEntries new, $cachedHits cached, $skippedPlat skipped, " +
+            "$unmatched not in the database",
+            newEntries, cachedHits, skippedPlat, unmatched)
         Log.i(TAG, "Scan complete: $processed processed, $newEntries new, $cachedHits cached, " +
-                   "$skippedPlat skipped, $failedLookups lookups failed")
+                   "$skippedPlat skipped, $unmatched unmatched, $failedLookups lookups failed")
     }
 
     // Enumera metadata/*.json ed emette metadata/_index.json con:
@@ -437,7 +450,9 @@ class HasherService : Service() {
 
     private fun writePending(
         jobId: String, verb: String, status: String, progress: Double, message: String,
-        newEntries: Int = 0, cachedHits: Int = 0, skippedPlatforms: Int = 0
+        newEntries: Int = 0, cachedHits: Int = 0, skippedPlatforms: Int = 0,
+        /** Looked up and genuinely not in RetroAchievements — an answer, not a failure. */
+        unmatched: Int = 0
     ) {
         val now = System.currentTimeMillis() / 1000L
         val j = JSONObject()
@@ -450,6 +465,7 @@ class HasherService : Service() {
             .put("newEntries",        newEntries)
             .put("cachedHits",        cachedHits)
             .put("skippedPlatforms",  skippedPlatforms)
+            .put("unmatched",         unmatched)
             .put("startedAt", now)
             .put("updatedAt", now)
         val f = Paths.pending(jobId)

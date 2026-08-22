@@ -289,7 +289,55 @@ A ROM scan keeps connections flowing, so it never idles out mid-run. Closing
 Pegasus during a scan does stop it — and costs little, because a rescan is
 incremental.
 
-## 8. What changed vs. legacy
+## 8. Writing into the user's library
+
+Two of the daemon's endpoint groups reach outside `<dataRoot>` and into the
+directories the user owns and hand-edits. They are in `PegasusRoutes`, apart
+from the rest, because that is a different risk from calling a remote API.
+
+### Media export
+
+Pegasus has **two** asset providers and they disagree about what a filename
+means. Both were read from Pegasus' source rather than its documentation,
+because the documentation gives the directory names and not the matching rule:
+
+- `pegasus_media/MediaProvider.cpp` — `media/<name>/boxFront.png`, where
+  `<name>` may be the ROM's base name **or the game's title**.
+- `skraper/SkraperAssetsProvider.cpp` — `media/box2dfront/<romBaseName>.png`,
+  matched against the ROM's base name **only**.
+
+`AssetLayout` knows both, detects which a collection already uses, and names
+files with Qt's `completeBaseName` — everything before the *last* dot, so
+`Super Mario Bros. (World)` keeps its full stop.
+
+Every file written goes into `cache/export-manifest.json`. That is what lets the
+exporter refuse to overwrite a picture it did not write, and lets `revert`
+remove exactly its own and leave everything else — including a file somebody has
+since edited, which is a decision rather than a leftover.
+
+### Emulator discovery
+
+`EmulatorDiscovery` probes PATH and Flatpak for known emulators and **runs each
+one** for its version string, so a file called `mame` that is not MAME is
+reported unverified rather than offered. It proposes; it never applies.
+
+`/emulators/apply` writes a Bridge-owned overlay,
+`zz-pegasusbridge.metadata.pegasus.txt`. If the collection's own metadata file
+already declares a launch command it refuses first, because Pegasus resolves two
+files declaring one collection with `get_or_create_collection` plus
+`setCommonLaunchCmd` — which overwrites — and `find_metafiles_in` iterates with
+a bare `QDirIterator` and no sort flag. Last parsed wins, and which one that is
+depends on the filesystem. `standAside=1` backs the user's file up and comments
+out only its launch block, leaving one declaration and a byte-exact undo.
+
+### The scanner's extension list
+
+`RomScanner.ROM_EXTENSIONS` is now a **default**, not a definition: the daemon
+adds whatever each collection's `extensions:` line declares. They disagree more
+often than is comfortable — every collection in the development library declares
+`jud`, which the built-in list has never heard of.
+
+## 9. What changed vs. legacy
 
 | Concern                  | Before (legacy)                        | Now (Bridge)                          |
 | ------------------------ | -------------------------------------- | ------------------------------------- |

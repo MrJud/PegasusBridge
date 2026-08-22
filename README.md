@@ -259,6 +259,38 @@ Point the installer at a theme it did not detect with
 | trailers | `GET /video/search?q=`, `/video/resolve`, `/video/download` | `search-video`, `play-video`, `download-video` |
 | hash a ROM tree | `GET /scan?roots=` | `scan` |
 | credentials | `POST /credentials`, `GET /credentials/status`, `GET /credentials/clear?block=` | `set-credentials`, `credentials-status`, `clear-credentials` |
+| which emulators are installed | `GET /emulators` | — |
+| what each collection is and would be proposed | `GET /collections?roots=` | — |
+| apply a launch command | `GET /emulators/apply?directory=&launch=` | — |
+| undo that | `GET /emulators/revert?directory=` | — |
+| copy one picture into the library | `GET /export/media?source=&file=&kind=` | — |
+| what has been exported, and undo it | `GET /export/status`, `GET /export/revert` | — |
+
+The last six write into the **user's** directories rather than the data root, so
+they follow two rules the rest do not need: nothing is written that was not
+asked for by name, and nothing is written that cannot be taken back exactly.
+`/emulators` proposes and never applies; `/emulators/apply` refuses outright if
+the collection's own metadata file already sets a launch command, because
+Pegasus keeps whichever file it parses last and does not sort them.
+`/export/media` will not overwrite a picture the Bridge did not write, and
+`/export/revert` removes only what is in its manifest.
+
+### Sources
+
+| source | ops | needs |
+| --- | --- | --- |
+| `ss` | `game`, `media`, `systems` | ScreenScraper developer pair |
+| `sgdb` | `search`, `grids`, `logos`, `heroes`, `screenshots` | SteamGridDB key |
+| `igdb` | `token`, `search`, `details`, `covers`, `screenshots`, `artworks` | Twitch client id/secret |
+| `ign` | `search`, `details`, `images` | — |
+| `steam` | `search`, `assets` | — (public store) |
+| `steam-account` | `library`, `achievements`, `resolve` | the user's own Steam Web API key and SteamID |
+| `romm` | `heartbeat`, `platforms`, `roms` | a RomM server, optionally a `rmm_…` client token |
+
+`steam` and `steam-account` are deliberately separate: the first is public
+product data and needs nothing, the second answers only about the signed-in user
+and can be refused because their profile is private — which is a state to show,
+not an error to retry.
 
 `/ra/match` is the one worth knowing about. Ask it *which RetroAchievements game
 this is* and it answers from the ROM hash index when it can and a fuzzy match

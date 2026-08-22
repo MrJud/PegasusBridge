@@ -1,5 +1,6 @@
 package com.pegasus.bridge.pegasus
 
+import com.pegasus.bridge.core.ArtifactKey
 import com.pegasus.bridge.core.BridgeLog
 import java.io.File
 
@@ -18,21 +19,72 @@ import java.io.File
  *
  * 1. **Copy, never move.** `artwork/` stays the cache. If the export is deleted,
  *    re-running it costs a file copy rather than the API quota to fetch again.
- * 2. **Never overwrite what the Bridge did not write.** A hand-placed cover is
- *    the more considered of the two. Ownership is decided by [ExportManifest],
- *    not by guessing from a filename.
+ * 2. **Never destroy a picture somebody else put there.** Not "do not overwrite
+ *    by default" — never, on any path. See [Conflict].
  * 3. **Write atomically.** A half-copied picture at the target path is
  *    indistinguishable from a good one on the next run, and the theme would show
  *    a broken image with nothing anywhere saying why.
  */
 class MediaExporter(
     private val manifest: ExportManifest,
-    private val writeAtomic: (File, String) -> Unit
+    private val writeAtomic: (File, String) -> Unit,
+    /**
+     * Where a replaced original is kept.
+     *
+     * In the Bridge's data root rather than beside the file it came from: the
+     * point of the export is a tidy media directory, and leaving
+     * `Contra (USA).png.original` next to `Contra (USA).png` would undo that
+     * while also giving Pegasus a file to think about.
+     */
+    private val quarantine: File
 ) {
+
+    /**
+     * What to do about a picture that is already there and is not ours.
+     *
+     * There is deliberately no "overwrite" here. The first version of this had
+     * one, behind a `replaceForeign=1` flag, and it was the only destructive path
+     * left in the project — a hand-made box scan traded for a scraped one with no
+     * way back. A picture is a few hundred kilobytes; keeping it costs nothing
+     * that matters and keeping it is the only version of "replace" a person can
+     * change their mind about.
+     */
+    enum class Conflict {
+        /** Leave theirs. The default, and what a first run should do. */
+        KEEP_THEIRS,
+
+        /**
+         * Move theirs into [quarantine], then write ours.
+         *
+         * Recorded as a pair, so `revert` deletes ours and puts theirs back where
+         * it was, byte for byte.
+         */
+        REPLACE_KEEPING_ORIGINAL
+    }
+
+    /**
+     * Where the media tree is built.
+     *
+     * [InCollection] is the only one Pegasus reads. [Mirror] writes the same tree
+     * somewhere else entirely and is honest that nothing will pick it up — it
+     * exists so a person can look at what an export *would* place, or keep a copy
+     * outside a library they would rather not have written to at all.
+     */
+    sealed interface Destination {
+        data class InCollection(val collectionDir: File) : Destination
+        data class Mirror(val root: File) : Destination
+    }
 
     sealed interface Outcome {
         /** Copied. [target] is where Pegasus will now find it. */
         data class Written(val target: File, val bytes: Long) : Outcome
+
+        /**
+         * Copied, and the picture that was there is now in [preserved].
+         *
+         * Both paths are in the manifest, so this is undoable as one action.
+         */
+        data class Replaced(val target: File, val bytes: Long, val preserved: File) : Outcome
 
         /** Already there, already correct, already ours. Nothing was done. */
         data class UpToDate(val target: File) : Outcome
@@ -40,8 +92,8 @@ class MediaExporter(
         /**
          * Something is already at that path that the Bridge did not put there.
          *
-         * Not an error — it is the user's file, and it wins. Reported so a UI can
-         * offer to replace it, which is a decision for a person.
+         * Not an error — it is the user's file, and by default it wins. Reported
+         * so a UI can offer the choice, which is a decision for a person.
          */
         data class Occupied(val target: File) : Outcome
 
@@ -52,7 +104,7 @@ class MediaExporter(
     }
 
     /**
-     * One asset into one collection.
+     * One asset into one destination.
      *
      * [romFile] decides the name: Pegasus matches the ROM's own base name, so
      * this is taken from the file rather than from the title, which is the whole
@@ -61,20 +113,35 @@ class MediaExporter(
     fun export(
         source: File,
         romFile: File,
-        collectionDir: File,
+        destination: Destination,
         bridgeKind: String,
         variant: String,
-        style: AssetLayout.Style = AssetLayout.detectStyle(collectionDir),
+        style: AssetLayout.Style? = null,
         sourceName: String = "ss",
-        replaceForeign: Boolean = false
+        onConflict: Conflict = Conflict.KEEP_THEIRS
     ): Outcome {
         val kind = AssetLayout.kindOf(bridgeKind) ?: return Outcome.Unsupported(bridgeKind)
         if (!source.isFile || source.length() == 0L)
             return Outcome.Failed(source, "nothing to copy from ${source.name}")
 
+        val root = when (destination) {
+            is Destination.InCollection -> destination.collectionDir
+            is Destination.Mirror -> destination.root
+        }
+        val layout = style ?: when (destination) {
+            is Destination.InCollection -> AssetLayout.detectStyle(destination.collectionDir)
+            // Nothing reads a mirror, so the only thing that makes one useful is
+            // being able to compare it against the collection it shadows.
+            is Destination.Mirror -> AssetLayout.Style.SKRAPER
+        }
+
         val romBaseName = AssetLayout.completeBaseName(romFile)
         val ext = source.extension.lowercase().ifEmpty { if (kind.video) "mp4" else "png" }
-        val target = AssetLayout.pathFor(collectionDir, style, kind, romBaseName, ext)
+        val target = AssetLayout.pathFor(root, layout, kind, romBaseName, ext)
+        val collectionName = when (destination) {
+            is Destination.InCollection -> destination.collectionDir.name
+            is Destination.Mirror -> romFile.parentFile?.name.orEmpty()
+        }
 
         if (manifest.isCurrent(target, variant, source.length()))
             return Outcome.UpToDate(target)
@@ -82,10 +149,16 @@ class MediaExporter(
         // Somebody else's file. Includes one a previous scraping tool left, and
         // one the user placed by hand — the Bridge cannot tell them apart and
         // must not try.
-        if (target.isFile && target.length() > 0 && !manifest.owns(target) && !replaceForeign)
-            return Outcome.Occupied(target)
+        val foreign = target.isFile && target.length() > 0 && !manifest.owns(target)
+        if (foreign && onConflict == Conflict.KEEP_THEIRS) return Outcome.Occupied(target)
 
         return try {
+            var preserved: File? = null
+            if (foreign) {
+                preserved = setAside(target, collectionName)
+                    ?: return Outcome.Failed(target, "could not set the existing picture aside")
+            }
+
             target.parentFile?.mkdirs()
             val tmp = File(target.parentFile, "${target.name}.part")
             source.copyTo(tmp, overwrite = true)
@@ -96,14 +169,16 @@ class MediaExporter(
             manifest.put(ExportManifest.Record(
                 target = target.absolutePath,
                 source = sourceName,
-                collection = collectionDir.name,
+                collection = collectionName,
                 romBaseName = romBaseName,
                 kind = kind.name,
                 variant = variant,
                 bytes = target.length(),
-                writtenAt = System.currentTimeMillis() / 1000L
+                writtenAt = System.currentTimeMillis() / 1000L,
+                replaced = preserved?.absolutePath.orEmpty()
             ))
-            Outcome.Written(target, target.length())
+            preserved?.let { Outcome.Replaced(target, target.length(), it) }
+                ?: Outcome.Written(target, target.length())
         } catch (t: Throwable) {
             if (t is kotlinx.coroutines.CancellationException) throw t
             BridgeLog.e(TAG, "could not export ${source.name} to ${target.path}", t)
@@ -112,36 +187,89 @@ class MediaExporter(
     }
 
     /**
-     * Removes every file this export put in the library, and forgets them.
+     * Moves [original] into the quarantine and answers where it went.
      *
-     * By manifest and never by pattern: a glob over `box2dfront` would
-     * take the user's own pictures with it, and the whole point of recording what
-     * was written is that taking it back can be exact.
+     * The structure under the quarantine mirrors the library's, so a person
+     * looking in there can tell what a file was without consulting the manifest.
+     * A name already taken gains a counter rather than overwriting — the one
+     * thing this function exists to prevent is a picture being lost, and losing
+     * it inside the safety net would be the worst version of that.
+     */
+    private fun setAside(original: File, collection: String): File? = try {
+        val dir = File(File(quarantine, ArtifactKey.sanitize(collection)),
+                       original.parentFile?.name?.let(ArtifactKey::sanitize).orEmpty())
+        dir.mkdirs()
+        var dest = File(dir, original.name)
+        var n = 1
+        while (dest.exists()) {
+            dest = File(dir, "${original.nameWithoutExtension} ($n).${original.extension}")
+            n++
+        }
+        // Copy-then-delete rather than rename: the library and the data root are
+        // very often different filesystems, and `renameTo` across one silently
+        // fails rather than throwing.
+        original.copyTo(dest, overwrite = false)
+        if (dest.length() != original.length()) {
+            dest.delete()
+            null
+        } else if (original.delete()) dest else { dest.delete(); null }
+    } catch (t: Throwable) {
+        if (t is kotlinx.coroutines.CancellationException) throw t
+        BridgeLog.e(TAG, "could not set aside ${original.path}", t)
+        null
+    }
+
+    /**
+     * Removes every file this export put in the library, and puts back whatever
+     * it displaced.
+     *
+     * By manifest and never by pattern: a glob over `box2dfront` would take the
+     * user's own pictures with it, and the whole point of recording what was
+     * written is that taking it back can be exact.
      *
      * A file that has been *changed* since the Bridge wrote it is left alone —
      * somebody replaced it deliberately, and that is a decision, not a leftover.
+     * Its preserved original stays in the quarantine rather than being restored
+     * over the top of that decision.
      */
     fun revert(collection: String? = null): Reverted {
-        var removed = 0; var changed = 0; var absent = 0
+        var removed = 0; var changed = 0; var absent = 0; var restored = 0
         for (r in manifest.all()) {
             if (collection != null && r.collection != collection) continue
             val f = File(r.target)
-            when {
-                !f.isFile -> { absent++; manifest.remove(r.target) }
-                f.length() != r.bytes -> changed++
-                f.delete() -> { removed++; manifest.remove(r.target) }
-                else -> BridgeLog.w(TAG, "could not remove ${f.path}")
+            val gone = when {
+                !f.isFile -> { absent++; true }
+                f.length() != r.bytes -> { changed++; false }
+                f.delete() -> { removed++; true }
+                else -> { BridgeLog.w(TAG, "could not remove ${f.path}"); false }
             }
+            if (!gone) continue
+            if (r.replaced.isNotEmpty() && restoreOriginal(File(r.replaced), f)) restored++
+            manifest.remove(r.target)
         }
         manifest.save(writeAtomic)
-        return Reverted(removed, changed, absent)
+        return Reverted(removed, changed, absent, restored)
+    }
+
+    private fun restoreOriginal(preserved: File, target: File): Boolean = try {
+        if (!preserved.isFile) false
+        else {
+            target.parentFile?.mkdirs()
+            preserved.copyTo(target, overwrite = true)
+            preserved.delete()
+            true
+        }
+    } catch (t: Throwable) {
+        if (t is kotlinx.coroutines.CancellationException) throw t
+        BridgeLog.e(TAG, "could not restore ${preserved.path}", t)
+        false
     }
 
     /**
      * [changed] were left in place: their bytes no longer match what was written,
-     * so somebody replaced them on purpose.
+     * so somebody replaced them on purpose. [restored] counts the originals put back where they were.
      */
-    data class Reverted(val removed: Int, val changed: Int, val absent: Int)
+    data class Reverted(val removed: Int, val changed: Int, val absent: Int, val restored: Int)
 
     fun save() = manifest.save(writeAtomic)
 

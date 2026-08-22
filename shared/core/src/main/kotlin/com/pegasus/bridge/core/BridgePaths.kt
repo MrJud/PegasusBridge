@@ -35,6 +35,17 @@ class BridgePaths(val root: File) {
      */
     val artwork    = File(root, "artwork")
 
+    /**
+     * Pictures the Bridge moved out of the way, never ones it deleted.
+     *
+     * Replacing a cover in the user's library means setting theirs aside, not
+     * destroying it. An image costs a few hundred kilobytes; a box scan somebody
+     * made themselves does not come back. So "replace" is a move, this is where
+     * it moves to, and [com.pegasus.bridge.pegasus.ExportManifest] remembers
+     * which original belongs to which replacement so a revert can undo the pair.
+     */
+    val replaced   = File(root, "replaced")
+
     val credentials = File(config, "credentials.json")
 
     fun metadata(gameId: String)   = File(metadata,   "$gameId.json")
@@ -55,7 +66,7 @@ class BridgePaths(val root: File) {
 
     fun ensureAll() {
         listOf(config, metadata, media, search, searchRa, scrape, download,
-               pending, done, profile, completion, cache, artwork).forEach { it.mkdirs() }
+               pending, done, profile, completion, cache, artwork, replaced).forEach { it.mkdirs() }
     }
 
     /**

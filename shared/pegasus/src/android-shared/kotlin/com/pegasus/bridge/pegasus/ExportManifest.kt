@@ -37,7 +37,16 @@ class ExportManifest(private val file: File) {
         val kind: String,
         val variant: String,
         val bytes: Long,
-        val writtenAt: Long
+        val writtenAt: Long,
+        /**
+         * Where the picture this one displaced was moved to, or empty.
+         *
+         * The link that makes replacing reversible as a single action: a revert
+         * deletes the file named by [target] and copies this one back over it.
+         * Without the pair recorded together, the quarantine would be a pile of
+         * images nobody could put back.
+         */
+        val replaced: String = ""
     )
 
     private val records = LinkedHashMap<String, Record>()
@@ -71,7 +80,8 @@ class ExportManifest(private val file: File) {
                     kind = o.optString("kind"),
                     variant = o.optString("variant"),
                     bytes = o.optLong("bytes"),
-                    writtenAt = o.optLong("writtenAt")
+                    writtenAt = o.optLong("writtenAt"),
+                    replaced = o.optString("replaced")
                 )
             }
         } catch (t: Throwable) {
@@ -123,7 +133,8 @@ class ExportManifest(private val file: File) {
                 .put("kind", r.kind)
                 .put("variant", r.variant)
                 .put("bytes", r.bytes)
-                .put("writtenAt", r.writtenAt))
+                .put("writtenAt", r.writtenAt)
+                .also { j -> if (r.replaced.isNotEmpty()) j.put("replaced", r.replaced) })
         }
         val payload = JSONObject()
             .put("schemaVersion", SCHEMA_VERSION)

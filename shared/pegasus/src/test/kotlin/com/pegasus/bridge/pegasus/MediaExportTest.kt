@@ -27,6 +27,7 @@ class MediaExportTest {
 
     private lateinit var dataRoot: File
     private lateinit var library: File
+    private lateinit var quarantine: File
     private lateinit var manifest: ExportManifest
     private lateinit var exporter: MediaExporter
 
@@ -34,9 +35,12 @@ class MediaExportTest {
         BridgeLog.current = NoopLog
         dataRoot = Files.createTempDirectory("export-data").toFile()
         library  = Files.createTempDirectory("export-lib").toFile()
+        quarantine = File(dataRoot, "replaced")
         manifest = ExportManifest(File(dataRoot, ExportManifest.FILE_NAME))
-        exporter = MediaExporter(manifest) { f, t -> BridgePaths.writeAtomic(f, t) }
+        exporter = MediaExporter(manifest, { f, t -> BridgePaths.writeAtomic(f, t) }, quarantine)
     }
+
+    private fun into(dir: File) = MediaExporter.Destination.InCollection(dir)
 
     @AfterTest fun tearDown() {
         dataRoot.deleteRecursively(); library.deleteRecursively()
@@ -62,7 +66,7 @@ class MediaExportTest {
         val nes = collection("nes")
         val romFile = rom(nes, "Super Mario Bros. (World).nes")
 
-        val r = exporter.export(artwork("ss-1245-cover-abc.png"), romFile, nes,
+        val r = exporter.export(artwork("ss-1245-cover-abc.png"), romFile, into(nes),
                                 "cover", "abc", AssetLayout.Style.SKRAPER)
 
         assertTrue(r is MediaExporter.Outcome.Written, "got $r")
@@ -77,7 +81,7 @@ class MediaExportTest {
         val nes = collection("nes")
         val romFile = rom(nes, "Castlevania III - Dracula's Curse (USA).nes")
 
-        val r = exporter.export(artwork("ss-1.png"), romFile, nes,
+        val r = exporter.export(artwork("ss-1.png"), romFile, into(nes),
                                 "cover", "v1", AssetLayout.Style.SKRAPER)
                 as MediaExporter.Outcome.Written
 
@@ -90,7 +94,7 @@ class MediaExportTest {
         val nes = collection("nes")
         val romFile = rom(nes, "Contra (USA).nes")
 
-        val r = exporter.export(artwork("c.png"), romFile, nes,
+        val r = exporter.export(artwork("c.png"), romFile, into(nes),
                                 "cover", "v1", AssetLayout.Style.NATIVE)
                 as MediaExporter.Outcome.Written
 
@@ -108,7 +112,7 @@ class MediaExportTest {
 
         for ((bridgeKind, dir) in expected) {
             val ext = if (bridgeKind == "video") "mp4" else "png"
-            val r = exporter.export(artwork("$bridgeKind.$ext"), romFile, nes,
+            val r = exporter.export(artwork("$bridgeKind.$ext"), romFile, into(nes),
                                     bridgeKind, "v-$bridgeKind", AssetLayout.Style.SKRAPER)
             assertTrue(r is MediaExporter.Outcome.Written, "$bridgeKind: got $r")
             assertEquals(dir, r.target.parentFile.name, "wrong directory for $bridgeKind")
@@ -144,7 +148,7 @@ class MediaExportTest {
             parentFile.mkdirs(); writeText("the user's own careful scan")
         }
 
-        val r = exporter.export(artwork("c.png"), romFile, nes,
+        val r = exporter.export(artwork("c.png"), romFile, into(nes),
                                 "cover", "v1", AssetLayout.Style.SKRAPER)
 
         assertTrue(r is MediaExporter.Outcome.Occupied, "got $r")
@@ -155,9 +159,9 @@ class MediaExportTest {
         val nes = collection("nes")
         val romFile = rom(nes, "Contra (USA).nes")
 
-        exporter.export(artwork("a.png", "old picture"), romFile, nes,
+        exporter.export(artwork("a.png", "old picture"), romFile, into(nes),
                         "cover", "variant-1", AssetLayout.Style.SKRAPER)
-        val r = exporter.export(artwork("b.png", "new picture"), romFile, nes,
+        val r = exporter.export(artwork("b.png", "new picture"), romFile, into(nes),
                                 "cover", "variant-2", AssetLayout.Style.SKRAPER)
 
         assertTrue(r is MediaExporter.Outcome.Written, "got $r")
@@ -169,29 +173,95 @@ class MediaExportTest {
         val romFile = rom(nes, "Contra (USA).nes")
         val src = artwork("a.png", "picture")
 
-        val first = exporter.export(src, romFile, nes, "cover", "v1",
+        val first = exporter.export(src, romFile, into(nes), "cover", "v1",
                                     AssetLayout.Style.SKRAPER) as MediaExporter.Outcome.Written
         first.target.setLastModified(first.target.lastModified() - 60_000)
         val stamp = first.target.lastModified()
 
-        val second = exporter.export(src, romFile, nes, "cover", "v1", AssetLayout.Style.SKRAPER)
+        val second = exporter.export(src, romFile, into(nes), "cover", "v1", AssetLayout.Style.SKRAPER)
 
         assertTrue(second is MediaExporter.Outcome.UpToDate, "got $second")
         assertEquals(stamp, first.target.lastModified(), "the file was rewritten for nothing")
     }
 
-    @Test fun `replacing a foreign file happens only when asked`() {
+    // ── Replacing, which must never mean destroying ─────────────────────────
+
+    @Test fun `replacing sets the original aside instead of overwriting it`() {
         val nes = collection("nes")
         val romFile = rom(nes, "Contra (USA).nes")
         File(nes, "media/box2dfront/Contra (USA).png").apply {
-            parentFile.mkdirs(); writeText("theirs")
+            parentFile.mkdirs(); writeText("a box scan somebody made themselves")
         }
 
-        val r = exporter.export(artwork("c.png", "ours"), romFile, nes, "cover", "v1",
-                                AssetLayout.Style.SKRAPER, replaceForeign = true)
+        val r = exporter.export(artwork("c.png", "ours"), romFile, into(nes), "cover", "v1",
+                                AssetLayout.Style.SKRAPER,
+                                onConflict = MediaExporter.Conflict.REPLACE_KEEPING_ORIGINAL)
 
-        assertTrue(r is MediaExporter.Outcome.Written, "got $r")
+        assertTrue(r is MediaExporter.Outcome.Replaced, "got $r")
         assertEquals("ours", r.target.readText())
+        assertTrue(r.preserved.isFile, "the original was destroyed rather than kept")
+        assertEquals("a box scan somebody made themselves", r.preserved.readText())
+        assertTrue(r.preserved.absolutePath.startsWith(quarantine.absolutePath),
+                   "the original must be kept in the Bridge's data root, not the library")
+    }
+
+    @Test fun `reverting a replacement puts the original back where it was`() {
+        val nes = collection("nes")
+        val romFile = rom(nes, "Contra (USA).nes")
+        val theirPath = File(nes, "media/box2dfront/Contra (USA).png").apply {
+            parentFile.mkdirs(); writeText("theirs")
+        }
+        exporter.export(artwork("c.png", "ours"), romFile, into(nes), "cover", "v1",
+                        AssetLayout.Style.SKRAPER,
+                        onConflict = MediaExporter.Conflict.REPLACE_KEEPING_ORIGINAL)
+        assertEquals("ours", theirPath.readText())
+
+        val result = exporter.revert()
+
+        assertEquals(1, result.removed)
+        assertEquals(1, result.restored)
+        assertTrue(theirPath.isFile, "the original was not put back")
+        assertEquals("theirs", theirPath.readText())
+    }
+
+    // Two originals for one game must not collide inside the safety net — losing
+    // a picture inside the thing that exists to keep it would be the worst way.
+    @Test fun `a second original for the same path gets its own place in the quarantine`() {
+        val nes = collection("nes")
+        val romFile = rom(nes, "Contra (USA).nes")
+        val target = File(nes, "media/box2dfront/Contra (USA).png")
+
+        target.apply { parentFile.mkdirs(); writeText("first original") }
+        val a = exporter.export(artwork("a.png", "ours-1"), romFile, into(nes), "cover", "v1",
+            AssetLayout.Style.SKRAPER,
+            onConflict = MediaExporter.Conflict.REPLACE_KEEPING_ORIGINAL) as MediaExporter.Outcome.Replaced
+
+        // Somebody puts a different picture back by hand, then we replace again.
+        manifest.remove(target.absolutePath)
+        target.writeText("second original")
+        val b = exporter.export(artwork("b.png", "ours-2"), romFile, into(nes), "cover", "v2",
+            AssetLayout.Style.SKRAPER,
+            onConflict = MediaExporter.Conflict.REPLACE_KEEPING_ORIGINAL) as MediaExporter.Outcome.Replaced
+
+        assertTrue(a.preserved.absolutePath != b.preserved.absolutePath, "the quarantine collided")
+        assertEquals("first original", a.preserved.readText())
+        assertEquals("second original", b.preserved.readText())
+    }
+
+    @Test fun `a mirror writes the same tree somewhere Pegasus will not read`() {
+        val nes = collection("nes")
+        val romFile = rom(nes, "Contra (USA).nes")
+        val elsewhere = File(library, "somewhere-else").apply { mkdirs() }
+
+        val r = exporter.export(artwork("c.png"), romFile,
+                                MediaExporter.Destination.Mirror(elsewhere),
+                                "cover", "v1") as MediaExporter.Outcome.Written
+
+        assertTrue(r.target.absolutePath.startsWith(elsewhere.absolutePath), r.target.path)
+        assertEquals("Contra (USA).png", r.target.name)
+        assertEquals("box2dfront", r.target.parentFile.name)
+        // And it has not touched the collection at all.
+        assertFalse(File(nes, "media").exists(), "a mirror must not write into the library")
     }
 
     // ── Taking it back ──────────────────────────────────────────────────────
@@ -202,7 +272,7 @@ class MediaExportTest {
         val theirs = File(nes, "media/box2dfront/Someone Elses Game.png").apply {
             parentFile.mkdirs(); writeText("not ours")
         }
-        val ours = (exporter.export(artwork("c.png"), romFile, nes, "cover", "v1",
+        val ours = (exporter.export(artwork("c.png"), romFile, into(nes), "cover", "v1",
                                     AssetLayout.Style.SKRAPER) as MediaExporter.Outcome.Written).target
 
         val result = exporter.revert()
@@ -217,7 +287,7 @@ class MediaExportTest {
     @Test fun `revert leaves a file somebody has since changed`() {
         val nes = collection("nes")
         val romFile = rom(nes, "Contra (USA).nes")
-        val ours = (exporter.export(artwork("c.png"), romFile, nes, "cover", "v1",
+        val ours = (exporter.export(artwork("c.png"), romFile, into(nes), "cover", "v1",
                                     AssetLayout.Style.SKRAPER) as MediaExporter.Outcome.Written).target
         ours.writeText("a much better cover, chosen by a person")
 
@@ -231,7 +301,7 @@ class MediaExportTest {
     @Test fun `the manifest survives a restart`() {
         val nes = collection("nes")
         val romFile = rom(nes, "Contra (USA).nes")
-        exporter.export(artwork("c.png"), romFile, nes, "cover", "v1", AssetLayout.Style.SKRAPER)
+        exporter.export(artwork("c.png"), romFile, into(nes), "cover", "v1", AssetLayout.Style.SKRAPER)
         exporter.save()
 
         val reopened = ExportManifest(File(dataRoot, ExportManifest.FILE_NAME))
@@ -241,7 +311,7 @@ class MediaExportTest {
 
     @Test fun `a kind pegasus has no slot for is reported rather than guessed at`() {
         val nes = collection("nes")
-        val r = exporter.export(artwork("x.png"), rom(nes, "Contra (USA).nes"), nes,
+        val r = exporter.export(artwork("x.png"), rom(nes, "Contra (USA).nes"), into(nes),
                                 "some-kind-nobody-defined", "v1")
         assertTrue(r is MediaExporter.Outcome.Unsupported, "got $r")
     }

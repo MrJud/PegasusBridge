@@ -37,9 +37,10 @@ class PegasusRoutes(private val paths: BridgePaths) {
     private val manifestFile get() = File(paths.cache, ExportManifest.FILE_NAME)
 
     /** Reopened per request: the file is small, and a stale copy would lie about ownership. */
-    private fun exporter() = MediaExporter(ExportManifest(manifestFile)) { f, t ->
-        BridgePaths.writeAtomic(f, t)
-    }
+    private fun exporter() = MediaExporter(
+        ExportManifest(manifestFile),
+        { f, t -> BridgePaths.writeAtomic(f, t) },
+        paths.replaced)
 
     fun handle(req: Request): Response? = when (req.path) {
         "/emulators"          -> emulators()
@@ -269,6 +270,14 @@ class PegasusRoutes(private val paths: BridgePaths) {
             ?: romFile.parentFile
             ?: return Response.badRequest("cannot tell which collection this ROM is in")
 
+        // `mirrorTo` writes the same tree somewhere else entirely. Pegasus will
+        // not read it — nothing outside a configured game directory is searched —
+        // and saying so is better than letting somebody discover it by wondering
+        // why no covers appeared.
+        val destination = req.param("mirrorTo")?.takeIf { it.isNotBlank() }
+            ?.let { MediaExporter.Destination.Mirror(File(it)) }
+            ?: MediaExporter.Destination.InCollection(collectionDir)
+
         val style = req.param("style")?.uppercase()?.let {
             runCatching { AssetLayout.Style.valueOf(it) }.getOrNull()
         } ?: AssetLayout.detectStyle(collectionDir)
@@ -278,33 +287,53 @@ class PegasusRoutes(private val paths: BridgePaths) {
                 ?: return Response.badRequest("no Pegasus asset slot for kind '$kind'")
             val base = AssetLayout.completeBaseName(romFile)
             val ext = source.extension.lowercase().ifEmpty { if (assetKind.video) "mp4" else "png" }
-            val target = AssetLayout.pathFor(collectionDir, style, assetKind, base, ext)
+            val root = when (destination) {
+                is MediaExporter.Destination.Mirror -> destination.root
+                is MediaExporter.Destination.InCollection -> destination.collectionDir
+            }
+            val target = AssetLayout.pathFor(root, style, assetKind, base, ext)
             return Response.json(JSONObject()
                 .put("schemaVersion", SchemaVersion.CURRENT)
                 .put("status", "ok")
                 .put("outcome", "dryRun")
                 .put("target", target.absolutePath)
                 .put("style", style.name.lowercase())
+                .put("readByPegasus", destination is MediaExporter.Destination.InCollection)
                 .put("occupied", target.isFile && !ExportManifest(manifestFile).owns(target))
                 .toString())
         }
 
+        // Two states only, and neither destroys anything. The old
+        // `replaceForeign=1` overwrote, which was the last destructive path in
+        // the project: a hand-made box scan traded for a scraped one with no way
+        // back. Replacing now means setting the original aside.
+        val onConflict = if (req.param("replace") == "1")
+            MediaExporter.Conflict.REPLACE_KEEPING_ORIGINAL
+        else MediaExporter.Conflict.KEEP_THEIRS
+
         val ex = exporter()
         val outcome = ex.export(
-            source = source, romFile = romFile, collectionDir = collectionDir,
+            source = source, romFile = romFile, destination = destination,
             bridgeKind = kind, variant = variant, style = style,
             sourceName = req.param("provider") ?: "ss",
-            replaceForeign = req.param("replaceForeign") == "1")
+            onConflict = onConflict)
         ex.save()
 
         val payload = JSONObject()
             .put("schemaVersion", SchemaVersion.CURRENT)
             .put("style", style.name.lowercase())
+            .put("readByPegasus", destination is MediaExporter.Destination.InCollection)
         return when (outcome) {
             is MediaExporter.Outcome.Written -> Response.json(payload
                 .put("status", "ok").put("outcome", "written")
                 .put("target", outcome.target.absolutePath)
                 .put("bytes", outcome.bytes).toString())
+            is MediaExporter.Outcome.Replaced -> Response.json(payload
+                .put("status", "ok").put("outcome", "replaced")
+                .put("target", outcome.target.absolutePath)
+                .put("bytes", outcome.bytes)
+                // Where the picture that was there has gone. Nothing was deleted.
+                .put("preservedOriginal", outcome.preserved.absolutePath).toString())
             is MediaExporter.Outcome.UpToDate -> Response.json(payload
                 .put("status", "ok").put("outcome", "upToDate")
                 .put("target", outcome.target.absolutePath).toString())
@@ -313,7 +342,8 @@ class PegasusRoutes(private val paths: BridgePaths) {
             is MediaExporter.Outcome.Occupied -> Response.json(payload
                 .put("status", "ok").put("outcome", "occupied")
                 .put("target", outcome.target.absolutePath)
-                .put("hint", "pass replaceForeign=1 to overwrite a file the Bridge did not write")
+                .put("hint", "pass replace=1 to put ours here and keep theirs in " +
+                             "the Bridge's replaced/ directory; revert undoes both")
                 .toString())
             is MediaExporter.Outcome.Unsupported ->
                 Response.badRequest("no Pegasus asset slot for kind '${outcome.kind}'")
@@ -333,6 +363,7 @@ class PegasusRoutes(private val paths: BridgePaths) {
             .put("schemaVersion", SchemaVersion.CURRENT)
             .put("status", "ok")
             .put("count", m.size)
+            .put("replacedOriginals", m.all().count { it.replaced.isNotEmpty() })
             .put("byCollection", byCollection)
             // Files the Bridge wrote that somebody has since removed. Not an
             // error — worth showing, because it usually means a cleanup tool ran.
@@ -351,6 +382,8 @@ class PegasusRoutes(private val paths: BridgePaths) {
             // somebody replaced them deliberately.
             .put("keptBecauseChanged", r.changed)
             .put("alreadyGone", r.absent)
+            // Pictures the export had displaced, now back where they were.
+            .put("originalsRestored", r.restored)
             .toString())
     }
 

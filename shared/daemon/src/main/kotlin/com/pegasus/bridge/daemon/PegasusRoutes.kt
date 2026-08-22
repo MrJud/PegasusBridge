@@ -8,6 +8,7 @@ import com.pegasus.bridge.pegasus.AssetLayout
 import com.pegasus.bridge.pegasus.EmulatorDiscovery
 import com.pegasus.bridge.pegasus.ExportManifest
 import com.pegasus.bridge.pegasus.GameEntry
+import com.pegasus.bridge.pegasus.LaunchCheck
 import com.pegasus.bridge.pegasus.MediaExporter
 import com.pegasus.bridge.pegasus.MetadataFile
 import com.pegasus.bridge.core.SchemaVersion
@@ -110,11 +111,18 @@ class PegasusRoutes(private val paths: BridgePaths) {
         val roots = rootsOf(req) ?: return Response.badRequest("missing roots")
         val found = runCatching { EmulatorDiscovery.discover(libraryRoots = roots) }
             .getOrDefault(emptyList())
+        // Gathered once for the whole request: resolving a `flatpak run` launch
+        // needs the installed list, and asking per collection would run `flatpak
+        // list` thirty-one times.
+        val flatpakIds = runCatching { EmulatorDiscovery.installedFlatpaks().map { it.id }.toSet() }
+            .getOrDefault(emptySet())
 
         val arr = JSONArray()
         for (c in MetadataFile.collectionsUnder(roots)) {
             val platform = c.shortName.ifEmpty { c.directory.name }
-            val best = EmulatorDiscovery.bestFor(platform, found)
+            val ranked = EmulatorDiscovery.rankedFor(platform, found)
+            val best = ranked.firstOrNull()
+            val check = launchCheck(c.launch, flatpakIds)
             arr.put(JSONObject()
                 .put("name", c.name)
                 .put("shortName", c.shortName)
@@ -129,19 +137,20 @@ class PegasusRoutes(private val paths: BridgePaths) {
                 // The observation that motivated this whole endpoint: an `am start`
                 // line on a desktop is a collection nothing can launch, and no
                 // error anywhere says so.
-                .put("launchRunsHere", launchLooksRunnable(c.launch))
+                .put("launchRunsHere", check.runnable)
+                // Why, not just whether: "the Flatpak org.x.Y is not installed"
+                // is actionable where a bare false is not.
+                .put("launchVerdict", check.verdict.name.lowercase())
+                .put("launchProblem",
+                     if (check.runnable) JSONObject.NULL else check.detail)
                 .put("mediaStyle", AssetLayout.detectStyle(c.directory).name.lowercase())
-                .put("proposal", best?.let {
-                    JSONObject()
-                        .put("emulator", it.id)
-                        .put("displayName", it.displayName)
-                        .put("launchCommand", it.launchCommand)
-                        .put("verified", it.verified)
-                        .put("canReadLibrary", it.canReadLibrary ?: JSONObject.NULL)
-                        .put("grantCommand",
-                             if (it.canReadLibrary == false) it.grantCommand else JSONObject.NULL)
-                        .put("needsCore", it.launchCommand.contains("{core}"))
-                } ?: JSONObject.NULL))
+                // Every emulator that handles this platform, best first. A
+                // proposal whose alternatives are invisible is a decision made
+                // for somebody, which is not what "propose, never apply" means.
+                .put("proposals", JSONArray().also { arr ->
+                    ranked.forEachIndexed { i, e -> arr.put(proposalJson(e, i)) }
+                })
+                .put("proposal", best?.let { proposalJson(it, 0) } ?: JSONObject.NULL))
         }
         return Response.json(JSONObject()
             .put("schemaVersion", SchemaVersion.CURRENT)
@@ -150,6 +159,20 @@ class PegasusRoutes(private val paths: BridgePaths) {
             .put("collections", arr)
             .toString())
     }
+
+    private fun proposalJson(e: EmulatorDiscovery.Candidate, position: Int): JSONObject =
+        JSONObject()
+            .put("emulator", e.id)
+            .put("displayName", e.displayName)
+            .put("launchCommand", e.launchCommand)
+            .put("verified", e.verified)
+            .put("version", e.version)
+            .put("kind", e.kind.name.lowercase())
+            .put("canReadLibrary", e.canReadLibrary ?: JSONObject.NULL)
+            .put("grantCommand",
+                 if (e.canReadLibrary == false) e.grantCommand else JSONObject.NULL)
+            .put("needsCore", e.launchCommand.contains("{core}"))
+            .put("why", EmulatorDiscovery.rankReason(e, position))
 
     /**
      * Whether a launch line could run on this machine at all.
@@ -160,13 +183,8 @@ class PegasusRoutes(private val paths: BridgePaths) {
      * pipeline, and declaring one broken because it looked odd would be worse
      * than saying nothing.
      */
-    private fun launchLooksRunnable(launch: String): Boolean {
-        if (launch.isBlank()) return false
-        val first = launch.trimStart().substringBefore(' ').substringBefore('\n')
-        val androidOnly = setOf("am", "monkey", "pm")
-        val isAndroid = first in androidOnly
-        return !(isAndroid && !System.getProperty("os.name").orEmpty().contains("Android"))
-    }
+    private fun launchCheck(launch: String, flatpakIds: Set<String>) =
+        LaunchCheck.check(launch, installedFlatpakIds = flatpakIds)
 
     /**
      * Writes a Bridge-owned overlay for one collection.
@@ -216,11 +234,21 @@ class PegasusRoutes(private val paths: BridgePaths) {
         val standAside = req.param("standAside") == "1"
 
         if (conflicts && !standAside) {
+            // Whether *their* command works decides how a UI should put this.
+            // "Your launch command cannot run here, and this one can" is a
+            // different conversation from "you already have a working one".
+            val flatpakIds = runCatching {
+                EmulatorDiscovery.installedFlatpaks().map { it.id }.toSet()
+            }.getOrDefault(emptySet())
+            val theirs = launchCheck(existing?.launch.orEmpty(), flatpakIds)
             return Response.json(JSONObject()
                 .put("schemaVersion", SchemaVersion.CURRENT)
                 .put("status", "conflict")
                 .put("collection", name)
                 .put("conflictingFile", theirFile!!.absolutePath)
+                .put("currentLaunch", existing?.launch.orEmpty())
+                .put("currentLaunchRunsHere", theirs.runnable)
+                .put("currentLaunchProblem", if (theirs.runnable) JSONObject.NULL else theirs.detail)
                 .put("error",
                     "${theirFile.name} already sets a launch command for '$name'. Pegasus keeps " +
                     "whichever file it parses last and does not sort them, so writing an overlay " +

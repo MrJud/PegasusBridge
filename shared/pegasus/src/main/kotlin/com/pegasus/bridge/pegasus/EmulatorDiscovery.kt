@@ -242,21 +242,49 @@ object EmulatorDiscovery {
     }
 
     /**
-     * The candidate best suited to [platform], or null.
+     * Every candidate that handles [platform], best first.
      *
-     * Verified beats unverified, and a dedicated emulator beats RetroArch —
-     * RetroArch covers everything and so is never the most specific answer, and
-     * its command needs a core the discovery step cannot choose.
+     * All of them, not just the winner. "Propose, never apply" is not honoured by
+     * a proposal whose alternatives are invisible — that is a decision made for
+     * somebody and shown to them afterwards. A review screen needs the list, and
+     * an apply takes whatever the person picked out of it.
+     *
+     * The order, and the reason for each step:
+     *
+     * 1. **Can it read the library.** An emulator that cannot open the ROM fails
+     *    at the moment somebody presses A, whatever else is true of it.
+     * 2. **Did it identify itself.** A binary that answered a version probe, or a
+     *    Flatpak whose metadata names one.
+     * 3. **Is it RetroArch.** Last among equals: it covers every platform, so it
+     *    is never the most specific answer, and its command still needs a core
+     *    that discovery has no way to choose.
+     * 4. **How many platforms it claims.** Fewer means more specialised, and a
+     *    specialist is the better default for its own system.
      */
-    fun bestFor(platform: String, candidates: List<Candidate>): Candidate? {
+    fun rankedFor(platform: String, candidates: List<Candidate>): List<Candidate> {
         val norm = FuzzyMatch.normalizePlatform(platform)
-        val fits = candidates.filter { norm in it.platforms }
-        return fits.sortedWith(
-            compareByDescending<Candidate> { it.verified }
+        return candidates.filter { norm in it.platforms }.sortedWith(
+            compareByDescending<Candidate> { it.canReadLibrary != false }
+                .thenByDescending { it.verified }
                 .thenBy { it.id == "retroarch" }
                 .thenBy { it.platforms.size }
-        ).firstOrNull()
+                .thenBy { it.displayName }
+        )
     }
+
+    /** Why a candidate sits where it does, in one sentence a person can read. */
+    fun rankReason(c: Candidate, position: Int): String = when {
+        c.canReadLibrary == false -> "cannot read the library as installed"
+        position == 0 && c.id == "retroarch" -> "the only one installed for this platform"
+        c.id == "retroarch" -> "covers everything, so never the most specific choice"
+        !c.verified -> "installed, but it did not identify itself"
+        position == 0 -> "dedicated to this platform, and verified"
+        else -> "also handles this platform"
+    }
+
+    /** The best candidate for [platform], or null. Shorthand over [rankedFor]. */
+    fun bestFor(platform: String, candidates: List<Candidate>): Candidate? =
+        rankedFor(platform, candidates).firstOrNull()
 
     private fun probeVersion(
         exe: String,

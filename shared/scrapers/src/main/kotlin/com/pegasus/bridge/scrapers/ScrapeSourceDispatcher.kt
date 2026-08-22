@@ -46,6 +46,8 @@ class ScrapeSourceDispatcher(
             "steam" -> dispatchSteam(op, params)
             "igdb"  -> dispatchIgdb(op, params)
             "ss"    -> dispatchScreenScraper(op, params)
+            "romm"  -> dispatchRomm(op, params)
+            "steam-account" -> dispatchSteamAccount(op, params)
             else    -> throw IllegalArgumentException("unknown source: $source")
         }
     }
@@ -641,6 +643,163 @@ class ScrapeSourceDispatcher(
             .put("variant", variant)
             .put("gameId", game.id)
             .put("bytes", target.length())
+    }
+
+    // ── RomM ────────────────────────────────────────────────────────────────
+    //
+    // The odd one out for the opposite reason to ScreenScraper: this source has
+    // *already* scraped. One record carries IGDB, MobyGames, ScreenScraper,
+    // LaunchBox and RetroAchievements metadata together, and it is keyed by the
+    // same rcheevos hash the Bridge computes — so a lookup here is a join rather
+    // than a search.
+    //
+    // Everything leaving these ops is redacted first. RomM hands out its own
+    // instance's ScreenScraper devpassword inside `ss_metadata.box2d_url`, which
+    // was measured on the public demo rather than guessed at, and writing one
+    // into a cache file would put a third party's password on the user's disk.
+
+    private fun rommCreds(): RommClient.Credentials {
+        val c = config.load().romm
+            ?: throw IllegalStateException("missing romm block in credentials.json")
+        if (c.baseUrl.isBlank())
+            throw IllegalStateException("missing romm.baseUrl")
+        return RommClient.Credentials(c.baseUrl, c.token)
+    }
+
+    private fun dispatchRomm(op: String, params: Map<String, String>): Result {
+        val c = rommCreds()
+        return when (op) {
+            // Proves the server and the token in one cheap call, and reports which
+            // metadata sources that instance has enabled — which is what decides
+            // whether preferring it over ScreenScraper is worth doing at all.
+            "heartbeat" -> Result(RommClient.redactedMetadata(
+                RommClient.heartbeat(c).getOrThrow()))
+            "platforms" -> {
+                val arr = JSONArray()
+                for (p in RommClient.platforms(c).getOrThrow()) {
+                    arr.put(JSONObject()
+                        .put("id", p.id).put("slug", p.slug).put("name", p.name)
+                        .put("romCount", p.romCount)
+                        .put("igdbId", p.igdbId)
+                        .put("screenScraperId", p.screenScraperId)
+                        .put("retroAchievementsId", p.retroAchievementsId))
+                }
+                Result(arr)
+            }
+            "roms" -> {
+                val page = RommClient.roms(
+                    c,
+                    platformId = params["platformId"]?.toIntOrNull() ?: 0,
+                    limit = params["limit"]?.toIntOrNull()?.coerceIn(1, 500) ?: 100,
+                    offset = params["offset"]?.toIntOrNull()?.coerceAtLeast(0) ?: 0
+                ).getOrThrow()
+                Result(JSONObject()
+                    .put("total", page.total)
+                    .put("limit", page.limit)
+                    .put("offset", page.offset)
+                    .put("hasMore", page.hasMore)
+                    .put("items", JSONArray().also { arr ->
+                        for (r in page.items) arr.put(rommRomToJson(c, r))
+                    }))
+            }
+            else -> throw IllegalArgumentException("romm: unknown op '$op'")
+        }
+    }
+
+    /**
+     * One RomM ROM, in the shape the rest of this dispatcher speaks.
+     *
+     * The hashes lead because they are the join: a caller matches these against
+     * what the scan already wrote into `rom.hash`, `rom.fileMd5` and
+     * `rom.fileCrc32` and needs no title comparison at all.
+     */
+    private fun rommRomToJson(c: RommClient.Credentials, r: RommClient.Rom): JSONObject =
+        JSONObject()
+            .put("id", r.id)
+            .put("title", r.name)
+            .put("fileName", r.fsName)
+            .put("platform", r.platformSlug)
+            .put("description", r.summary)
+            .put("genres", JSONArray(r.genres))
+            .put("developer", r.companies.firstOrNull().orEmpty())
+            .put("publisher", r.companies.getOrNull(1).orEmpty())
+            .put("hashes", JSONObject()
+                .put("raHash", r.raHash)
+                .put("md5", r.md5)
+                .put("crc32", r.crc32)
+                .put("sha1", r.sha1))
+            .put("ids", JSONObject()
+                .put("retroAchievements", r.raId)
+                .put("igdb", r.igdbId)
+                .put("screenScraper", r.screenScraperId))
+            .put("coverUrl", RommClient.mediaUrl(c, r.coverLargePath))
+            .put("videoUrl", RommClient.mediaUrl(c, r.videoPath))
+            .put("screenshots", JSONArray(r.screenshotPaths.map { RommClient.mediaUrl(c, it) }))
+
+    // ── Steam account ───────────────────────────────────────────────────────
+    //
+    // Separate from `steam`, which is the public store and needs no credentials.
+    // This one answers only about the signed-in user, and its refusals include
+    // one that is not a failure: a private profile is a setting to change, not an
+    // error to retry and not an empty result to cache.
+
+    private fun steamCreds(): SteamAccountClient.Credentials {
+        val c = config.load().steam
+            ?: throw IllegalStateException("missing steam block in credentials.json")
+        if (c.apiKey.isBlank() || c.steamId.isBlank())
+            throw IllegalStateException("missing steam.apiKey/steamId")
+        return SteamAccountClient.Credentials(c.apiKey, c.steamId)
+    }
+
+    private fun dispatchSteamAccount(op: String, params: Map<String, String>): Result = when (op) {
+        "library" -> {
+            val arr = JSONArray()
+            for (g in SteamAccountClient.ownedGames(steamCreds()).getOrThrow()) {
+                arr.put(JSONObject()
+                    .put("appId", g.appId)
+                    .put("name", g.name)
+                    .put("playtimeMinutes", g.playtimeMinutes)
+                    .put("playtimeLast2WeeksMinutes", g.playtimeLast2WeeksMinutes)
+                    .put("iconUrl", g.iconUrl)
+                    .put("lastPlayedAt", g.lastPlayedAt)
+                    .put("launchUri", SteamAccountClient.desktopLaunchUri(g.appId)))
+            }
+            Result(arr)
+        }
+        "achievements" -> {
+            val p = SteamAccountClient.achievements(
+                steamCreds(), paramInt(params, "appId", "appid")).getOrThrow()
+            val arr = JSONArray()
+            for (a in p.achievements) {
+                arr.put(JSONObject()
+                    .put("id", a.apiName)
+                    .put("title", a.displayName.ifEmpty { a.apiName })
+                    .put("description", a.description)
+                    .put("unlocked", a.unlocked)
+                    .put("unlockedAt", a.unlockedAt)
+                    .put("iconUrl", if (a.unlocked) a.iconUrl else a.iconGrayUrl)
+                    .put("hidden", a.hidden))
+            }
+            Result(JSONObject()
+                .put("appId", p.appId)
+                .put("gameName", p.gameName)
+                .put("unlocked", p.unlocked)
+                .put("total", p.total)
+                .put("progress", p.fraction)
+                // Named so nothing downstream is tempted to add it to a
+                // RetroAchievements total. Two accounts, two catalogues; a
+                // combined number would describe nothing that exists.
+                .put("namespace", "steam")
+                .put("achievements", arr))
+        }
+        "resolve" -> {
+            val name = params["vanity"] ?: throw IllegalArgumentException("missing vanity")
+            val key = config.load().steam?.apiKey
+                ?: throw IllegalStateException("missing steam.apiKey")
+            Result(JSONObject().put("steamId",
+                SteamAccountClient.resolveVanity(key, name).getOrThrow()))
+        }
+        else -> throw IllegalArgumentException("steam-account: unknown op '$op'")
     }
 
     // ── Helpers ─────────────────────────────────────────────────────────────

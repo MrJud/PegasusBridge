@@ -353,7 +353,9 @@ class BridgeRouter(
         } else req.query
 
         val known = listOf("user", "apiKey", "sgdbKey", "igdbClientId", "igdbClientSecret",
-                           "ssDevId", "ssDevPassword", "ssUser", "ssPassword", "ssSoftname")
+                           "ssDevId", "ssDevPassword", "ssUser", "ssPassword", "ssSoftname",
+                           "steamApiKey", "steamId", "rommBaseUrl", "rommToken",
+                           "spotifyClientId")
         if (known.none { !fields[it].isNullOrBlank() })
             return Response.badRequest("no credential fields supplied")
 
@@ -367,7 +369,12 @@ class BridgeRouter(
             ssDevPassword    = fields["ssDevPassword"],
             ssUser           = fields["ssUser"],
             ssPassword       = fields["ssPassword"],
-            ssSoftname       = fields["ssSoftname"]
+            ssSoftname       = fields["ssSoftname"],
+            steamApiKey      = fields["steamApiKey"],
+            steamId          = fields["steamId"],
+            rommBaseUrl      = fields["rommBaseUrl"],
+            rommToken        = fields["rommToken"],
+            spotifyClientId  = fields["spotifyClientId"]
         )
         // Report which blocks changed, never the values.
         val updated = JSONArray().apply {
@@ -376,6 +383,9 @@ class BridgeRouter(
             if (!fields["igdbClientId"].isNullOrBlank() || !fields["igdbClientSecret"].isNullOrBlank()) put("igdb")
             if (listOf("ssDevId", "ssDevPassword", "ssUser", "ssPassword", "ssSoftname")
                     .any { !fields[it].isNullOrBlank() }) put("screenScraper")
+            if (!fields["steamApiKey"].isNullOrBlank() || !fields["steamId"].isNullOrBlank()) put("steam")
+            if (!fields["rommBaseUrl"].isNullOrBlank() || !fields["rommToken"].isNullOrBlank()) put("romm")
+            if (!fields["spotifyClientId"].isNullOrBlank()) put("spotify")
         }
         return Response.json(JSONObject()
             .put("schemaVersion", SchemaVersion.CURRENT)

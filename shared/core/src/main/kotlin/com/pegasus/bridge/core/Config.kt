@@ -38,11 +38,50 @@ data class ScreenScraperCreds(
     }
 }
 
+/**
+ * The Steam **account**, which is not the Steam store.
+ *
+ * The store needs nothing: it serves public product data to anybody. This is the
+ * user's own Web API key and their 64-bit id, and it only ever answers about
+ * them — so it is a separate block, granted separately, and cleared separately.
+ */
+data class SteamCreds(val apiKey: String, val steamId: String)
+
+/**
+ * A RomM server the user hosts.
+ *
+ * [token] is a Client API Token — `rmm_` plus 64 hex characters, created per
+ * user in RomM's own settings, scope-limited and revocable there without
+ * touching the Bridge. Preferred over a password, which would have to be kept in
+ * order to refresh a fifteen-minute access token.
+ *
+ * Both may be blank: an instance can serve reads unauthenticated, and refusing
+ * to talk to one would be inventing a requirement the server does not have.
+ */
+data class RommCreds(val baseUrl: String, val token: String = "")
+
+/**
+ * Spotify, under PKCE — so there is no client secret to store, by design.
+ *
+ * [clientId] is not a secret; it identifies the application and travels in the
+ * authorise URL. The tokens are, and they are the reason this block exists
+ * rather than the flow being run in the theme.
+ */
+data class SpotifyCreds(
+    val clientId: String,
+    val accessToken: String = "",
+    val refreshToken: String = "",
+    val expiresAt: Long = 0L
+)
+
 data class Credentials(
     val ra: RaCreds? = null,
     val steamGridDb: SgdbCreds? = null,
     val igdb: IgdbCreds? = null,
-    val screenScraper: ScreenScraperCreds? = null
+    val screenScraper: ScreenScraperCreds? = null,
+    val steam: SteamCreds? = null,
+    val romm: RommCreds? = null,
+    val spotify: SpotifyCreds? = null
 )
 
 /**
@@ -101,6 +140,20 @@ class Config(
                         // the right answer for every caller that does not override it.
                         softname    = it.optString("softname")
                                         .ifBlank { ScreenScraperCreds.DEFAULT_SOFTNAME }
+                    )
+                },
+                steam = j.optJSONObject("steam")?.let {
+                    SteamCreds(it.optString("apiKey"), it.optString("steamId"))
+                },
+                romm = j.optJSONObject("romm")?.let {
+                    RommCreds(it.optString("baseUrl"), it.optString("token"))
+                },
+                spotify = j.optJSONObject("spotify")?.let {
+                    SpotifyCreds(
+                        clientId     = it.optString("clientId"),
+                        accessToken  = it.optString("accessToken"),
+                        refreshToken = it.optString("refreshToken"),
+                        expiresAt    = it.optLong("expiresAt")
                     )
                 }
             )
@@ -164,7 +217,12 @@ class Config(
         ssDevPassword: String? = null,
         ssUser: String? = null,
         ssPassword: String? = null,
-        ssSoftname: String? = null
+        ssSoftname: String? = null,
+        steamApiKey: String? = null,
+        steamId: String? = null,
+        rommBaseUrl: String? = null,
+        rommToken: String? = null,
+        spotifyClientId: String? = null
     ) {
         val json = readOrEmpty()
 
@@ -201,6 +259,41 @@ class Config(
             json.put("screenScraper", ss)
         }
 
+        if (!steamApiKey.isNullOrBlank() || !steamId.isNullOrBlank()) {
+            val steam = json.optJSONObject("steam") ?: JSONObject()
+            steamApiKey?.takeIf { it.isNotBlank() }?.let { steam.put("apiKey", it) }
+            steamId?.takeIf { it.isNotBlank() }?.let { steam.put("steamId", it) }
+            json.put("steam", steam)
+        }
+
+        if (!rommBaseUrl.isNullOrBlank() || !rommToken.isNullOrBlank()) {
+            val romm = json.optJSONObject("romm") ?: JSONObject()
+            rommBaseUrl?.takeIf { it.isNotBlank() }?.let { romm.put("baseUrl", it.trimEnd('/')) }
+            rommToken?.takeIf { it.isNotBlank() }?.let { romm.put("token", it) }
+            json.put("romm", romm)
+        }
+
+        spotifyClientId?.takeIf { it.isNotBlank() }?.let {
+            val sp = json.optJSONObject("spotify") ?: JSONObject()
+            sp.put("clientId", it)
+            // A new application means the old grant is not ours: keeping the
+            // tokens would leave the user apparently logged in to something they
+            // can no longer refresh against.
+            sp.remove("accessToken"); sp.remove("refreshToken"); sp.remove("expiresAt")
+            json.put("spotify", sp)
+        }
+
+        persist(json)
+    }
+
+    /** Stores a Spotify grant. Separate from [writeCredentials]: these are earned, not typed. */
+    fun saveSpotifyTokens(accessToken: String, refreshToken: String, expiresAt: Long) {
+        val json = readOrEmpty()
+        val sp = json.optJSONObject("spotify") ?: JSONObject()
+        sp.put("accessToken", accessToken)
+        sp.put("refreshToken", refreshToken)
+        sp.put("expiresAt", expiresAt)
+        json.put("spotify", sp)
         persist(json)
     }
 
@@ -253,6 +346,22 @@ class Config(
                 .put("hasUser", c.screenScraper?.ssid?.isNotEmpty() == true
                              && c.screenScraper.ssPassword.isNotEmpty())
                 .put("user", c.screenScraper?.ssid.orEmpty()))
+            // The three optional integrations. Each reports presence and the one
+            // non-secret identifier a settings screen needs to show which account
+            // or server is configured — never a key, a token or a password.
+            .put("steam", JSONObject()
+                .put("configured", c.steam?.apiKey?.isNotEmpty() == true
+                                && c.steam.steamId.isNotEmpty())
+                .put("steamId", c.steam?.steamId.orEmpty()))
+            .put("romm", JSONObject()
+                .put("configured", c.romm?.baseUrl?.isNotEmpty() == true)
+                .put("baseUrl", c.romm?.baseUrl.orEmpty())
+                .put("hasToken", c.romm?.token?.isNotEmpty() == true))
+            .put("spotify", JSONObject()
+                .put("configured", c.spotify?.clientId?.isNotEmpty() == true)
+                // Distinct from configured: an application id with no grant is a
+                // setup waiting for the user to authorise, not a broken one.
+                .put("authorized", c.spotify?.refreshToken?.isNotEmpty() == true))
     }
 
     /**
@@ -296,6 +405,7 @@ class Config(
 
     private companion object {
         const val TAG = "Config"
-        val KNOWN_BLOCKS = setOf("ra", "steamGridDb", "igdb", "screenScraper")
+        val KNOWN_BLOCKS = setOf("ra", "steamGridDb", "igdb", "screenScraper",
+                                 "steam", "romm", "spotify")
     }
 }

@@ -109,6 +109,35 @@ object HttpClient {
         }
     }
 
+    /**
+     * Any method, with the status kept.
+     *
+     * Exists for Spotify's player endpoints, which are `PUT` and `POST` with no
+     * body and whose *status* is the whole answer: 204 means it worked, 403 means
+     * the account is not Premium, 404 means no client is running. Folding those
+     * into an exception message would lose the distinction between "you need to
+     * subscribe" and "open the app first".
+     */
+    fun send(
+        url: String,
+        method: String,
+        body: String = "",
+        headers: Map<String, String> = emptyMap()
+    ): Result<RawResponse> {
+        val reqBody = if (method in setOf("GET", "HEAD")) null
+                      else body.toRequestBody("application/json".toMediaType())
+        val req = Request.Builder().url(url).method(method, reqBody).apply {
+            headers.forEach { (k, v) -> addHeader(k, v) }
+        }.build()
+        return try {
+            okHttp.newCall(req).execute().use { resp ->
+                Result.success(RawResponse(resp.code, resp.body?.string() ?: ""))
+            }
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
     fun get(url: String, headers: Map<String, String> = emptyMap()): Result<String> {
         val req = Request.Builder().url(url).apply {
             headers.forEach { (k, v) -> addHeader(k, v) }

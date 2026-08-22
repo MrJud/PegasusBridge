@@ -7,6 +7,7 @@ import com.pegasus.bridge.daemon.MicroHttpServer.Response
 import com.pegasus.bridge.pegasus.AssetLayout
 import com.pegasus.bridge.pegasus.EmulatorDiscovery
 import com.pegasus.bridge.pegasus.ExportManifest
+import com.pegasus.bridge.pegasus.GameEntry
 import com.pegasus.bridge.pegasus.MediaExporter
 import com.pegasus.bridge.pegasus.MetadataFile
 import com.pegasus.bridge.core.SchemaVersion
@@ -51,6 +52,7 @@ class PegasusRoutes(private val paths: BridgePaths) {
         "/export/status"      -> exportStatus()
         "/export/revert"      -> exportRevert(req)
         "/export/migrate"     -> exportMigrate(req)
+        "/export/metadata"    -> exportMetadata(req)
         else                  -> null
     }
 
@@ -410,6 +412,113 @@ class PegasusRoutes(private val paths: BridgePaths) {
             .put("alreadyThere", r.alreadyThere)
             .put("failed", r.failed)
             .toString())
+    }
+
+    /**
+     * Writes the scraped metadata for a collection into the Bridge's overlay.
+     *
+     * The other half of the export: `.media/` gives Pegasus the pictures, and
+     * without this it still has no description, no genre, no developer and no
+     * year, and calls every game after its file — which on a No-Intro library
+     * means `Contra (USA)`.
+     *
+     * Takes the entries from the caller rather than scraping here. A scrape is a
+     * long job with a quota behind it, and the theme already drives one game at a
+     * time through `/scrape`; doing it again inside a write endpoint would make
+     * one call that cannot be cancelled, cannot report progress and spends the
+     * allowance twice.
+     *
+     * `dryRun=1` renders the file and returns it without writing.
+     */
+    private fun exportMetadata(req: Request): Response {
+        val dir = req.param("directory")?.let(::File)
+            ?: return Response.badRequest("missing directory")
+        if (!dir.isDirectory) return Response.badRequest("no such directory: $dir")
+
+        val entries = try {
+            parseGameEntries(req.body)
+        } catch (e: Exception) {
+            return Response.badRequest("games must be a JSON array: ${e.message}")
+        }
+        if (entries.isEmpty()) return Response.badRequest("no games supplied")
+
+        val target = File(dir, OVERLAY_FILE)
+        val existing = MetadataFile.readCollection(dir)
+
+        // A ROM another metafile already declares cannot be declared here:
+        // `game:` creates a new object every time, and Pegasus refuses a file
+        // that belongs to a different one. The second declaration would end up a
+        // game with no files rather than a merge.
+        val claimed = GameEntry.claimedElsewhere(dir, ignore = target)
+        val (writable, skipped) = entries.partition { it.fileName !in claimed }
+
+        // The launch already in force, kept as it is. This file may already carry
+        // one from a previous apply, and rewriting it without would silently undo
+        // that — the games and the launch live in the same overlay.
+        val launch = if (existing?.launchFile?.absolutePath == target.absolutePath)
+            existing.launch else ""
+
+        val text = MetadataFile.renderCollectionWithGames(
+            name = existing?.name ?: dir.name,
+            shortName = existing?.shortName.orEmpty(),
+            launch = launch,
+            games = writable,
+            preserve = existing?.raw ?: emptyMap(),
+            note = "Metadata scraped by PegasusBridge.")
+
+        val payload = JSONObject()
+            .put("schemaVersion", SchemaVersion.CURRENT)
+            .put("status", "ok")
+            .put("written", writable.count { it.render().isNotEmpty() })
+            .put("nothingToSay", writable.count { it.render().isEmpty() })
+            // Named, because "3 skipped" without saying which is not actionable.
+            .put("skippedAlreadyClaimed", JSONArray(skipped.map { it.fileName }))
+            .put("keptLaunch", launch.isNotEmpty())
+
+        if (req.param("dryRun") == "1")
+            return Response.json(payload.put("outcome", "dryRun").put("preview", text).toString())
+
+        return try {
+            BridgePaths.writeAtomic(target, text)
+            Response.json(payload.put("outcome", "written")
+                .put("target", target.absolutePath).toString())
+        } catch (t: Throwable) {
+            BridgeLog.e(TAG, "could not write the metadata overlay for $dir", t)
+            Response.serverError(t.message ?: t.javaClass.simpleName)
+        }
+    }
+
+    /** The `games` array of the request body, in the shape `/scrape` answers with. */
+    private fun parseGameEntries(body: String): List<GameEntry> {
+        if (body.isBlank()) return emptyList()
+        val root = JSONObject(body)
+        val arr = root.optJSONArray("games") ?: JSONArray()
+        return (0 until arr.length()).mapNotNull { i ->
+            val o = arr.optJSONObject(i) ?: return@mapNotNull null
+            val file = o.optString("fileName").ifEmpty { o.optString("file") }
+            if (file.isEmpty()) return@mapNotNull null
+            val genres = o.optJSONArray("genres")?.let { g ->
+                (0 until g.length()).map { g.optString(it) }.filter { it.isNotEmpty() }
+            } ?: emptyList()
+            val players = o.optJSONArray("gameModes")?.let { m ->
+                (0 until m.length()).map { m.optString(it) }.firstOrNull { it.isNotEmpty() }
+            } ?: o.optString("players")
+            GameEntry(
+                title = o.optString("title"),
+                fileName = File(file).name,
+                developer = o.optString("developer"),
+                publisher = o.optString("publisher"),
+                genres = genres,
+                description = o.optString("description"),
+                players = players.orEmpty(),
+                release = GameEntry.normaliseRelease(o.optString("releaseYear")
+                    .ifEmpty { o.optString("release") }),
+                rating = GameEntry.normaliseRating(o.optString("score")
+                    .ifEmpty { o.optString("rating") }),
+                source = o.optString("source").takeIf { it.isNotEmpty() }
+                    ?.let { "from $it" }.orEmpty()
+            )
+        }
     }
 
     private fun exportStatus(): Response {

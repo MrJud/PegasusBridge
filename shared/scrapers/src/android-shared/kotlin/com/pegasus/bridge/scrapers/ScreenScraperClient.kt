@@ -250,15 +250,15 @@ object ScreenScraperClient {
 
         return Result.success(Game(
             id          = jeu.optString("id"),
-            title       = pickRegional(jeu.optJSONArray("noms"), regionOrder(romName), "text")
+            title       = cleanText(pickRegional(jeu.optJSONArray("noms"), regionOrder(romName), "text"))
                             .ifEmpty { romName },
-            publisher   = jeu.optJSONObject("editeur")?.optString("text").orEmpty(),
-            developer   = jeu.optJSONObject("developpeur")?.optString("text").orEmpty(),
+            publisher   = cleanText(jeu.optJSONObject("editeur")?.optString("text").orEmpty()),
+            developer   = cleanText(jeu.optJSONObject("developpeur")?.optString("text").orEmpty()),
             players     = jeu.optJSONObject("joueurs")?.optString("text").orEmpty(),
             releaseYear = pickRegional(jeu.optJSONArray("dates"), regionOrder(romName), "text")
                             .take(4),
             genres      = parseGenres(jeu.optJSONArray("genres"), lang),
-            description = pickByLanguage(jeu.optJSONArray("synopsis"), lang),
+            description = cleanText(pickByLanguage(jeu.optJSONArray("synopsis"), lang)),
             rating      = jeu.optJSONObject("note")?.optString("text").orEmpty(),
             media       = parseMedia(jeu.optJSONArray("medias"))
         ))
@@ -312,6 +312,42 @@ object ScreenScraperClient {
         return best
     }
 
+    /**
+     * Undoes the HTML escaping ScreenScraper leaves in its text, and one defect
+     * of its own.
+     *
+     * Both were found in the live database rather than imagined. The synopsis for
+     * Castlevania III comes back containing `la &quot;Vampire Slayer&quot;`, and
+     * nothing downstream decodes it — the theme would render the entity
+     * literally, and an exported metafile would carry it into the user's library.
+     *
+     * The second is theirs and is not escaping at all. Contra's synopsis contains
+     * the bytes `terroristi.\r\nnnCome Bill`: a paragraph break that became a
+     * literal `nn` somewhere in their import. A newline followed immediately by
+     * `nn` and a capital letter cannot occur in real Italian or English text — no
+     * word begins `nn` — so the pattern is narrow enough to correct rather than
+     * pass on. Anything less certain is left exactly as it arrived.
+     */
+    internal fun cleanText(raw: String): String {
+        if (raw.isEmpty()) return raw
+        var t = raw
+        // Their mangled paragraph break, before whitespace is normalised away.
+        t = t.replace(Regex("[\r\n]+nn(?=[A-ZÀ-Þ])"), "\n\n")
+        t = t.replace("&quot;", "\"").replace("&apos;", "'").replace("&#39;", "'")
+             .replace("&lt;", "<").replace("&gt;", ">").replace("&nbsp;", " ")
+        // Numeric entities, decimal and hexadecimal.
+        t = Regex("&#(\\d{1,6});").replace(t) { m ->
+            m.groupValues[1].toIntOrNull()?.takeIf { it in 1..0x10FFFF }
+                ?.let { String(Character.toChars(it)) } ?: m.value
+        }
+        t = Regex("&#x([0-9a-fA-F]{1,6});").replace(t) { m ->
+            m.groupValues[1].toIntOrNull(16)?.takeIf { it in 1..0x10FFFF }
+                ?.let { String(Character.toChars(it)) } ?: m.value
+        }
+        // `&amp;` last, or `&amp;quot;` would decode twice into a bare quote.
+        return t.replace("&amp;", "&")
+    }
+
     /** Same idea for `synopsis`, which is keyed by `langue` rather than by region. */
     internal fun pickByLanguage(arr: JSONArray?, lang: String): String {
         if (arr == null || arr.length() == 0) return ""
@@ -343,7 +379,8 @@ object ScreenScraperClient {
             val g = arr.optJSONObject(i) ?: continue
             val name = pickByLanguage(g.optJSONArray("noms"), lang)
                 .ifEmpty { g.optString("nomcourt") }
-            if (name.isNotEmpty() && !out.contains(name)) out.add(name)
+            val clean = cleanText(name)
+            if (clean.isNotEmpty() && !out.contains(clean)) out.add(clean)
         }
         return out
     }

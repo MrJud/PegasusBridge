@@ -228,6 +228,37 @@ object MetadataFile {
         if (launch.isNotEmpty()) appendLine("launch: ${indentContinuations(launch)}")
     }
 
+    /**
+     * A collection overlay plus the game entries the Bridge has metadata for.
+     *
+     * One Bridge-owned file per collection, not two: a second file declaring the
+     * same collection is another source Pegasus has to reconcile, and the launch
+     * command already taught this project what that costs.
+     *
+     * The games are appended after the header, which is where Pegasus expects
+     * them — the header ends at the first `game:` and every entry after it
+     * belongs to the collections declared so far.
+     */
+    fun renderCollectionWithGames(
+        name: String,
+        shortName: String,
+        launch: String,
+        games: List<GameEntry>,
+        preserve: Map<String, String> = emptyMap(),
+        note: String = ""
+    ): String = buildString {
+        append(renderCollection(name, shortName, launch, preserve, note))
+        val rendered = games.map { it.render() }.filter { it.isNotEmpty() }
+        if (rendered.isEmpty()) return@buildString
+        appendLine()
+        appendLine("# ${rendered.size} game(s) below. Deleting this file removes them")
+        appendLine("# and leaves the collection exactly as it was.")
+        for (r in rendered) {
+            appendLine()
+            append(r)
+        }
+    }
+
     /** A multi-line value needs every line after the first indented, or it ends the field. */
     private fun indentContinuations(value: String): String =
         value.lineSequence().mapIndexed { i, l -> if (i == 0) l.trim() else "  ${l.trim()}" }

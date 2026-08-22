@@ -27,9 +27,11 @@
         <package android:name="com.flycast.emulator" />
         <package android:name="com.github.eka2l1" />
         <package android:name="com.github.stenzek.duckstation" />
+        <package android:name="com.pixelrespawn.linkboy" />
         <package android:name="com.retroarch" />
         <package android:name="com.retroarch.aarch64" />
         <package android:name="com.retroarch.ra32" />
+        <package android:name="com.xiaoji.egggame" />
         <package android:name="io.github.lime3ds.android" />
         <package android:name="io.mgba" />
         <package android:name="io.recompiled.redream" />

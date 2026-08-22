@@ -20,7 +20,9 @@ class AndroidEmulatorsTest {
         "com.retroarch" to "1.22.2_GIT",
         "org.ppsspp.ppsspp" to "1.17.1",
         "com.dsemu.drastic" to "r2.5.2.2a",
-        "io.github.lime3ds.android" to "2126.0-googleplay"
+        "io.github.lime3ds.android" to "2126.0-googleplay",
+        "com.pixelrespawn.linkboy" to "3.11.0",
+        "com.xiaoji.egggame" to "5.3.5"
     )
 
     private fun discover(platform: String? = null) =
@@ -28,7 +30,51 @@ class AndroidEmulatorsTest {
 
     @Test fun `only installed packages become candidates`() {
         val ids = discover().map { it.id }.toSet()
-        assertEquals(setOf("retroarch", "ppsspp", "drastic", "lime3ds"), ids)
+        assertEquals(setOf("retroarch", "ppsspp", "drastic", "lime3ds", "linkboy", "eggns"), ids)
+    }
+
+    /**
+     * Linkboy was installed and invisible until somebody said their GBA
+     * emulator was missing. It was missing from the probe table, and the sweep
+     * that built that table was a keyword grep that looked for `myboy`.
+     */
+    @Test fun `an emulator that keeps its own library is still recognised`() {
+        val lb = discover().first { it.id == "linkboy" }
+        assertTrue(lb.verified)
+        assertEquals("3.11.0", lb.version)
+        assertTrue("gba" in lb.platforms)
+    }
+
+    /**
+     * …and never proposed. It exports `VIEW` on `linkboy://` and `MAIN`, and
+     * nothing that takes a file, so there is no launch line to write. Saying
+     * that is the answer; inventing one would produce a button that does
+     * nothing.
+     */
+    @Test fun `an emulator with no way in is listed but cannot be driven`() {
+        val lb = discover().first { it.id == "linkboy" }
+        assertFalse(lb.canTakeARom)
+        assertEquals("", lb.launchCommand)
+        assertFalse(lb.launchVerified)
+        assertTrue(lb.confidence, lb.confidence.contains("no way to be handed a game"))
+    }
+
+    /** And it never outranks something that can actually be handed a game. */
+    @Test fun `something drivable always outranks something that is not`() {
+        val ranked = EmulatorRanking.rankedFor("gba", discover())
+        assertEquals(listOf("retroarch", "linkboy"), ranked.map { it.id })
+        assertTrue(EmulatorRanking.rankReason(ranked.last(), 1, ranked)
+                       .contains("no way to be handed a game"))
+    }
+
+    /**
+     * Egg NS emulates the Switch, and `switch` was being reported as having no
+     * emulator installed at all. It has one; it just cannot be driven either.
+     */
+    @Test fun `the switch has an emulator installed, undrivable though it is`() {
+        val best = EmulatorRanking.bestFor("switch", discover())
+        assertEquals("eggns", best?.id)
+        assertFalse(best!!.canTakeARom)
     }
 
     /**

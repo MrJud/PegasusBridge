@@ -96,7 +96,19 @@ object AndroidEmulators {
         /** Transcribed from a metadata file that launches games today. */
         WORKING_LIBRARY("launch line taken from a working library"),
         /** Written from documentation. Plausible, never run. */
-        UNVERIFIED("launch line from documentation, never run here")
+        UNVERIFIED("launch line from documentation, never run here"),
+        /**
+         * Installed, and there is no known way to hand it a game.
+         *
+         * Not a gap in this table — a property of the emulator. Linkboy exports
+         * one activity, `VIEW` on its own `linkboy://` scheme and `MAIN`, and
+         * nothing for `file://` or `content://`; Egg NS the same with
+         * `gamesir://`. Both keep their own libraries. Recognising them is still
+         * worth doing, because "we can see it and cannot drive it" is a
+         * different answer from silence — which is what they got until somebody
+         * pointed out that his GBA emulator was missing.
+         */
+        NO_KNOWN_LAUNCH("installed, but it declares no way to be handed a game")
     }
 
     /**
@@ -239,6 +251,20 @@ object AndroidEmulators {
             args = listOf("-a android.intent.action.VIEW", "-d \"{file.uri}\""),
             provenance = Provenance.UNVERIFIED),
 
+        // Recognised, never proposed: see Provenance.NO_KNOWN_LAUNCH. The
+        // component is the launcher, which is all either of them exports.
+        Probe("linkboy", "Linkboy", listOf("gba", "gb", "gbc"),
+            packages = listOf("com.pixelrespawn.linkboy"),
+            component = ".MainActivity",
+            args = emptyList(),
+            provenance = Provenance.NO_KNOWN_LAUNCH),
+
+        Probe("eggns", "Egg NS", listOf("switch"),
+            packages = listOf("com.xiaoji.egggame"),
+            component = "com.xj.app.DeepLinkRouterActivity",
+            args = emptyList(),
+            provenance = Provenance.NO_KNOWN_LAUNCH),
+
         Probe("mgba", "mGBA", listOf("gba", "gb", "gbc"),
             packages = listOf("io.mgba"),
             component = ".GameActivity",
@@ -354,7 +380,8 @@ object AndroidEmulators {
             displayName = probe.displayName,
             platforms = probe.platforms,
             executable = pkg,
-            launchCommand = launchCommand(probe, pkg),
+            launchCommand = if (probe.provenance == Provenance.NO_KNOWN_LAUNCH) ""
+                            else launchCommand(probe, pkg),
             kind = EmulatorKind.ANDROID_PACKAGE,
             // Always true here, and it costs nothing: the package manager states
             // the version without the package being run. See the class comment.
@@ -366,8 +393,10 @@ object AndroidEmulators {
                 "whether $pkg can read the library depends on storage permissions " +
                 "granted to it, and reading another package's app-ops needs " +
                 "GET_APP_OPS_STATS, which is a signature permission",
-            coreHints = if (launchCommand(probe, pkg).contains("{core}")) hints else emptyList(),
-            launchVerified = probe.provenance != Provenance.UNVERIFIED
+            coreHints = if (probe.provenance != Provenance.NO_KNOWN_LAUNCH &&
+                            launchCommand(probe, pkg).contains("{core}")) hints else emptyList(),
+            launchVerified = probe.provenance == Provenance.ON_THIS_DEVICE ||
+                             probe.provenance == Provenance.WORKING_LIBRARY
         )
     }
 

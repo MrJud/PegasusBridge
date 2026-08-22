@@ -604,14 +604,24 @@ class PegasusService : Service() {
             // kind of answer, but a platform's own file knows things a generic
             // ranking cannot — that `snes` prefers snes9x over eight others.
             val ranked = EmulatorRanking.rankedFor(platform, found)
+            // Only what can actually be handed a game. Egg NS emulates the
+            // Switch and is installed, and taking it would have commented out
+            // the collection's existing line and written an empty one in its
+            // place — losing the only launch there was in exchange for nothing.
+            val drivable = ranked.filter { it.canTakeARom }
             val esdeOrder = EsDeSystemInfo.emulatorsFor(dir)
-            val best = esdeOrder.firstNotNullOfOrNull { id -> ranked.firstOrNull { it.id == id } }
-                ?: ranked.firstOrNull()
+            val best = esdeOrder.firstNotNullOfOrNull { id -> drivable.firstOrNull { it.id == id } }
+                ?: drivable.firstOrNull()
 
             if (best == null) {
                 blocked++
+                val seen = ranked.firstOrNull()
                 arr.put(entry.put("action", "cannot link")
-                    .put("why", "nothing installed handles '$platform'"))
+                    .put("why", if (seen == null) "nothing installed handles '$platform'"
+                                else "${seen.displayName} handles '$platform' and is installed, " +
+                                     "but it declares no way to be handed a game — it keeps its " +
+                                     "own library, so a launch command cannot be written for it")
+                    .also { if (seen != null) it.put("installedButUndrivable", seen.id) })
                 continue
             }
 

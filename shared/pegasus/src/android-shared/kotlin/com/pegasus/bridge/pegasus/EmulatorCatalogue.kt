@@ -108,6 +108,16 @@ data class EmulatorCandidate(
 ) {
     /** Whether the launch line still has a decision in it that discovery cannot make. */
     val needsCore: Boolean get() = launchCommand.contains("{core}")
+
+    /**
+     * Whether this can be handed a game at all.
+     *
+     * False for an emulator that is installed and exports no way to receive
+     * one — it manages its own library and nothing outside it can say "open
+     * this file". Listed anyway, because a person looking for the emulator they
+     * installed should find it rather than wonder whether the Bridge is blind.
+     */
+    val canTakeARom: Boolean get() = launchCommand.isNotEmpty()
 }
 
 /**
@@ -141,7 +151,10 @@ object EmulatorRanking {
     fun rankedFor(platform: String, candidates: List<EmulatorCandidate>): List<EmulatorCandidate> {
         val norm = FuzzyMatch.normalizePlatform(platform)
         return candidates.filter { norm in it.platforms }.sortedWith(
-            compareByDescending<EmulatorCandidate> { it.canReadLibrary != false }
+            // Before anything else: one that can be handed a game beats one
+            // that cannot, however well regarded the second is.
+            compareByDescending<EmulatorCandidate> { it.canTakeARom }
+                .thenByDescending { it.canReadLibrary != false }
                 .thenByDescending { it.verified }
                 .thenBy { it.id == "retroarch" }
                 .thenBy { it.platforms.size }
@@ -170,6 +183,8 @@ object EmulatorRanking {
     ): String {
         val tied = peers.count { it.id != c.id && ranksEqually(it, c) }
         return when {
+            !c.canTakeARom ->
+                "installed, but it declares no way to be handed a game — it keeps its own library"
             c.canReadLibrary == false -> "cannot read the library as installed"
             position == 0 && peers.size == 1 -> "the only one installed for this platform"
             c.id == "retroarch" -> "covers everything, so never the most specific choice"
@@ -220,6 +235,7 @@ fun EmulatorCandidate.toProposalJson(
     .put("needsCore", needsCore)
     .put("coreHints", JSONArray(coreHints))
     .put("launchVerified", launchVerified)
+    .put("canTakeARom", canTakeARom)
     .put("why", EmulatorRanking.rankReason(this, position, peers))
 
 /** One candidate as an entry in the `/emulators` list. */
@@ -242,5 +258,6 @@ fun EmulatorCandidate.toListJson(): JSONObject = JSONObject()
     .put("needsCore", needsCore)
     .put("coreHints", JSONArray(coreHints))
     .put("launchVerified", launchVerified)
+    .put("canTakeARom", canTakeARom)
     // The one command that fixes it, ready to show or to run.
     .put("grantCommand", if (canReadLibrary == false) grantCommand else JSONObject.NULL)

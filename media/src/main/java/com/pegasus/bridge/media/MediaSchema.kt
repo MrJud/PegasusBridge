@@ -25,7 +25,16 @@ data class MediaRating(val value: String, val source: String)
 data class MediaPayload(
     val gameId: String,
     val fetchedAt: Long,
-    val sources: List<String>,          // quali client sono stati interrogati
+    /**
+     * Che fine ha fatto ogni client, non solo quali sono stati interrogati.
+     *
+     * Il nome nudo (`igdb`) significa che ha contribuito; `:none` che ha
+     * risposto senza trovare nulla; `:failed(…)` che la chiamata non è andata a
+     * buon fine; `:skipped(no-creds)` che non è stato interrogato affatto.
+     * Prima c'era solo il nome, e una chiave rifiutata era indistinguibile da
+     * una fonte che aveva funzionato — vedi MediaAggregator.
+     */
+    val sources: List<String>,
     val cover: MediaImage?,
     val video: MediaVideo?,
     val description: MediaText?,

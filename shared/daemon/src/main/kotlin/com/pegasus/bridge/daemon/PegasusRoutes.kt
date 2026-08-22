@@ -108,6 +108,10 @@ class PegasusRoutes(private val paths: BridgePaths) {
                 .put("shortName", c.shortName)
                 .put("directory", c.directory.absolutePath)
                 .put("metadataFile", c.file.absolutePath)
+                // Often not the same file: once an overlay exists the launch
+                // lives there and the collection's own has it commented out.
+                .put("launchFile", c.launchFile?.absolutePath ?: JSONObject.NULL)
+                .put("launchIsAmbiguous", c.ambiguousLaunch)
                 .put("extensions", JSONArray(c.extensions))
                 .put("currentLaunch", c.launch)
                 // The observation that motivated this whole endpoint: an `am start`
@@ -188,7 +192,10 @@ class PegasusRoutes(private val paths: BridgePaths) {
         val shortName = req.param("shortName") ?: existing?.shortName.orEmpty()
         val target = File(dir, OVERLAY_FILE)
 
-        val theirFile = existing?.file
+        // The file that actually declares a launch, which after a previous apply
+        // is the overlay itself — and re-applying must not treat our own overlay
+        // as a conflict with itself.
+        val theirFile = existing?.launchFile ?: existing?.file
         val conflicts = theirFile != null && theirFile != target &&
                         MetadataFile.declaresLaunch(theirFile)
         val standAside = req.param("standAside") == "1"

@@ -207,15 +207,48 @@ class MetadataAndDiscoveryTest {
         assertTrue(p.launchCommand.contains("pcsx2-qt"))
     }
 
+    private fun flatpak(id: String, name: String, version: String) =
+        EmulatorDiscovery.InstalledFlatpak(id, name, version)
+
     @Test fun `an installed flatpak is found when nothing is on path`() {
         val found = EmulatorDiscovery.discover(
             pathDirs = fakePath(),
-            flatpakList = { listOf("org.DolphinEmu.dolphin-emu", "org.videolan.VLC") },
+            flatpakList = { listOf(flatpak("org.DolphinEmu.dolphin-emu", "Dolphin", "2606"),
+                                   flatpak("org.videolan.VLC", "VLC", "3.0")) },
             runner = { null })
 
         val d = found.single { it.id == "dolphin" }
         assertEquals(EmulatorDiscovery.Kind.FLATPAK, d.kind)
         assertTrue(d.launchCommand.startsWith("flatpak run org.DolphinEmu.dolphin-emu"))
+    }
+
+    // Discovering what is installed must never start anything. Measured on a real
+    // machine: `flatpak run com.snes9x.Snes9x --version` ignores the flag and
+    // launches the emulator — joystick, audio device and all — while PCSX2 prints
+    // nothing at all. `flatpak list` states the version without executing a byte.
+    @Test fun `a flatpak is verified from metadata and never by running it`() {
+        var ran = false
+        val found = EmulatorDiscovery.discover(
+            pathDirs = fakePath(),
+            flatpakList = { listOf(flatpak("net.pcsx2.PCSX2", "PCSX2", "v2.6.3"),
+                                   flatpak("com.snes9x.Snes9x", "Snes9x", "1.63")) },
+            runner = { ran = true; null })
+
+        val pcsx2 = found.single { it.id == "pcsx2" }
+        assertTrue(pcsx2.verified, "a version from the metadata is a verification")
+        assertEquals("v2.6.3", pcsx2.version)
+        assertTrue(pcsx2.confidence.contains("PCSX2"), pcsx2.confidence)
+        assertFalse(ran, "discovery executed something to identify a Flatpak")
+    }
+
+    // A Flatpak whose metadata carries no version is still installed, and still
+    // worth offering — just not as something that has identified itself.
+    @Test fun `a flatpak with no version is offered unverified`() {
+        val found = EmulatorDiscovery.discover(
+            pathDirs = fakePath(),
+            flatpakList = { listOf(flatpak("io.mgba.mGBA", "mGBA", "")) },
+            runner = { null })
+        assertFalse(found.single { it.id == "mgba" }.verified)
     }
 
     @Test fun `nothing installed means nothing proposed`() {
@@ -324,6 +357,35 @@ class MetadataAndDiscoveryTest {
             .filter { MetadataFile.declaresLaunch(it) }
         assertEquals(1, declaring.size, "declaring launch: ${declaring.map { it.name }}")
         assertEquals("zz-pegasusbridge.metadata.pegasus.txt", declaring.single().name)
+    }
+
+    // An overlay is a second source for the same collection, and reading only
+    // the collection's own file reported "no launch command" for a collection
+    // that had just been given a working one.
+    @Test fun `the effective launch comes from whichever file declares one`() {
+        val nes = collection("nes", REAL_NES)
+        MetadataFile.commentOutLaunch(File(nes, "metadata.pegasus.txt"))
+        File(nes, "zz-pegasusbridge.metadata.pegasus.txt").writeText(
+            MetadataFile.renderCollection("Nintendo Entertainment System", "nes",
+                "flatpak run io.mgba.mGBA \"{file.path}\""))
+
+        val c = MetadataFile.readCollection(nes)!!
+        assertEquals("Nintendo Entertainment System", c.name)
+        assertEquals("flatpak run io.mgba.mGBA \"{file.path}\"", c.launch)
+        assertEquals("zz-pegasusbridge.metadata.pegasus.txt", c.launchFile?.name)
+        assertFalse(c.ambiguousLaunch)
+        // And the collection's identity still comes from the user's own file.
+        assertEquals("metadata.pegasus.txt", c.file.name)
+    }
+
+    @Test fun `two files declaring a launch are reported as ambiguous`() {
+        val nes = collection("nes", REAL_NES)
+        File(nes, "zz-pegasusbridge.metadata.pegasus.txt").writeText(
+            MetadataFile.renderCollection("Nintendo Entertainment System", "nes", "somethingelse"))
+
+        val c = MetadataFile.readCollection(nes)!!
+        assertTrue(c.ambiguousLaunch,
+                   "Pegasus picks by filesystem order here, and that must be surfaced")
     }
 
     // The proposal must never be applied on the strength of discovery alone.

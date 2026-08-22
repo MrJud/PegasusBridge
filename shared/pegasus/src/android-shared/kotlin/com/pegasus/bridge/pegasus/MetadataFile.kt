@@ -43,7 +43,24 @@ object MetadataFile {
         val extensions: List<String>,
         val launch: String,
         val directory: File,
+        /** The file the collection's identity came from. */
         val file: File,
+        /**
+         * The file the effective [launch] came from, which is often not [file].
+         *
+         * Once an overlay exists, the launch command lives there and the
+         * collection's own file has it commented out. Reporting the launch from
+         * `metadata.pegasus.txt` alone said "no launch command" for a collection
+         * that had just been given a working one.
+         */
+        val launchFile: File? = null,
+        /**
+         * More than one file declares a launch for this collection.
+         *
+         * Pegasus keeps whichever it parses last and does not sort them, so this
+         * is a coin toss rather than an override, and worth surfacing.
+         */
+        val ambiguousLaunch: Boolean = false,
         /** Fields kept verbatim, so a rewrite can preserve what is not understood. */
         val raw: Map<String, String> = emptyMap()
     )
@@ -52,9 +69,26 @@ object MetadataFile {
     fun findIn(dir: File): File? = FILE_NAMES
         .map { File(dir, it) }
         .firstOrNull { it.isFile }
-        ?: dir.listFiles { f ->
-            f.isFile && (f.name.endsWith(".metadata.pegasus.txt") || f.name.endsWith(".metadata.txt"))
-        }?.firstOrNull()
+        ?: overlaysIn(dir).firstOrNull()
+
+    /**
+     * Every metadata file in [dir], matched the way `is_metadata_file` does.
+     *
+     * All of them, because Pegasus reads all of them: an overlay beside a
+     * collection's own file is a second source for the same collection, and
+     * looking at only the first says nothing about what the frontend will
+     * actually do.
+     */
+    fun allIn(dir: File): List<File> {
+        val named = FILE_NAMES.map { File(dir, it) }.filter { it.isFile }
+        return (named + overlaysIn(dir)).distinctBy { it.absolutePath }
+    }
+
+    private fun overlaysIn(dir: File): List<File> =
+        dir.listFiles { f ->
+            f.isFile && f.name !in FILE_NAMES &&
+            (f.name.endsWith(".metadata.pegasus.txt") || f.name.endsWith(".metadata.txt"))
+        }?.sortedBy { it.name } ?: emptyList()
 
     /**
      * The collection header, if [dir] has a metadata file with one.
@@ -63,16 +97,36 @@ object MetadataFile {
      * Bridge has no reason to hold an opinion about them.
      */
     fun readCollection(dir: File): Collection? {
-        val f = findIn(dir) ?: return null
-        val fields = readHeaderFields(f.readText()) ?: return null
-        val name = fields["collection"] ?: return null
+        val files = allIn(dir)
+        if (files.isEmpty()) return null
+
+        var identity: Pair<File, Map<String, String>>? = null
+        val launches = mutableListOf<Pair<File, String>>()
+
+        for (f in files) {
+            val fields = runCatching { readHeaderFields(f.readText()) }.getOrNull() ?: continue
+            if (fields["collection"] == null) continue
+            if (identity == null) identity = f to fields
+            val launch = (fields["launch"] ?: fields["command"].orEmpty())
+            if (launch.isNotBlank()) launches += f to launch
+        }
+
+        val (file, fields) = identity ?: return null
+        // The effective launch is whichever file declares one. When exactly one
+        // does — which `standAside` is what guarantees — that is the whole
+        // answer. When several do, Pegasus picks by filesystem order and the
+        // honest thing is to say so rather than name a winner.
+        val effective = launches.lastOrNull()
         return Collection(
-            name = name,
-            shortName = fields["shortname"].orEmpty(),
+            name = fields["collection"]!!,
+            shortName = fields["shortname"].orEmpty()
+                .ifEmpty { launches.firstNotNullOfOrNull { readHeaderFields(it.first.readText())?.get("shortname") }.orEmpty() },
             extensions = splitList(fields["extensions"] ?: fields["extension"].orEmpty()),
-            launch = fields["launch"] ?: fields["command"].orEmpty(),
+            launch = effective?.second.orEmpty(),
             directory = dir,
-            file = f,
+            file = file,
+            launchFile = effective?.first,
+            ambiguousLaunch = launches.size > 1,
             raw = fields
         )
     }

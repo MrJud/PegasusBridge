@@ -140,11 +140,11 @@ object EmulatorDiscovery {
      */
     fun discover(
         pathDirs: List<File> = systemPath(),
-        flatpakList: () -> List<String> = ::installedFlatpaks,
+        flatpakList: () -> List<InstalledFlatpak> = ::installedFlatpaks,
         runner: (List<String>) -> String? = ::runForOutput
     ): List<Candidate> {
         val out = mutableListOf<Candidate>()
-        val flatpaks = runCatching(flatpakList).getOrDefault(emptyList()).toSet()
+        val flatpaks = runCatching(flatpakList).getOrDefault(emptyList()).associateBy { it.id }
 
         for (probe in PROBES) {
             var found = false
@@ -169,7 +169,7 @@ object EmulatorDiscovery {
             if (found) continue
 
             for (id in probe.flatpakIds) {
-                if (id !in flatpaks) continue
+                val installed = flatpaks[id] ?: continue
                 out += Candidate(
                     id = probe.id,
                     displayName = "${probe.displayName} (Flatpak)",
@@ -177,11 +177,16 @@ object EmulatorDiscovery {
                     executable = id,
                     launchCommand = "flatpak run $id ${probe.argsTemplate}",
                     kind = Kind.FLATPAK,
-                    // The id being installed is `flatpak list` saying so, which is
-                    // a stronger statement than a file existing on PATH — but the
-                    // binary inside was not run, so this is not the same as verified.
-                    verified = false,
-                    confidence = "installed Flatpak"
+                    // Verified from metadata, and deliberately *not* by running it.
+                    // `flatpak run <id> --version` was tried and is not safe as a
+                    // probe: mGBA answers, PCSX2 prints nothing, and Snes9x ignores
+                    // the flag and **starts the emulator** — joystick init, audio
+                    // device, the lot. Discovering what is installed must not launch
+                    // anything, and `flatpak list` already states the id, the name
+                    // and the version without executing a byte.
+                    verified = installed.version.isNotEmpty(),
+                    version = installed.version,
+                    confidence = "installed Flatpak (${installed.name})"
                 )
                 break
             }
@@ -222,9 +227,12 @@ object EmulatorDiscovery {
     /**
      * Runs a command for its output, or null.
      *
-     * Bounded and killed on timeout: this executes files found on PATH, and one
-     * that ignores `--version` and waits for input would otherwise hang discovery
-     * for as long as the daemon lives.
+     * Bounded and killed on timeout, because this executes files found on PATH
+     * and one of them will eventually ignore `--version` and do something else
+     * instead. Measured on a real install: `snes9x-gtk` under Flatpak ignores the
+     * flag and starts the emulator, opening a joystick and an audio device. The
+     * timeout contains that; the Flatpak path avoids it altogether by reading
+     * metadata rather than executing anything.
      */
     fun runForOutput(command: List<String>, timeoutSeconds: Long = 5): String? = try {
         val p = ProcessBuilder(command).redirectErrorStream(true).start()
@@ -244,10 +252,35 @@ object EmulatorDiscovery {
         env["PATH"].orEmpty().split(File.pathSeparatorChar)
             .filter { it.isNotBlank() }.map(::File).filter { it.isDirectory }
 
-    fun installedFlatpaks(): List<String> =
-        runForOutput(listOf("flatpak", "list", "--app", "--columns=application"))
-            ?.lineSequence()?.map { it.trim() }?.filter { it.isNotEmpty() }?.toList()
-            ?: emptyList()
+    /** What `flatpak list` states about one installed application. */
+    data class InstalledFlatpak(val id: String, val name: String, val version: String)
+
+    /**
+     * Every installed Flatpak application, user scope and system scope.
+     *
+     * Both, because they are separate installations and an emulator can be in
+     * either — a `--user` install needs no root, so it is the one a person
+     * without sudo actually ends up with, and querying only the system scope
+     * would miss it entirely.
+     */
+    fun installedFlatpaks(): List<InstalledFlatpak> {
+        val out = LinkedHashMap<String, InstalledFlatpak>()
+        for (scope in listOf(listOf("--user"), listOf("--system"))) {
+            val text = runForOutput(
+                listOf("flatpak", "list") + scope +
+                listOf("--app", "--columns=application,name,version")) ?: continue
+            for (line in text.lineSequence()) {
+                val cols = line.split('\t').map { it.trim() }
+                val id = cols.getOrNull(0).orEmpty()
+                if (id.isEmpty() || !id.contains('.')) continue
+                out.putIfAbsent(id, InstalledFlatpak(
+                    id = id,
+                    name = cols.getOrNull(1).orEmpty(),
+                    version = cols.getOrNull(2).orEmpty()))
+            }
+        }
+        return out.values.toList()
+    }
 
     private fun quoteIfNeeded(path: String) =
         if (path.any { it.isWhitespace() }) "\"$path\"" else path

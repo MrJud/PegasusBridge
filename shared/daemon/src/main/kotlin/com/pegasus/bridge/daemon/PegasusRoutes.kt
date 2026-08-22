@@ -643,16 +643,26 @@ class PegasusRoutes(private val paths: BridgePaths) {
         val collectionChoice = prefs.forCollection(dir)
         val perGame = prefs.gamesIn(dir)
         val writable = writable0.map { e ->
-            val chosen = perGame[e.fileName]
-            if (chosen == null || chosen == collectionChoice) e
-            else e.copy(launch = commandFor(chosen, known))
+            val launch = LaunchPreferences.gameLaunch(
+                perGame[e.fileName], collectionChoice) { commandFor(it, known) }
+            if (launch.isEmpty()) e else e.copy(launch = launch)
         }
 
-        // The launch already in force, kept as it is. This file may already carry
-        // one from a previous apply, and rewriting it without would silently undo
-        // that — the games and the launch live in the same overlay.
-        val launch = if (existing?.launchFile?.absolutePath == target.absolutePath)
-            existing.launch else ""
+        // The collection's launch, from the preference if there is one.
+        //
+        // Preferring the overlay's existing line was wrong, and the demo showed
+        // it: choosing an emulator in the Quick menu recorded the preference,
+        // and then an export rewrote the file with the *old* command — so the
+        // choice appeared to be remembered and had no effect until somebody also
+        // ran /emulators/apply. A recorded choice is the more recent statement of
+        // intent and has to win.
+        //
+        // The overlay's own line is still the fallback, for the collection that
+        // had a launch applied before preferences existed.
+        val launch = LaunchPreferences.collectionLaunch(
+            collectionChoice,
+            { commandFor(it, known) },
+            if (existing?.launchFile?.absolutePath == target.absolutePath) existing.launch else "")
 
         val text = MetadataFile.renderCollectionWithGames(
             name = existing?.name ?: dir.name,

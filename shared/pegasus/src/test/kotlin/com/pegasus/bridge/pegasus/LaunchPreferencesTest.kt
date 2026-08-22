@@ -148,3 +148,64 @@ class LaunchPreferencesTest {
         assertTrue(bare.copy(launch = "emu \"{file.path}\"").render().isNotEmpty())
     }
 }
+
+/**
+ * Which command ends up in the overlay, and why one source beats another.
+ *
+ * Separated from the route so the rule is testable at all: the first version
+ * preferred whatever the overlay already said, and a demo on the real library
+ * showed the cost — choosing an emulator in the Quick menu stored the
+ * preference, an export then rewrote the file with the *old* command, and the
+ * choice looked remembered while doing nothing.
+ */
+class LaunchPrecedenceTest {
+
+    private val commands = mapOf(
+        "gopher64" to "flatpak run io.github.gopher64.gopher64 \"{file.path}\"",
+        "mupen64plus" to "flatpak run com.github.Rosalie241.RMG \"{file.path}\"")
+
+    private val commandOf: (String) -> String? = { commands[it] }
+
+    @Test fun `a recorded choice beats what the overlay already says`() {
+        val stale = "flatpak run io.github.gopher64.gopher64 \"{file.path}\""
+        assertEquals(commands["mupen64plus"],
+            LaunchPreferences.collectionLaunch("mupen64plus", commandOf, stale))
+    }
+
+    @Test fun `with no preference the overlay's own line is kept`() {
+        val existing = "flatpak run io.github.gopher64.gopher64 \"{file.path}\""
+        assertEquals(existing, LaunchPreferences.collectionLaunch(null, commandOf, existing))
+    }
+
+    // Losing a working launch line because a preference went stale would be the
+    // worse failure of the two.
+    @Test fun `a preference naming an uninstalled emulator falls back`() {
+        val existing = "flatpak run io.github.gopher64.gopher64 \"{file.path}\""
+        assertEquals(existing,
+            LaunchPreferences.collectionLaunch("duckstation", commandOf, existing))
+    }
+
+    @Test fun `nothing anywhere is no launch at all`() {
+        assertEquals("", LaunchPreferences.collectionLaunch(null, commandOf, ""))
+    }
+
+    // ── The per-game line ───────────────────────────────────────────────────
+
+    @Test fun `a game that differs from its collection gets its own line`() {
+        assertEquals(commands["gopher64"],
+            LaunchPreferences.gameLaunch("gopher64", "mupen64plus", commandOf))
+    }
+
+    // An override that overrides nothing is noise in a file people read.
+    @Test fun `a game agreeing with its collection gets no line`() {
+        assertEquals("", LaunchPreferences.gameLaunch("gopher64", "gopher64", commandOf))
+    }
+
+    @Test fun `a game with no choice of its own gets no line`() {
+        assertEquals("", LaunchPreferences.gameLaunch(null, "mupen64plus", commandOf))
+    }
+
+    @Test fun `a game choosing something uninstalled gets no line rather than a broken one`() {
+        assertEquals("", LaunchPreferences.gameLaunch("duckstation", "gopher64", commandOf))
+    }
+}

@@ -117,6 +117,46 @@ class LaunchPreferences(private val file: File) {
 
     companion object {
         private const val TAG = "LaunchPreferences"
+
+        /**
+         * Which launch command a collection's overlay should carry.
+         *
+         * A recorded preference wins over whatever the overlay says now. The
+         * other way round was the first version, and a demo showed what it costs:
+         * choosing an emulator in the Quick menu stored the preference, then an
+         * export rewrote the file with the *old* command — so the choice looked
+         * remembered and did nothing until somebody also ran `/emulators/apply`.
+         * A recorded choice is the more recent statement of intent.
+         *
+         * [overlayLaunch] remains the fallback, for a collection that had a
+         * launch applied before preferences existed.
+         *
+         * A preference naming an emulator that is no longer installed resolves to
+         * no command, and the fallback carries it — losing a working launch line
+         * because a preference went stale would be the worse failure.
+         */
+        fun collectionLaunch(
+            preferred: String?,
+            commandOf: (String) -> String?,
+            overlayLaunch: String
+        ): String = preferred?.let(commandOf).orEmpty().ifEmpty { overlayLaunch }
+
+        /**
+         * A game's own launch line, or empty when it should not have one.
+         *
+         * Empty when the game made no choice, and empty when its choice is the
+         * same as its collection's: an override that overrides nothing is noise
+         * in a file people read.
+         */
+        fun gameLaunch(
+            chosen: String?,
+            collectionChoice: String?,
+            commandOf: (String) -> String?
+        ): String {
+            if (chosen == null || chosen == collectionChoice) return ""
+            return chosen.let(commandOf).orEmpty()
+        }
+
         const val FILE_NAME = "launch-preferences.json"
         const val SCHEMA_VERSION = 1
     }

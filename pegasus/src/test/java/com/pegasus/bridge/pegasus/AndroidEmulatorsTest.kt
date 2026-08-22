@@ -113,13 +113,37 @@ class AndroidEmulatorsTest {
     }
 
     /**
-     * Whether another app can read the library is not knowable from here, and
+     * Whether another app can read the library is usually not knowable, and
      * saying so is the point — a null with no explanation reads as "not checked".
+     *
+     * The reason is carried from whoever answered, so a caller that injects no
+     * resolver gets a null and no story, and the real one on the device gets
+     * both. `RetroArch` is the case that cannot be decided: it asks for All
+     * files access and the grant is an app op nothing here may read.
      */
     @Test fun `readability is unknown and says why`() {
-        val ra = discover().first { it.id == "retroarch" }
-        assertEquals(null, ra.canReadLibrary)
-        assertTrue(ra.readabilityUnknownBecause.contains("GET_APP_OPS_STATS"))
+        val plain = discover().first { it.id == "retroarch" }
+        assertEquals(null, plain.canReadLibrary)
+        assertEquals("", plain.readabilityUnknownBecause)
+
+        val asked = AndroidEmulators.discover(
+            installed = { onTheTablet[it] },
+            storageOf = { null to "asks for All files access; the grant is an app op" }
+        ).first { it.id == "retroarch" }
+        assertEquals(null, asked.canReadLibrary)
+        assertTrue(asked.readabilityUnknownBecause.contains("app op"))
+        assertEquals("", asked.grantCommand)
+    }
+
+    /** A definite no carries the command that fixes it, and nothing else does. */
+    @Test fun `a package with no storage permission is told how to get one`() {
+        val blocked = AndroidEmulators.discover(
+            installed = { onTheTablet[it] },
+            storageOf = { false to "" }
+        ).first { it.id == "retroarch" }
+        assertEquals(false, blocked.canReadLibrary)
+        assertTrue(blocked.grantCommand, blocked.grantCommand.contains("MANAGE_EXTERNAL_STORAGE allow"))
+        assertEquals("", blocked.readabilityUnknownBecause)
     }
 
     /** Two RetroArch builds are two ways to run one thing, not two choices. */
@@ -253,7 +277,7 @@ class AndroidEmulatorsTest {
         assertTrue(eggns.opensAppOnly)
         assertTrue(eggns.appLaunchCommand,
                    eggns.appLaunchCommand.contains("android.intent.category.LAUNCHER"))
-        assertTrue(eggns.appOnlyCaveat, eggns.appOnlyCaveat.contains("its own menu"))
+        assertTrue(eggns.caveat, eggns.caveat.contains("its own menu"))
     }
 
     /** An emulator that *can* take a game is never offered the app-only door. */
@@ -265,7 +289,50 @@ class AndroidEmulatorsTest {
 
         assertEquals("", ra.appLaunchCommand)
         assertFalse(ra.opensAppOnly)
-        assertEquals("", ra.appOnlyCaveat)
+        assertEquals("", ra.caveat)
+    }
+
+    private fun candidate(launch: String, canRead: Boolean?) = EmulatorCandidate(
+        id = "x", displayName = "ColEm", platforms = listOf("adam"),
+        executable = "com.fms.colem", launchCommand = launch,
+        kind = EmulatorKind.ANDROID_PACKAGE, verified = true, canReadLibrary = canRead)
+
+    /**
+     * The third state: it knows how, it just cannot read the file.
+     *
+     * Different from an emulator that cannot be driven — the launch line is
+     * right and the emulator is capable. ColEm proved it: handed the same ROM
+     * from a directory it can read, the identical intent booted the game.
+     */
+    @Test fun `a path handed to something that cannot read it is a known failure`() {
+        val c = candidate("am start -d \"{file.uri}\"", canRead = false)
+        assertTrue(c.canTakeARom)
+        assertFalse(c.opensAppOnly)
+        assertTrue(c.pathLaunchWillFail)
+        assertTrue(c.caveat, c.caveat.contains("no permission to read the library"))
+        assertTrue(c.caveat, c.caveat.contains("not the emulator being unsuitable"))
+    }
+
+    /**
+     * A document URI is opened against the *caller's* grant, so the receiver
+     * needing no permission is the normal case rather than a problem.
+     *
+     * PPSSPP is why this is not merely theory: it holds no all-files access,
+     * answers false here, and runs games.
+     */
+    @Test fun `a document uri is not a failure even with no read access`() {
+        val c = candidate("am start -d \"{file.documenturi}\"", canRead = false)
+        assertFalse(c.handsOverAPath)
+        assertFalse(c.pathLaunchWillFail)
+        assertEquals("", c.caveat)
+    }
+
+    /** Undecidable is not the same as false, and must not produce a warning. */
+    @Test fun `an unknown read permission warns about nothing`() {
+        val c = candidate("am start -d \"{file.uri}\"", canRead = null)
+        assertTrue(c.handsOverAPath)
+        assertFalse(c.pathLaunchWillFail)
+        assertEquals("", c.caveat)
     }
 
     /** No launcher activity to be had, so nothing offered and none invented. */

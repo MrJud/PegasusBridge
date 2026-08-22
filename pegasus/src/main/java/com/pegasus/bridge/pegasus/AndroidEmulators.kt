@@ -1,5 +1,6 @@
 package com.pegasus.bridge.pegasus
 
+import android.content.pm.PackageInfo
 import android.content.pm.PackageManager
 import com.pegasus.bridge.core.BridgeLog
 import org.json.JSONArray
@@ -566,7 +567,13 @@ object AndroidEmulators {
          * has to come from the system because these are exactly the packages
          * the table knows no component for.
          */
-        launcherOf: (String) -> String? = { null }
+        launcherOf: (String) -> String? = { null },
+        /**
+         * Whether a package can read a library outside its own directory, and
+         * why the answer is what it is. Null means undecidable from here, which
+         * on Android is the common case — see [storageAccess].
+         */
+        storageOf: (String) -> Pair<Boolean?, String> = { null to "" }
     ): List<EmulatorCandidate> {
         val out = mutableListOf<EmulatorCandidate>()
         for (probe in probesWith(config)) {
@@ -574,7 +581,8 @@ object AndroidEmulators {
                 val version = runCatching { installed(pkg) }.getOrNull() ?: continue
                 out += candidate(probe, pkg, version, platform,
                                  runCatching { labelOf(pkg) }.getOrNull(), config,
-                                 runCatching { launcherOf(pkg) }.getOrNull())
+                                 runCatching { launcherOf(pkg) }.getOrNull(),
+                                 runCatching { storageOf(pkg) }.getOrDefault(null to ""))
                 // One candidate per emulator, not one per package: two RetroArch
                 // builds are two ways to run the same thing, and offering both
                 // asks somebody to choose between them on no information.
@@ -594,7 +602,61 @@ object AndroidEmulators {
                  platform = platform,
                  config = config,
                  labelOf = { pkg -> labelOf(pm, pkg) },
-                 launcherOf = { pkg -> launcherOf(pm, pkg) })
+                 launcherOf = { pkg -> launcherOf(pm, pkg) },
+                 storageOf = { pkg -> storageAccess(pm, pkg) })
+
+    /**
+     * Whether [pkg] could read a library outside its own directory, as far as
+     * that can be established without a signature permission.
+     *
+     * Three answers, and the middle one is the honest majority:
+     *
+     * - **null, "declares All files access"** — it asked for
+     *   `MANAGE_EXTERNAL_STORAGE`, and whether the person granted it is an
+     *   *app op*. Reading another package's app ops needs `GET_APP_OPS_STATS`,
+     *   which is signature-level. RetroArch and ColEm both ask; one was granted
+     *   and one refused, and from in here they look identical.
+     * - **null, "holds READ_EXTERNAL_STORAGE"** — enough on an older target,
+     *   nothing like enough on API 30 and up. DraStic is the first case and
+     *   works; that is not evidence the next one will.
+     * - **false** — it asked for neither. Nothing it does can open an arbitrary
+     *   file, and that is a finding rather than a suspicion.
+     *
+     * Even `false` is not "unusable": it rules out a path, not a document URI.
+     * PPSSPP answers false here and runs games, because a `content://` grant
+     * comes from the caller and needs the receiver to hold nothing at all. See
+     * [EmulatorCandidate.pathLaunchWillFail], which is the combination that
+     * actually predicts a failure.
+     */
+    fun storageAccess(pm: PackageManager, pkg: String): Pair<Boolean?, String> = try {
+        @Suppress("DEPRECATION")
+        val info = pm.getPackageInfo(pkg, PackageManager.GET_PERMISSIONS)
+        val names: Array<String> = info.requestedPermissions ?: emptyArray()
+        val flags: IntArray = info.requestedPermissionsFlags ?: IntArray(0)
+        fun granted(name: String): Boolean {
+            val i = names.indexOf(name)
+            if (i < 0 || i >= flags.size) return false
+            return flags[i].and(PackageInfo.REQUESTED_PERMISSION_GRANTED) != 0
+        }
+        when {
+            "android.permission.MANAGE_EXTERNAL_STORAGE" in names -> null to
+                "$pkg asks for All files access; whether it was granted is an app op, and " +
+                "reading another package's app ops needs GET_APP_OPS_STATS, which is a " +
+                "signature permission this app has no business holding"
+            granted("android.permission.READ_EXTERNAL_STORAGE") -> null to
+                "$pkg holds READ_EXTERNAL_STORAGE, which covers a library on an older target " +
+                "and does not on API 30 and up — which of the two this is cannot be decided " +
+                "from the permission alone"
+            else -> false to ""
+        }
+    } catch (t: Throwable) {
+        null to "could not ask about $pkg: ${t.message}"
+    }
+
+    /** What a person would run to give [pkg] the access it is missing. */
+    fun grantCommandFor(pkg: String): String =
+        "adb shell appops set $pkg MANAGE_EXTERNAL_STORAGE allow    " +
+        "# or Settings → Apps → $pkg → Files and media → Allow all"
 
     /** The activity a launcher would start for [pkg], or null when it has none. */
     fun launcherOf(pm: PackageManager, pkg: String): String? = try {
@@ -637,7 +699,8 @@ object AndroidEmulators {
         platform: String?,
         label: String? = null,
         config: Config = Config(),
-        launcherActivity: String? = null
+        launcherActivity: String? = null,
+        storage: Pair<Boolean?, String> = null to ""
     ): EmulatorCandidate {
         val hints = coreHintsFor(probe, pkg, platform, config)
 
@@ -661,11 +724,9 @@ object AndroidEmulators {
                 (if (label != null && !label.equals(probe.displayName, true))
                      " (known here as ${probe.displayName})" else "") +
                 " — ${probe.provenance.describe}",
-            canReadLibrary = null,
-            readabilityUnknownBecause =
-                "whether $pkg can read the library depends on storage permissions " +
-                "granted to it, and reading another package's app-ops needs " +
-                "GET_APP_OPS_STATS, which is a signature permission",
+            canReadLibrary = storage.first,
+            grantCommand = if (storage.first == false) grantCommandFor(pkg) else "",
+            readabilityUnknownBecause = if (storage.first == null) storage.second else "",
             coreHints = if (probe.provenance != Provenance.NO_KNOWN_LAUNCH &&
                             launchCommand(probe, pkg).contains("{core}")) hints else emptyList(),
             launchVerified = probe.provenance == Provenance.ON_THIS_DEVICE ||

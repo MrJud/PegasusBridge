@@ -134,11 +134,53 @@ data class EmulatorCandidate(
      */
     val opensAppOnly: Boolean get() = launchCommand.isEmpty() && appLaunchCommand.isNotEmpty()
 
-    /** The sentence to show beside an app-only launch. Empty when it does not apply. */
-    val appOnlyCaveat: String get() = if (!opensAppOnly) "" else
-        "$displayName keeps its own library and exports no way to be handed a file, so this " +
-        "opens it on its own menu — the game has to be picked there. Nothing else about it " +
-        "is known to be wrong."
+    /**
+     * Whether this launch hands over a **path**, as opposed to a document URI.
+     *
+     * The distinction decides whether [canReadLibrary] matters at all. A path
+     * or a `file://` URI is opened by the emulator itself, as itself, so it
+     * needs its own read access to the library. A `content://` document URI is
+     * opened against a grant the *caller* passes with the intent, and needs the
+     * emulator to hold no storage permission whatsoever.
+     *
+     * PPSSPP is the proof and the reason this is a field: it holds no all-files
+     * access and no `READ_EXTERNAL_STORAGE`, and it runs games perfectly,
+     * because its line is `{file.documenturi}`.
+     */
+    val handsOverAPath: Boolean get() =
+        launchCommand.contains("{file.path}") || launchCommand.contains("{file.uri}")
+
+    /**
+     * Known to be about to fail: a path handed to something that cannot read it.
+     *
+     * This is the third state, and it is not the same as either of the others.
+     * The emulator exports a perfectly good way in — unlike Lemuroid — and the
+     * launch line is right. It will still do nothing, because the app has no
+     * permission to read the file it is being pointed at. ColEm is the measured
+     * case: handed the same ROM from a directory it *can* read, the identical
+     * intent boots the game.
+     */
+    val pathLaunchWillFail: Boolean get() = canReadLibrary == false && handsOverAPath
+
+    /**
+     * The sentence to show beside this candidate, or empty when there is nothing
+     * to warn about.
+     *
+     * One field rather than one per case, because a review screen has one place
+     * to put it; [opensAppOnly] and [pathLaunchWillFail] are the machine-readable
+     * halves for anything that needs to branch.
+     */
+    val caveat: String get() = when {
+        opensAppOnly ->
+            "$displayName keeps its own library and exports no way to be handed a file, so " +
+            "this opens it on its own menu — the game has to be picked there. Nothing else " +
+            "about it is known to be wrong."
+        pathLaunchWillFail ->
+            "$displayName knows how to take a game — this launch line is right — but it has " +
+            "no permission to read the library, so it will open on nothing. Grant it access " +
+            "to all files and the same line works. This is not the emulator being unsuitable."
+        else -> ""
+    }
 
     /**
      * Whether this can be handed a game at all.
@@ -269,7 +311,9 @@ fun EmulatorCandidate.toProposalJson(
     .put("canTakeARom", canTakeARom)
     .put("appLaunchCommand", appLaunchCommand.takeIf { it.isNotEmpty() } ?: JSONObject.NULL)
     .put("opensAppOnly", opensAppOnly)
-    .put("appOnlyCaveat", appOnlyCaveat.takeIf { it.isNotEmpty() } ?: JSONObject.NULL)
+    .put("handsOverAPath", handsOverAPath)
+    .put("pathLaunchWillFail", pathLaunchWillFail)
+    .put("caveat", caveat.takeIf { it.isNotEmpty() } ?: JSONObject.NULL)
     .put("why", EmulatorRanking.rankReason(this, position, peers))
 
 /** One candidate as an entry in the `/emulators` list. */
@@ -295,6 +339,8 @@ fun EmulatorCandidate.toListJson(): JSONObject = JSONObject()
     .put("canTakeARom", canTakeARom)
     .put("appLaunchCommand", appLaunchCommand.takeIf { it.isNotEmpty() } ?: JSONObject.NULL)
     .put("opensAppOnly", opensAppOnly)
-    .put("appOnlyCaveat", appOnlyCaveat.takeIf { it.isNotEmpty() } ?: JSONObject.NULL)
+    .put("handsOverAPath", handsOverAPath)
+    .put("pathLaunchWillFail", pathLaunchWillFail)
+    .put("caveat", caveat.takeIf { it.isNotEmpty() } ?: JSONObject.NULL)
     // The one command that fixes it, ready to show or to run.
     .put("grantCommand", if (canReadLibrary == false) grantCommand else JSONObject.NULL)

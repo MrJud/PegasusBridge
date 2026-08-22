@@ -28,6 +28,27 @@ class AndroidEmulatorsTest {
     private fun discover(platform: String? = null) =
         AndroidEmulators.discover(installed = { onTheTablet[it] }, platform = platform)
 
+    /**
+     * `io.github.lime3ds.android` is labelled **Azahar** on the tablet: Azahar
+     * is what Lime3DS became and it kept the package id so installs carried
+     * over. The probe table's name is a fallback, not the answer.
+     */
+    @Test fun `an emulator is called what it calls itself`() {
+        val found = AndroidEmulators.discover(
+            installed = { onTheTablet[it] },
+            labelOf = { if (it == "io.github.lime3ds.android") "Azahar" else null })
+        val a = found.first { it.id == "lime3ds" }
+        assertEquals("Azahar", a.displayName)
+        // …and the table's name is still said, so nobody has to guess which
+        // probe answered.
+        assertTrue(a.confidence, a.confidence.contains("known here as Lime3DS"))
+    }
+
+    /** With no label to be had, the table's name carries it. */
+    @Test fun `the table's name is the fallback, not the default`() {
+        assertEquals("Lime3DS", discover().first { it.id == "lime3ds" }.displayName)
+    }
+
     @Test fun `only installed packages become candidates`() {
         val ids = discover().map { it.id }.toSet()
         assertEquals(setOf("retroarch", "ppsspp", "drastic", "lime3ds", "linkboy", "eggns"), ids)
@@ -46,24 +67,28 @@ class AndroidEmulatorsTest {
     }
 
     /**
-     * …and never proposed. It exports `VIEW` on `linkboy://` and `MAIN`, and
-     * nothing that takes a file, so there is no launch line to write. Saying
-     * that is the answer; inventing one would produce a button that does
-     * nothing.
+     * Linkboy takes the game's *title*, which is its filename without the
+     * extension — not its path, and not a document URI. Both of those it parses
+     * and answers "could not find game", because it keeps its own library and
+     * looks entries up by name. Established against the device, four tries in.
      */
-    @Test fun `an emulator with no way in is listed but cannot be driven`() {
+    @Test fun `linkboy is launched by title, which needs no encoding`() {
         val lb = discover().first { it.id == "linkboy" }
-        assertFalse(lb.canTakeARom)
-        assertEquals("", lb.launchCommand)
-        assertFalse(lb.launchVerified)
-        assertTrue(lb.confidence, lb.confidence.contains("no way to be handed a game"))
+        assertTrue(lb.canTakeARom)
+        val lines = lb.launchCommand.lines().map { it.trim() }
+        assertTrue(lb.launchCommand,
+                   lines.contains("-d \"linkboy://emulator/{file.basename}\""))
+        // Reached through its own scheme, so no activity is named.
+        assertTrue(lb.launchCommand, lines.none { it.startsWith("-n ") })
+        assertFalse(lb.needsCore)
     }
 
-    /** And it never outranks something that can actually be handed a game. */
+    /** Something that cannot be handed a game never outranks something that can. */
     @Test fun `something drivable always outranks something that is not`() {
-        val ranked = EmulatorRanking.rankedFor("gba", discover())
-        assertEquals(listOf("retroarch", "linkboy"), ranked.map { it.id })
-        assertTrue(EmulatorRanking.rankReason(ranked.last(), 1, ranked)
+        val eggns = AndroidEmulators.discover(installed = {
+            if (it == "com.xiaoji.egggame") "5.3.5" else null })
+        assertFalse(eggns.single().canTakeARom)
+        assertTrue(EmulatorRanking.rankReason(eggns.single(), 0, eggns)
                        .contains("no way to be handed a game"))
     }
 

@@ -251,13 +251,32 @@ object AndroidEmulators {
             args = listOf("-a android.intent.action.VIEW", "-d \"{file.uri}\""),
             provenance = Provenance.UNVERIFIED),
 
-        // Recognised, never proposed: see Provenance.NO_KNOWN_LAUNCH. The
-        // component is the launcher, which is all either of them exports.
+        /*
+         * Linkboy takes a game by *title*, not by path.
+         *
+         * Reading its manifest said it could not be driven at all: one exported
+         * activity, `VIEW` on `linkboy://` and `MAIN`, nothing accepting a file.
+         * That reading was wrong twice over — an explicit component bypasses
+         * intent filters anyway, and the scheme turned out to be a real route
+         * with a host, `linkboy://emulator/`.
+         *
+         * What it wants in that segment took four tries against the device. Not
+         * the absolute path, not a `content://` document URI from
+         * externalstorage — both of those it parses and echoes back with "could
+         * not find game". It keeps its own library, added folder by folder
+         * through SAF, and looks a game up by the name it lists: the filename
+         * with the extension taken off. `{file.basename}` is exactly that, so
+         * the line needs no percent-encoding and no help from the Bridge.
+         *
+         * No `-n`: the implicit form on its own scheme is what was verified
+         * working, and it is the app's documented door.
+         */
         Probe("linkboy", "Linkboy", listOf("gba", "gb", "gbc"),
             packages = listOf("com.pixelrespawn.linkboy"),
-            component = ".MainActivity",
-            args = emptyList(),
-            provenance = Provenance.NO_KNOWN_LAUNCH),
+            component = "",
+            args = listOf("-a android.intent.action.VIEW",
+                          "-d \"linkboy://emulator/{file.basename}\""),
+            provenance = Provenance.ON_THIS_DEVICE),
 
         Probe("eggns", "Egg NS", listOf("switch"),
             packages = listOf("com.xiaoji.egggame"),
@@ -327,13 +346,25 @@ object AndroidEmulators {
      */
     fun discover(
         installed: (String) -> String? = { null },
-        platform: String? = null
+        platform: String? = null,
+        /**
+         * What the installed app calls itself, when that can be asked.
+         *
+         * Worth asking. `io.github.lime3ds.android` is labelled **Azahar** on
+         * this tablet: Azahar is what Lime3DS became, and it kept the package id
+         * so installs would carry over. The probe table said "Lime3DS", which
+         * was recognised correctly and named wrongly, and the person looking for
+         * Azahar reasonably concluded it had been missed. The app's own label is
+         * the answer that stays right when a project renames itself.
+         */
+        labelOf: (String) -> String? = { null }
     ): List<EmulatorCandidate> {
         val out = mutableListOf<EmulatorCandidate>()
         for (probe in PROBES) {
             for (pkg in probe.packages) {
                 val version = runCatching { installed(pkg) }.getOrNull() ?: continue
-                out += candidate(probe, pkg, version, platform)
+                out += candidate(probe, pkg, version, platform,
+                                 runCatching { labelOf(pkg) }.getOrNull())
                 // One candidate per emulator, not one per package: two RetroArch
                 // builds are two ways to run the same thing, and offering both
                 // asks somebody to choose between them on no information.
@@ -345,7 +376,16 @@ object AndroidEmulators {
 
     /** The same thing, against a real [PackageManager]. */
     fun discover(pm: PackageManager, platform: String? = null): List<EmulatorCandidate> =
-        discover(installed = { pkg -> versionOf(pm, pkg) }, platform = platform)
+        discover(installed = { pkg -> versionOf(pm, pkg) },
+                 platform = platform,
+                 labelOf = { pkg -> labelOf(pm, pkg) })
+
+    /** What [pkg] calls itself, or null when it cannot be asked. */
+    fun labelOf(pm: PackageManager, pkg: String): String? = try {
+        pm.getApplicationLabel(pm.getApplicationInfo(pkg, 0)).toString().takeIf { it.isNotBlank() }
+    } catch (t: Throwable) {
+        null
+    }
 
     /**
      * The installed version of [pkg], or null when it is not installed.
@@ -371,13 +411,16 @@ object AndroidEmulators {
         probe: Probe,
         pkg: String,
         version: String,
-        platform: String?
+        platform: String?,
+        label: String? = null
     ): EmulatorCandidate {
         val hints = coreHintsFor(probe, pkg, platform)
 
         return EmulatorCandidate(
             id = probe.id,
-            displayName = probe.displayName,
+            // The app's own name where it has one, and the table's only as a
+            // fallback — see `labelOf` for the emulator that taught this.
+            displayName = label?.takeIf { it.isNotBlank() } ?: probe.displayName,
             platforms = probe.platforms,
             executable = pkg,
             launchCommand = if (probe.provenance == Provenance.NO_KNOWN_LAUNCH) ""
@@ -387,7 +430,10 @@ object AndroidEmulators {
             // the version without the package being run. See the class comment.
             verified = true,
             version = version,
-            confidence = "installed package $pkg — ${probe.provenance.describe}",
+            confidence = "installed package $pkg" +
+                (if (label != null && !label.equals(probe.displayName, true))
+                     " (known here as ${probe.displayName})" else "") +
+                " — ${probe.provenance.describe}",
             canReadLibrary = null,
             readabilityUnknownBecause =
                 "whether $pkg can read the library depends on storage permissions " +
@@ -438,7 +484,10 @@ object AndroidEmulators {
      */
     fun launchCommand(probe: Probe, pkg: String): String = buildString {
         append("am start\n")
-        append("  -n $pkg/${probe.component}\n")
+        // An empty component means the app is reached through its own URI
+        // scheme rather than by naming an activity — Linkboy is the case that
+        // required it, and naming its activity is not what was verified.
+        if (probe.component.isNotEmpty()) append("  -n $pkg/${probe.component}\n")
         for (a in probe.args) append("  ${a.replace("{package}", pkg)}\n")
         append("  --activity-clear-task\n")
         append("  --activity-clear-top\n")

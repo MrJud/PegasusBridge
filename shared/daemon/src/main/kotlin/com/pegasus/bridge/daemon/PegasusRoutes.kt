@@ -43,7 +43,7 @@ class PegasusRoutes(private val paths: BridgePaths) {
         paths.replaced)
 
     fun handle(req: Request): Response? = when (req.path) {
-        "/emulators"          -> emulators()
+        "/emulators"          -> emulators(req)
         "/emulators/apply"    -> applyEmulator(req)
         "/emulators/revert"   -> revertEmulator(req)
         "/collections"        -> collections(req)
@@ -59,8 +59,13 @@ class PegasusRoutes(private val paths: BridgePaths) {
     /**
      * What is installed. Reads nothing of the user's and writes nothing at all.
      */
-    private fun emulators(): Response = try {
-        val found = EmulatorDiscovery.discover()
+    private fun emulators(req: Request): Response = try {
+        // Passing the library roots turns "installed" into "installed and able to
+        // read your ROMs", which are not the same thing: four of the five Flatpak
+        // emulators on the machine this was developed against shipped with no
+        // access to an external mount at all.
+        val roots = rootsOf(req).orEmpty()
+        val found = EmulatorDiscovery.discover(libraryRoots = roots)
         val arr = JSONArray()
         for (c in found) {
             arr.put(JSONObject()
@@ -75,7 +80,11 @@ class PegasusRoutes(private val paths: BridgePaths) {
                 // whether a person should accept the proposal without checking.
                 .put("verified", c.verified)
                 .put("version", c.version)
-                .put("confidence", c.confidence))
+                .put("confidence", c.confidence)
+                .put("canReadLibrary", c.canReadLibrary ?: JSONObject.NULL)
+                // The one command that fixes it, ready to show or to run.
+                .put("grantCommand",
+                     if (c.canReadLibrary == false) c.grantCommand else JSONObject.NULL))
         }
         Response.json(JSONObject()
             .put("schemaVersion", SchemaVersion.CURRENT)
@@ -97,7 +106,8 @@ class PegasusRoutes(private val paths: BridgePaths) {
      */
     private fun collections(req: Request): Response {
         val roots = rootsOf(req) ?: return Response.badRequest("missing roots")
-        val found = runCatching { EmulatorDiscovery.discover() }.getOrDefault(emptyList())
+        val found = runCatching { EmulatorDiscovery.discover(libraryRoots = roots) }
+            .getOrDefault(emptyList())
 
         val arr = JSONArray()
         for (c in MetadataFile.collectionsUnder(roots)) {
@@ -125,6 +135,9 @@ class PegasusRoutes(private val paths: BridgePaths) {
                         .put("displayName", it.displayName)
                         .put("launchCommand", it.launchCommand)
                         .put("verified", it.verified)
+                        .put("canReadLibrary", it.canReadLibrary ?: JSONObject.NULL)
+                        .put("grantCommand",
+                             if (it.canReadLibrary == false) it.grantCommand else JSONObject.NULL)
                         .put("needsCore", it.launchCommand.contains("{core}"))
                 } ?: JSONObject.NULL))
         }

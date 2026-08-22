@@ -51,7 +51,24 @@ object EmulatorDiscovery {
         val kind: Kind,
         val verified: Boolean,
         val version: String = "",
-        val confidence: String = ""
+        val confidence: String = "",
+        /**
+         * Whether this candidate can actually read the library.
+         *
+         * Null when it was not checked, which is the honest answer for a native
+         * binary: it runs unsandboxed and reads whatever the user can.
+         *
+         * For a Flatpak it is the difference between installed and usable, and
+         * the two are not the same. Measured on a real install: PCSX2 ships with
+         * `filesystems=xdg-config/kdeglobals:ro;xdg-run/gamescope-0:ro` and
+         * Snes9x with `filesystems=home`, while the library sits on an external
+         * mount under `/run/media`. Both were installed, both were verified, and
+         * neither could open a single ROM. A proposal that launches an emulator
+         * onto a file it cannot see is worse than no proposal.
+         */
+        val canReadLibrary: Boolean? = null,
+        /** What to run to fix [canReadLibrary], when it is false. */
+        val grantCommand: String = ""
     )
 
     enum class Kind { NATIVE, FLATPAK, APPIMAGE, DESKTOP_ENTRY, ANDROID_PACKAGE }
@@ -128,7 +145,23 @@ object EmulatorDiscovery {
         Probe("snes9x", "Snes9x", listOf("snes"),
             binaries = listOf("snes9x-gtk", "snes9x"),
             flatpakIds = listOf("com.snes9x.Snes9x"),
-            versionMatch = Regex("snes9x", RegexOption.IGNORE_CASE))
+            versionMatch = Regex("snes9x", RegexOption.IGNORE_CASE)),
+        // gopher64 first among the N64 options: it is the one that takes a ROM
+        // path as a plain argument. Mupen64Plus proper needs a video plugin named
+        // on the command line, and RMG and M64Py are front-ends that expect to be
+        // driven by hand rather than handed a file.
+        Probe("gopher64", "Gopher64", listOf("n64"),
+            binaries = listOf("gopher64"),
+            flatpakIds = listOf("io.github.gopher64.gopher64"),
+            versionMatch = Regex("gopher64", RegexOption.IGNORE_CASE)),
+        Probe("mupen64plus", "Mupen64Plus", listOf("n64"),
+            binaries = listOf("mupen64plus"),
+            flatpakIds = listOf("com.github.Rosalie241.RMG"),
+            versionMatch = Regex("mupen64plus", RegexOption.IGNORE_CASE)),
+        Probe("blastem", "BlastEm", listOf("genesis", "sega32x", "segacd"),
+            binaries = listOf("blastem"),
+            flatpakIds = listOf("com.retrodev.blastem"),
+            versionMatch = Regex("blastem", RegexOption.IGNORE_CASE))
     )
 
     /**
@@ -141,7 +174,16 @@ object EmulatorDiscovery {
     fun discover(
         pathDirs: List<File> = systemPath(),
         flatpakList: () -> List<InstalledFlatpak> = ::installedFlatpaks,
-        runner: (List<String>) -> String? = ::runForOutput
+        runner: (List<String>) -> String? = ::runForOutput,
+        /**
+         * The library roots a candidate has to be able to read.
+         *
+         * Empty skips the check entirely, which is what a caller with no library
+         * configured should get — inventing a path to test against would produce
+         * a confident answer about nothing.
+         */
+        libraryRoots: List<File> = emptyList(),
+        sandboxReader: (String, File) -> Boolean = ::flatpakCanRead
     ): List<Candidate> {
         val out = mutableListOf<Candidate>()
         val flatpaks = runCatching(flatpakList).getOrDefault(emptyList()).associateBy { it.id }
@@ -186,7 +228,12 @@ object EmulatorDiscovery {
                     // and the version without executing a byte.
                     verified = installed.version.isNotEmpty(),
                     version = installed.version,
-                    confidence = "installed Flatpak (${installed.name})"
+                    confidence = "installed Flatpak (${installed.name})",
+                    canReadLibrary = if (libraryRoots.isEmpty()) null
+                                     else libraryRoots.all { sandboxReader(id, it) },
+                    grantCommand = libraryRoots.joinToString("; ") {
+                        "flatpak override --user --filesystem=\"${it.absolutePath}\" $id"
+                    }
                 )
                 break
             }
@@ -263,6 +310,23 @@ object EmulatorDiscovery {
      * without sudo actually ends up with, and querying only the system scope
      * would miss it entirely.
      */
+    /**
+     * Whether a Flatpak's sandbox can read [path].
+     *
+     * Asked by running `sh` *inside* the sandbox rather than by parsing
+     * `filesystems=` out of the permissions, because the answer depends on
+     * overrides, on `:ro` suffixes, on portals and on which of `home`, `host`
+     * and an explicit path happen to overlap. Reading a directory entry settles
+     * all of it at once, and it launches a shell rather than the emulator.
+     */
+    fun flatpakCanRead(appId: String, path: File): Boolean {
+        val out = runForOutput(
+            listOf("flatpak", "run", "--user", "--command=sh", appId,
+                   "-c", "test -r '${path.absolutePath}' && echo READABLE"),
+            timeoutSeconds = 30) ?: return false
+        return out.contains("READABLE")
+    }
+
     fun installedFlatpaks(): List<InstalledFlatpak> {
         val out = LinkedHashMap<String, InstalledFlatpak>()
         for (scope in listOf(listOf("--user"), listOf("--system"))) {

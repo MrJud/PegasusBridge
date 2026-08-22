@@ -388,6 +388,92 @@ class MetadataAndDiscoveryTest {
                    "Pegasus picks by filesystem order here, and that must be surfaced")
     }
 
+    // ── Installed is not the same as usable ─────────────────────────────────
+    //
+    // Measured on a real machine: of five Flatpak emulators, four shipped with
+    // no access to a library on an external mount. PCSX2 had only
+    // `xdg-config/kdeglobals:ro`, Snes9x only `home`, gopher64 only a Discord
+    // socket. All five were installed, all five reported a version, and four
+    // could not open a single ROM.
+
+    @Test fun `a flatpak that cannot reach the library is flagged, with the fix`() {
+        val roms = File(library, "roms").apply { mkdirs() }
+        val found = EmulatorDiscovery.discover(
+            pathDirs = fakePath(),
+            flatpakList = { listOf(flatpak("net.pcsx2.PCSX2", "PCSX2", "v2.6.3")) },
+            runner = { null },
+            libraryRoots = listOf(roms),
+            sandboxReader = { _, _ -> false })
+
+        val p = found.single { it.id == "pcsx2" }
+        assertTrue(p.verified, "it is installed and named its version")
+        assertEquals(false, p.canReadLibrary, "and it still cannot read the library")
+        assertTrue(p.grantCommand.contains("flatpak override --user --filesystem="), p.grantCommand)
+        assertTrue(p.grantCommand.contains(roms.absolutePath), p.grantCommand)
+    }
+
+    @Test fun `a flatpak that can reach the library is not flagged`() {
+        val roms = File(library, "roms").apply { mkdirs() }
+        val found = EmulatorDiscovery.discover(
+            pathDirs = fakePath(),
+            flatpakList = { listOf(flatpak("io.mgba.mGBA", "mGBA", "0.10.5")) },
+            runner = { null },
+            libraryRoots = listOf(roms),
+            sandboxReader = { _, _ -> true })
+        assertEquals(true, found.single { it.id == "mgba" }.canReadLibrary)
+    }
+
+    // Every root has to be reachable, not just one: a library split across an
+    // internal disk and an external mount is the ordinary case.
+    @Test fun `one unreachable root is enough to flag a candidate`() {
+        val a = File(library, "a").apply { mkdirs() }
+        val b = File(library, "b").apply { mkdirs() }
+        val found = EmulatorDiscovery.discover(
+            pathDirs = fakePath(),
+            flatpakList = { listOf(flatpak("io.mgba.mGBA", "mGBA", "0.10.5")) },
+            runner = { null },
+            libraryRoots = listOf(a, b),
+            sandboxReader = { _, dir -> dir == a })
+        assertEquals(false, found.single { it.id == "mgba" }.canReadLibrary)
+    }
+
+    // With no library configured there is nothing to test against, and inventing
+    // a path would produce a confident answer about nothing.
+    @Test fun `with no library roots the question is left unanswered`() {
+        val found = EmulatorDiscovery.discover(
+            pathDirs = fakePath(),
+            flatpakList = { listOf(flatpak("io.mgba.mGBA", "mGBA", "0.10.5")) },
+            runner = { null })
+        assertEquals(null, found.single { it.id == "mgba" }.canReadLibrary)
+    }
+
+    // A native binary runs unsandboxed and reads whatever the user can, so the
+    // question does not apply to it.
+    @Test fun `a native binary is never asked about sandbox access`() {
+        val roms = File(library, "roms").apply { mkdirs() }
+        var asked = false
+        val found = EmulatorDiscovery.discover(
+            pathDirs = fakePath("mgba-qt"),
+            flatpakList = { emptyList() },
+            runner = { "mgba-qt 0.10.5" },
+            libraryRoots = listOf(roms),
+            sandboxReader = { _, _ -> asked = true; false })
+        assertEquals(null, found.single { it.id == "mgba" }.canReadLibrary)
+        assertFalse(asked)
+    }
+
+    @Test fun `n64 and mega drive resolve to the emulators that handle them`() {
+        val found = EmulatorDiscovery.discover(
+            pathDirs = fakePath(),
+            flatpakList = { listOf(flatpak("io.github.gopher64.gopher64", "Gopher64", "v1.1.36"),
+                                   flatpak("com.retrodev.blastem", "Blastem", "0.6.2")) },
+            runner = { null })
+        assertEquals("gopher64", EmulatorDiscovery.bestFor("n64", found)?.id)
+        // normalizePlatform folds megadrive onto genesis, so both spellings work.
+        assertEquals("blastem", EmulatorDiscovery.bestFor("megadrive", found)?.id)
+        assertEquals("blastem", EmulatorDiscovery.bestFor("genesis", found)?.id)
+    }
+
     // The proposal must never be applied on the strength of discovery alone.
     @Test fun `discovery writes nothing`() {
         val nes = collection("nes", REAL_NES)

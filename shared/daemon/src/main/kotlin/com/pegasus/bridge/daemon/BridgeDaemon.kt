@@ -8,6 +8,8 @@ import com.pegasus.bridge.hasher.ArchiveAwareHasher
 import com.pegasus.bridge.hasher.NativeRomHasher
 import com.pegasus.bridge.hasher.RaApiHashLookup
 import com.pegasus.bridge.hasher.RomScanPipeline
+import com.pegasus.bridge.hasher.RomScanner
+import com.pegasus.bridge.pegasus.MetadataFile
 import org.json.JSONObject
 import java.io.File
 
@@ -57,7 +59,13 @@ class BridgeDaemon(
                 RomScanPipeline(
                     paths,
                     ArchiveAwareHasher(it, File(dataRoot, "tmp")),
-                    RaApiHashLookup(ra?.user.orEmpty(), ra?.apiKey.orEmpty())
+                    RaApiHashLookup(ra?.user.orEmpty(), ra?.apiKey.orEmpty()),
+                    // A collection states which extensions it contains, and the
+                    // scanner's built-in list is only a default. They disagree
+                    // more often than is comfortable — every collection in the
+                    // library this was developed against declares one the list
+                    // has never heard of — and the collection is the authority.
+                    extensionsFor = ::collectionExtensions
                 )
             }
         }
@@ -108,6 +116,21 @@ class BridgeDaemon(
         }.onFailure {
             BridgeLog.w(TAG, "could not signal readiness to systemd: ${it.message}")
         }
+    }
+
+    /**
+     * What counts as a ROM in [dir]: the built-in set, plus whatever the
+     * collection's own metadata file declares.
+     *
+     * A union rather than a replacement. A collection that forgets to list `zip`
+     * should not thereby lose its archives, and one that adds a spelling of its
+     * own should not need the Bridge to be rebuilt to see it.
+     */
+    private fun collectionExtensions(dir: File): Set<String> {
+        val declared = runCatching { MetadataFile.readCollection(dir)?.extensions }
+            .getOrNull().orEmpty()
+        return if (declared.isEmpty()) RomScanner.ROM_EXTENSIONS
+               else RomScanner.ROM_EXTENSIONS + declared
     }
 
     private fun loadHasher() =

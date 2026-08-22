@@ -30,7 +30,16 @@ class RomScanPipeline(
     /** Milliseconds to pause after a hash. Android passes its thermal back-off. */
     private val throttleMs: () -> Long = { 0L },
     private val hashWorkers: Int = DEFAULT_HASH_WORKERS,
-    private val apiWorkers: Int = DEFAULT_API_WORKERS
+    private val apiWorkers: Int = DEFAULT_API_WORKERS,
+    /**
+     * Which extensions count as ROMs in a given directory.
+     *
+     * Supplied by the caller because the honest answer lives in the collection's
+     * own `metadata.pegasus.txt`, and this module cannot read one without
+     * depending on the module that parses it. The default is the built-in set,
+     * which is what every existing caller already got.
+     */
+    private val extensionsFor: (File) -> Set<String> = { RomScanner.ROM_EXTENSIONS }
 ) {
 
     data class Progress(
@@ -98,7 +107,7 @@ class RomScanPipeline(
     ): Summary {
         paths.ensureAll()
 
-        val files = RomScanner.scan(roots)
+        val files = RomScanner.scan(roots, extensionsFor)
         val total = files.size
         BridgeLog.i(TAG, "found $total ROM files under ${roots.size} root(s)")
         if (total == 0) return Summary(0, 0, 0, 0, 0, writeDiscoveryIndex())

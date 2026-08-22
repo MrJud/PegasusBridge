@@ -8,6 +8,7 @@ dependencies {
     api(project(":ra"))
     api(project(":hasher"))
     api(project(":video"))
+    api(project(":pegasus"))
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.8.1")
 
     testImplementation("com.squareup.okhttp3:okhttp:4.12.0")

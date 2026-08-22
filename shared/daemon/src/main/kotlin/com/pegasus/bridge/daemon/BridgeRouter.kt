@@ -42,7 +42,8 @@ class BridgeRouter(
     /** Supplied lazily so a scan is only wired up where a hasher exists. */
     private val scanPipeline: (() -> RomScanPipeline)? = null,
     private val scrapers: ScrapeSourceDispatcher = ScrapeSourceDispatcher(config, paths),
-    private val raSync: RaSync = RaSync(paths, config)
+    private val raSync: RaSync = RaSync(paths, config),
+    private val pegasus: PegasusRoutes = PegasusRoutes(paths)
 ) {
 
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
@@ -63,7 +64,12 @@ class BridgeRouter(
         "/credentials/clear"  -> credentialsClear(req)
         "/screenscraper/user" -> screenScraperUser()
         "/scan"           -> scan(req)
-        else              -> jobStatus(req) ?: Response.notFound("no endpoint ${req.path}")
+        // The verbs that reach into the user's library rather than the Bridge's
+        // own data root. Separate class, because writing into a directory the
+        // user edits by hand is a different risk from calling a remote API.
+        else              -> pegasus.handle(req)
+                             ?: jobStatus(req)
+                             ?: Response.notFound("no endpoint ${req.path}")
     }
 
     // ── Meta ────────────────────────────────────────────────────────────────

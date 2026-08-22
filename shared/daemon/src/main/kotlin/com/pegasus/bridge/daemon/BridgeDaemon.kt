@@ -87,7 +87,35 @@ class BridgeDaemon(
         if (::server.isInitialized) server.stop()
         // Under socket activation the file is the only way back in, so it
         // outlives the process on purpose.
-        if (!managed) runCatching { DaemonPaths.endpointFile(dataRoot).delete() }
+        if (!managed) runCatching { deleteEndpointFileIfStillOurs() }
+    }
+
+    /**
+     * Removes the endpoint file, but only while it still describes *this* process.
+     *
+     * The unconditional delete this replaces lost a race that a session restart
+     * runs every time: systemd starts the new instance, which writes the file,
+     * and then the outgoing instance's shutdown hook deletes it. The result is a
+     * daemon that is up and answering with no way for anything to find it —
+     * observed on a live install, up thirteen hours on port 46029 with no
+     * `daemon.json` at all, and a theme that reads exactly that file to learn the
+     * port.
+     *
+     * Comparing the pid closes it exactly: an instance only ever withdraws its
+     * own advertisement, and a file naming somebody else is somebody else's to
+     * remove.
+     */
+    private fun deleteEndpointFileIfStillOurs() {
+        val f = DaemonPaths.endpointFile(dataRoot)
+        if (!f.isFile) return
+        val advertised = runCatching { JSONObject(f.readText()).optLong("pid", -1L) }
+            .getOrDefault(-1L)
+        val mine = ProcessHandle.current().pid()
+        // -1 covers a file too old to carry a pid and one that will not parse.
+        // Removing it is right in both cases: nothing else claims it, and leaving
+        // an unreadable pointer behind helps nobody.
+        if (advertised == mine || advertised == -1L) f.delete()
+        else BridgeLog.i(TAG, "leaving daemon.json alone: it advertises pid $advertised, not $mine")
     }
 
     private val managed: Boolean get() = advertisePort > 0

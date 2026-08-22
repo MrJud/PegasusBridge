@@ -164,6 +164,11 @@ class PegasusService : Service() {
             .getOrElse { AndroidEmulators.Config(note = "could not read ${f.name}: ${it.message}") }
     }
 
+    /** Whether this build can ask about a package the manifest never named. */
+    private fun canSeeAllPackages(): Boolean =
+        checkSelfPermission(android.Manifest.permission.QUERY_ALL_PACKAGES) ==
+            android.content.pm.PackageManager.PERMISSION_GRANTED
+
     private fun discover(platform: String? = null) =
         AndroidEmulators.discover(packageManager, platform, emulatorConfig())
 
@@ -193,8 +198,9 @@ class PegasusService : Service() {
             .put("accepted", cfg.probes.size)
             .put("rejected", JSONArray(cfg.rejected))
             .put("note", cfg.note.takeIf { it.isNotEmpty() } ?: JSONObject.NULL)
+            .put("seesAllPackages", canSeeAllPackages())
             .put("visibilityWarning",
-                 AndroidEmulators.visibilityWarning(cfg) ?: JSONObject.NULL)
+                 AndroidEmulators.visibilityWarning(cfg, canSeeAllPackages()) ?: JSONObject.NULL)
 
         return ok().put("count", arr.length()).put("emulators", arr).put("config", config)
     }

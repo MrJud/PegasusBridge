@@ -2,6 +2,29 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
     <!--
+      Seeing an emulator that was not known when this APK was built.
+
+      `config/emulators.json` exists so somebody can add an emulator without
+      waiting for a new build, and without this that only half worked: from API
+      30 a package the manifest does not name is invisible, so a freshly added
+      entry could name an installed app and find nothing. Measured before this
+      was added — an entry for `org.videolan.vlc`, installed and undeclared,
+      produced no candidate at all.
+
+      Refused once, on the reasoning that this app needs to know about twenty-odd
+      emulators rather than about everything a person has installed. That was the
+      right call while the list was fixed. It stopped being right the moment the
+      list became the user's to extend: the alternative is telling somebody their
+      emulator cannot be seen until the maintainer ships a new APK, which is the
+      problem the file was built to remove.
+
+      Sideloaded, not on Play, so Play's restricted-permission policy does not
+      apply here. It grants no data access — only the ability to ask whether a
+      named package exists, which is the whole of what discovery does with it.
+    -->
+    <uses-permission android:name="android.permission.QUERY_ALL_PACKAGES" />
+
+    <!--
       Package visibility, API 30 and up.
 
       Without this, `getPackageInfo` throws NameNotFoundException for an
@@ -9,6 +32,10 @@
       error anywhere. QUERY_ALL_PACKAGES would also work and is refused on
       purpose: this app needs to know about twenty-odd emulators, not about
       everything a person has installed.
+
+      Now a fallback rather than the mechanism: QUERY_ALL_PACKAGES above covers
+      everything. Kept, and kept correct, so that removing that permission — for
+      a Play release, say — leaves the built-in table working instead of blind.
 
       Kept in step with AndroidEmulators.PROBES by
       AndroidEmulatorsTest.`every probed package is declared in the manifest`,

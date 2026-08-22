@@ -470,12 +470,16 @@ object AndroidEmulators {
      * declared; a package added afterwards cannot be, because the manifest was
      * fixed when the APK was built. Null when there is nothing to warn about.
      */
-    fun visibilityWarning(config: Config): String? {
+    fun visibilityWarning(config: Config, canSeeAllPackages: Boolean = false): String? {
+        // With QUERY_ALL_PACKAGES held there is nothing to warn about, and a
+        // warning about a solved problem is noise a reader learns to skip.
+        if (canSeeAllPackages) return null
         val added = config.probes.flatMap { it.packages }.filter { it !in KNOWN_PACKAGES }
         if (added.isEmpty()) return null
         return "emulators.json names ${added.size} package(s) the app's manifest does not " +
                "declare under <queries>: ${added.joinToString(", ")}. Android hides undeclared " +
-               "packages from API 30, so these can be installed and still not be found."
+               "packages from API 30, so these can be installed and still not be found. This " +
+               "build does not hold QUERY_ALL_PACKAGES, which is what covers them."
     }
 
     /**

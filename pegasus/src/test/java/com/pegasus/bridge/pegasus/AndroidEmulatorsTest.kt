@@ -367,9 +367,12 @@ class EmulatorConfigTest {
             { "emulators": [ { "id": "myboy", "platforms": ["gba"],
                                "packages": ["com.fastemulator.gba"], "args": ["-d x"] } ] }
         """.trimIndent())
-        val w = AndroidEmulators.visibilityWarning(c)
+        val w = AndroidEmulators.visibilityWarning(c, canSeeAllPackages = false)
         assertTrue(w.orEmpty(), w!!.contains("com.fastemulator.gba"))
         assertTrue(w, w.contains("<queries>"))
+
+        // …and nothing to warn about once the build can ask about any package.
+        assertEquals(null, AndroidEmulators.visibilityWarning(c, canSeeAllPackages = true))
 
         // …and no warning when the file only corrects something already declared.
         val known = AndroidEmulators.parseConfig("""

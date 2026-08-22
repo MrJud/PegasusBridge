@@ -71,7 +71,27 @@ class MediaExporter(
      * outside a library they would rather not have written to at all.
      */
     sealed interface Destination {
-        data class InCollection(val collectionDir: File) : Destination
+        /**
+         * Inside the collection, in one of Pegasus' three media roots.
+         *
+         * [mediaRoot] defaults to [AssetLayout.Root.BRIDGE] — `.media/` — which
+         * both providers read and both read *last*. That is what makes the
+         * collision question go away rather than being answered: the user's own
+         * `media/` keeps precedence, nothing of theirs is moved or renamed, and
+         * the Bridge's pictures fill only the gaps.
+         */
+        data class InCollection(
+            val collectionDir: File,
+            val mediaRoot: AssetLayout.Root = AssetLayout.Root.BRIDGE
+        ) : Destination
+
+        /**
+         * An arbitrary directory, which **Pegasus will not read**.
+         *
+         * Only `skraper/`, `media/` and `.media/` are searched, and only inside a
+         * configured game directory. A folder called anything else is a private
+         * copy — useful for looking at, useless for showing.
+         */
         data class Mirror(val root: File) : Destination
     }
 
@@ -128,6 +148,12 @@ class MediaExporter(
             is Destination.InCollection -> destination.collectionDir
             is Destination.Mirror -> destination.root
         }
+        val mediaRoot = when (destination) {
+            is Destination.InCollection -> destination.mediaRoot
+            // A mirror is not a Pegasus root at all, so the tree is built bare
+            // under it rather than nested inside another directory name.
+            is Destination.Mirror -> AssetLayout.Root.COLLECTION
+        }
         val layout = style ?: when (destination) {
             is Destination.InCollection -> AssetLayout.detectStyle(destination.collectionDir)
             // Nothing reads a mirror, so the only thing that makes one useful is
@@ -137,7 +163,9 @@ class MediaExporter(
 
         val romBaseName = AssetLayout.completeBaseName(romFile)
         val ext = source.extension.lowercase().ifEmpty { if (kind.video) "mp4" else "png" }
-        val target = AssetLayout.pathFor(root, layout, kind, romBaseName, ext)
+        val target = if (destination is Destination.Mirror)
+            AssetLayout.pathForBare(root, layout, kind, romBaseName, ext)
+        else AssetLayout.pathFor(root, layout, kind, romBaseName, ext, mediaRoot = mediaRoot)
         val collectionName = when (destination) {
             is Destination.InCollection -> destination.collectionDir.name
             is Destination.Mirror -> romFile.parentFile?.name.orEmpty()
@@ -270,6 +298,48 @@ class MediaExporter(
      * so somebody replaced them on purpose. [restored] counts the originals put back where they were.
      */
     data class Reverted(val removed: Int, val changed: Int, val absent: Int, val restored: Int)
+
+    /**
+     * Moves everything already exported into a different media root.
+     *
+     * Costs no quota — the pictures are already on disk, and re-fetching sixty of
+     * them to change which directory they sit in would spend an API's goodwill on
+     * a `mv`. Each record is updated in step with its file, so an interrupted
+     * migration leaves the manifest describing what is actually there.
+     */
+    fun migrate(toRoot: AssetLayout.Root, collection: String? = null): Migrated {
+        var moved = 0; var alreadyThere = 0; var failed = 0
+        for (r in manifest.all()) {
+            if (collection != null && r.collection != collection) continue
+            val from = File(r.target)
+            // <collection>/<root>/<...>: two levels up from a Skraper path, three
+            // from a native one. Derived from the record rather than guessed, so a
+            // path the Bridge did not write cannot be moved by accident.
+            val currentRoot = from.parentFile?.parentFile ?: continue
+            if (currentRoot.name == toRoot.dirName) { alreadyThere++; continue }
+            val collectionDir = currentRoot.parentFile ?: continue
+            val to = File(File(collectionDir, toRoot.dirName), 
+                          from.parentFile.name + File.separator + from.name)
+            try {
+                if (!from.isFile) { failed++; continue }
+                to.parentFile?.mkdirs()
+                from.copyTo(to, overwrite = true)
+                if (to.length() != from.length()) { to.delete(); failed++; continue }
+                from.delete()
+                manifest.remove(r.target)
+                manifest.put(r.copy(target = to.absolutePath))
+                moved++
+            } catch (t: Throwable) {
+                if (t is kotlinx.coroutines.CancellationException) throw t
+                BridgeLog.e(TAG, "could not move ${from.path} to ${to.path}", t)
+                failed++
+            }
+        }
+        manifest.save(writeAtomic)
+        return Migrated(moved, alreadyThere, failed)
+    }
+
+    data class Migrated(val moved: Int, val alreadyThere: Int, val failed: Int)
 
     fun save() = manifest.save(writeAtomic)
 

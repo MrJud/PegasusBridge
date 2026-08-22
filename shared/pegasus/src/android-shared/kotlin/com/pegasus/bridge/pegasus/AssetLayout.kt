@@ -94,10 +94,57 @@ object AssetLayout {
     }
 
     enum class Style {
-        /** `media/<gameName>/<assetType>.<ext>` — matches a title or a file name. */
+        /** `<root>/<gameName>/<assetType>.<ext>` — matches a title or a file name. */
         NATIVE,
-        /** `media/<assetDir>/<romBaseName>.<ext>` — matches a file name only. */
+        /** `<root>/<assetDir>/<romBaseName>.<ext>` — matches a file name only. */
         SKRAPER
+    }
+
+    /**
+     * Which of Pegasus' media roots to write into.
+     *
+     * There are exactly three, and the names are not a convention this project
+     * gets to extend: `SkraperAssetsProvider.cpp` searches `skraper/`, `media/`
+     * and `.media/`, and `MediaProvider.cpp` searches `media/` and `.media/`. A
+     * directory called anything else — `mediabridge`, say — is never looked at by
+     * either, so writing there produces a tidy tree that Pegasus cannot see.
+     *
+     * The order in those arrays is the precedence order, and it matters: assets
+     * accumulate into a `QStringList` per type and `getFirst()` is what QML's
+     * `assets.boxFront` returns. So the root chosen decides whose picture wins
+     * when two of them match the same game.
+     */
+    enum class Root(val dirName: String) {
+        /**
+         * The collection's own. Shared with the user and with every other tool
+         * that has ever scraped this library.
+         */
+        COLLECTION("media"),
+
+        /**
+         * The Bridge's, and the right default.
+         *
+         * Read by **both** providers and **last** in both, which is exactly the
+         * behaviour to want: the Bridge fills gaps and never displaces. The
+         * user's own `media/` keeps precedence for anything it matches, and no
+         * file of theirs is ever moved, renamed or set aside — the question of
+         * what to do about a collision stops arising.
+         */
+        BRIDGE(".media"),
+
+        /**
+         * Skraper's own root — read *first*, and only by the Skraper provider.
+         *
+         * Offered because it is the one way to have the Bridge's pictures take
+         * precedence without touching `media/`. Useless under [Style.NATIVE],
+         * which never looks there; [isReadBy] is how a caller finds out before
+         * writing rather than afterwards.
+         */
+        SKRAPER("skraper");
+
+        /** Whether a collection using [style] will actually read this root. */
+        fun isReadBy(style: Style): Boolean =
+            this != SKRAPER || style == Style.SKRAPER
     }
 
     /**
@@ -134,10 +181,8 @@ object AssetLayout {
         return if (children.any { it in skraperDirs }) Style.SKRAPER else Style.NATIVE
     }
 
-    /** The media root to write into: an existing one, or `media/`. */
-    fun mediaRoot(collectionDir: File): File =
-        MEDIA_DIR_NAMES.map { File(collectionDir, it) }.firstOrNull { it.isDirectory }
-            ?: File(collectionDir, MEDIA_DIR_NAMES.first())
+    fun mediaRoot(collectionDir: File, root: Root = Root.BRIDGE): File =
+        File(collectionDir, root.dirName)
 
     /**
      * Where one asset belongs.
@@ -157,9 +202,28 @@ object AssetLayout {
         kind: Kind,
         romBaseName: String,
         extension: String,
-        index: Int = 0
+        index: Int = 0,
+        mediaRoot: Root = Root.BRIDGE
     ): File {
-        val root = mediaRoot(collectionDir)
+        val root = mediaRoot(collectionDir, mediaRoot)
+        val ext = extension.lowercase().removePrefix(".")
+        val suffix = if (index > 0) "%02d".format(index) else ""
+        return when (style) {
+            Style.NATIVE  -> File(File(root, romBaseName), "${kind.nativeName}$suffix.$ext")
+            Style.SKRAPER -> File(File(root, kind.primarySkraperDir), "$romBaseName.$ext")
+        }
+    }
+
+    /**
+     * The same tree, but with no Pegasus media root above it.
+     *
+     * For a mirror, which is not a Pegasus location and so has no root name to
+     * nest under — putting one there would imply Pegasus might read it.
+     */
+    fun pathForBare(
+        root: File, style: Style, kind: Kind, romBaseName: String,
+        extension: String, index: Int = 0
+    ): File {
         val ext = extension.lowercase().removePrefix(".")
         val suffix = if (index > 0) "%02d".format(index) else ""
         return when (style) {

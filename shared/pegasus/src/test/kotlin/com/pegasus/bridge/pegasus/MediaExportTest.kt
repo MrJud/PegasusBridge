@@ -40,7 +40,9 @@ class MediaExportTest {
         exporter = MediaExporter(manifest, { f, t -> BridgePaths.writeAtomic(f, t) }, quarantine)
     }
 
-    private fun into(dir: File) = MediaExporter.Destination.InCollection(dir)
+    /** Explicit COLLECTION, because most of these tests predate the Bridge root. */
+    private fun into(dir: File) =
+        MediaExporter.Destination.InCollection(dir, AssetLayout.Root.COLLECTION)
 
     @AfterTest fun tearDown() {
         dataRoot.deleteRecursively(); library.deleteRecursively()
@@ -317,6 +319,98 @@ class MediaExportTest {
     }
 
     // A user's own picture may be in either layout, and neither counts as ours.
+    // ── The Bridge's own root, which is the default ─────────────────────────
+    //
+    // `.media/` is read by both providers and read *last* by both, so the
+    // Bridge fills gaps and never displaces. That is what makes the collision
+    // question stop arising rather than being answered.
+
+    @Test fun `the default root is the bridge's own, not the collection's`() {
+        val nes = collection("nes")
+        val romFile = rom(nes, "Contra (USA).nes")
+
+        val r = exporter.export(artwork("c.png"), romFile,
+                                MediaExporter.Destination.InCollection(nes),
+                                "cover", "v1", AssetLayout.Style.SKRAPER)
+                as MediaExporter.Outcome.Written
+
+        assertEquals(".media", r.target.parentFile.parentFile.name)
+        assertEquals("box2dfront", r.target.parentFile.name)
+        assertEquals("Contra (USA).png", r.target.name)
+    }
+
+    // The whole point: with separate roots there is nothing to collide with, so
+    // the user's picture is never even a candidate for being moved.
+    @Test fun `the user's media directory is untouched and uncontested`() {
+        val nes = collection("nes")
+        val romFile = rom(nes, "Contra (USA).nes")
+        val theirs = File(nes, "media/box2dfront/Contra (USA).png").apply {
+            parentFile.mkdirs(); writeText("the user's own careful scan")
+        }
+
+        val r = exporter.export(artwork("c.png", "ours"), romFile,
+                                MediaExporter.Destination.InCollection(nes),
+                                "cover", "v1", AssetLayout.Style.SKRAPER)
+
+        assertTrue(r is MediaExporter.Outcome.Written, "got $r")
+        assertEquals("the user's own careful scan", theirs.readText())
+        assertEquals("ours", r.target.readText())
+        assertEquals(0, quarantine.walkTopDown().count { it.isFile },
+                     "nothing should have needed setting aside")
+    }
+
+    @Test fun `skraper root is refused for a collection using the native layout`() {
+        assertFalse(AssetLayout.Root.SKRAPER.isReadBy(AssetLayout.Style.NATIVE))
+        assertTrue(AssetLayout.Root.SKRAPER.isReadBy(AssetLayout.Style.SKRAPER))
+        // The two that both providers read work either way.
+        for (style in AssetLayout.Style.entries) {
+            assertTrue(AssetLayout.Root.BRIDGE.isReadBy(style))
+            assertTrue(AssetLayout.Root.COLLECTION.isReadBy(style))
+        }
+    }
+
+    // Choosing the wrong root must cost a move, not sixty more API requests.
+    @Test fun `migrating moves the files and keeps the manifest in step`() {
+        val nes = collection("nes")
+        val romFile = rom(nes, "Contra (USA).nes")
+        val before = exporter.export(artwork("c.png"), romFile, into(nes),
+                                     "cover", "v1", AssetLayout.Style.SKRAPER)
+                     as MediaExporter.Outcome.Written
+        assertEquals("media", before.target.parentFile.parentFile.name)
+
+        val m = exporter.migrate(AssetLayout.Root.BRIDGE)
+
+        assertEquals(1, m.moved)
+        assertEquals(0, m.failed)
+        assertFalse(before.target.isFile, "the old file was left behind")
+        val moved = File(nes, ".media/box2dfront/Contra (USA).png")
+        assertTrue(moved.isFile, "the file did not arrive")
+        assertTrue(manifest.owns(moved), "the manifest still points at the old path")
+        assertFalse(manifest.owns(before.target))
+    }
+
+    @Test fun `migrating twice is a no-op the second time`() {
+        val nes = collection("nes")
+        exporter.export(artwork("c.png"), rom(nes, "Contra (USA).nes"), into(nes),
+                        "cover", "v1", AssetLayout.Style.SKRAPER)
+        exporter.migrate(AssetLayout.Root.BRIDGE)
+        val again = exporter.migrate(AssetLayout.Root.BRIDGE)
+        assertEquals(0, again.moved)
+        assertEquals(1, again.alreadyThere)
+    }
+
+    // A folder that is not one of Pegasus' three is invisible to it, and saying
+    // so is the only honest thing a mirror can do.
+    @Test fun `a mirror is not nested under a pegasus root name`() {
+        val nes = collection("nes")
+        val elsewhere = File(library, "media bridge").apply { mkdirs() }
+        val r = exporter.export(artwork("c.png"), rom(nes, "Contra (USA).nes"),
+                                MediaExporter.Destination.Mirror(elsewhere),
+                                "cover", "v1") as MediaExporter.Outcome.Written
+        assertEquals(elsewhere, r.target.parentFile.parentFile)
+        assertEquals("box2dfront", r.target.parentFile.name)
+    }
+
     @Test fun `an existing asset is found in whichever layout it uses`() {
         val nes = collection("nes")
         File(nes, "media/box2dfront/Contra (USA).png").apply {

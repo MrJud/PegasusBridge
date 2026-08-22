@@ -50,6 +50,7 @@ class PegasusRoutes(private val paths: BridgePaths) {
         "/export/media"       -> exportMedia(req)
         "/export/status"      -> exportStatus()
         "/export/revert"      -> exportRevert(req)
+        "/export/migrate"     -> exportMigrate(req)
         else                  -> null
     }
 
@@ -274,30 +275,44 @@ class PegasusRoutes(private val paths: BridgePaths) {
         // not read it — nothing outside a configured game directory is searched —
         // and saying so is better than letting somebody discover it by wondering
         // why no covers appeared.
-        val destination = req.param("mirrorTo")?.takeIf { it.isNotBlank() }
-            ?.let { MediaExporter.Destination.Mirror(File(it)) }
-            ?: MediaExporter.Destination.InCollection(collectionDir)
-
         val style = req.param("style")?.uppercase()?.let {
             runCatching { AssetLayout.Style.valueOf(it) }.getOrNull()
         } ?: AssetLayout.detectStyle(collectionDir)
+
+        val mediaRoot = req.param("root")?.uppercase()?.let {
+            runCatching { AssetLayout.Root.valueOf(it) }.getOrNull()
+        } ?: AssetLayout.Root.BRIDGE
+        // `skraper/` is read only by the Skraper provider. Writing there under
+        // the native layout produces files nothing will ever look at, so it is
+        // refused here rather than discovered as missing covers later.
+        if (!mediaRoot.isReadBy(style))
+            return Response.badRequest(
+                "root=${mediaRoot.name.lowercase()} is not read by a collection using " +
+                "the ${style.name.lowercase()} layout — use bridge or collection")
+
+        val destination = req.param("mirrorTo")?.takeIf { it.isNotBlank() }
+            ?.let { MediaExporter.Destination.Mirror(File(it)) }
+            ?: MediaExporter.Destination.InCollection(collectionDir, mediaRoot)
 
         if (req.param("dryRun") == "1") {
             val assetKind = AssetLayout.kindOf(kind)
                 ?: return Response.badRequest("no Pegasus asset slot for kind '$kind'")
             val base = AssetLayout.completeBaseName(romFile)
             val ext = source.extension.lowercase().ifEmpty { if (assetKind.video) "mp4" else "png" }
-            val root = when (destination) {
-                is MediaExporter.Destination.Mirror -> destination.root
-                is MediaExporter.Destination.InCollection -> destination.collectionDir
+            val target = when (destination) {
+                is MediaExporter.Destination.Mirror ->
+                    AssetLayout.pathForBare(destination.root, style, assetKind, base, ext)
+                is MediaExporter.Destination.InCollection ->
+                    AssetLayout.pathFor(destination.collectionDir, style, assetKind, base, ext,
+                                        mediaRoot = mediaRoot)
             }
-            val target = AssetLayout.pathFor(root, style, assetKind, base, ext)
             return Response.json(JSONObject()
                 .put("schemaVersion", SchemaVersion.CURRENT)
                 .put("status", "ok")
                 .put("outcome", "dryRun")
                 .put("target", target.absolutePath)
                 .put("style", style.name.lowercase())
+                .put("root", mediaRoot.name.lowercase())
                 .put("readByPegasus", destination is MediaExporter.Destination.InCollection)
                 .put("occupied", target.isFile && !ExportManifest(manifestFile).owns(target))
                 .toString())
@@ -322,6 +337,7 @@ class PegasusRoutes(private val paths: BridgePaths) {
         val payload = JSONObject()
             .put("schemaVersion", SchemaVersion.CURRENT)
             .put("style", style.name.lowercase())
+            .put("root", mediaRoot.name.lowercase())
             .put("readByPegasus", destination is MediaExporter.Destination.InCollection)
         return when (outcome) {
             is MediaExporter.Outcome.Written -> Response.json(payload
@@ -350,6 +366,30 @@ class PegasusRoutes(private val paths: BridgePaths) {
             is MediaExporter.Outcome.Failed ->
                 Response.serverError(outcome.reason)
         }
+    }
+
+    /**
+     * Moves what has already been exported into a different media root.
+     *
+     * Exists so choosing the wrong one is a `mv` rather than sixty more API
+     * requests. Only files in the manifest are touched, so nothing of the user's
+     * can be caught up in it.
+     */
+    private fun exportMigrate(req: Request): Response {
+        val to = req.param("root")?.uppercase()?.let {
+            runCatching { AssetLayout.Root.valueOf(it) }.getOrNull()
+        } ?: return Response.badRequest("missing or unknown root (bridge, collection, skraper)")
+
+        val ex = exporter()
+        val r = ex.migrate(to, req.param("collection"))
+        return Response.json(JSONObject()
+            .put("schemaVersion", SchemaVersion.CURRENT)
+            .put("status", "ok")
+            .put("root", to.name.lowercase())
+            .put("moved", r.moved)
+            .put("alreadyThere", r.alreadyThere)
+            .put("failed", r.failed)
+            .toString())
     }
 
     private fun exportStatus(): Response {

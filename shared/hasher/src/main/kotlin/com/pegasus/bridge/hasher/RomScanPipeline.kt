@@ -64,7 +64,17 @@ class RomScanPipeline(
         /** Why, in one sentence, when [aborted]. Empty otherwise. */
         val reason: String = "",
         /** Lookups that never got an answer — distinct from "not in the database". */
-        val failedLookups: Int = 0
+        val failedLookups: Int = 0,
+        /**
+         * Every file the scan looked at, counted by what happened to it.
+         *
+         * The point of the ledger, surfaced: a run that indexed nine of ten files
+         * can now say whether the tenth was a miss, an unreadable file, an archive
+         * nobody could resolve, or a source that stopped answering.
+         */
+        val states: Map<ScanLedger.State, Int> = emptyMap(),
+        /** Archives holding several plausible ROMs, with the candidates. */
+        val ambiguousArchives: List<Pair<String, String>> = emptyList()
     )
 
     /**
@@ -96,6 +106,13 @@ class RomScanPipeline(
         val metaCache = preloadMetadataCache()
         BridgeLog.i(TAG, "loaded ${metaCache.size} cached entries for incremental scan")
 
+        // Verdicts from previous scans, including the ones that are not matches.
+        // Without it a library of mostly-unknown ROMs asked the source about every
+        // one of them on every run, and could never say why any of them was missing.
+        val ledger = ScanLedger(File(paths.cache, ScanLedger.FILE_NAME))
+        ledger.forget(files.map { canonical(it) }.toSet())
+        val now = BridgePaths.epochSeconds()
+
         val fileQueue    = Channel<File>(capacity = 64)
         val hashQueue    = Channel<HashJob>(capacity = 32)
         val resultQueue  = Channel<ResultJob>(capacity = 128)
@@ -125,7 +142,7 @@ class RomScanPipeline(
                     launch(Dispatchers.Default) {
                         for (file in fileQueue) {
                             if (!isActive) break
-                            processFile(file, metaCache, hashQueue, resultQueue)
+                            processFile(file, metaCache, ledger, now, hashQueue, resultQueue)
                         }
                     }
                 }
@@ -188,20 +205,46 @@ class RomScanPipeline(
 
                 val step = (total / 50).coerceAtLeast(1)
                 for (r in resultQueue) {
+                    val job = r.job
                     when {
-                        r.skipped -> skipped++
-                        r.cached  -> cached++
-                        r.failed  -> failedLookups++
+                        // Already counted and recorded by the producer; nothing to add.
+                        r.skipped || r.cached || r.preRecorded -> {
+                            if (r.skipped) skipped++
+                            if (r.cached)  cached++
+                        }
+                        // No answer at all. Recorded as a retry and never as a verdict:
+                        // caching a refusal as "this game has no achievements" is the
+                        // bug that cost a whole run, 85 answers of 913 requests.
+                        r.failed -> {
+                            failedLookups++
+                            ledger.record(canonical(job.file), ScanLedger.State.API_RETRY,
+                                          job.fileSize, job.lastModified, now,
+                                          detail = "the source did not answer")
+                        }
                         // A usable match needs a title, not just an id. RA's dorequest can
                         // answer Success with an id the Web API does not know — a Virtual
                         // Console dump of Metroid returns 1100001487, for which
                         // API_GetGameExtended returns []. Writing that produced a junk
                         // metadata file the index then discarded, and inflated the count.
-                        // The same guard also covers a transient metadata failure, which
-                        // simply gets retried on the next scan.
                         r.meta != null && r.meta.gameId > 0 && r.meta.title.isNotEmpty() -> {
-                            writeMetadata(r.job, r.meta); newEntries++
+                            writeMetadata(job, r.meta); newEntries++
+                            ledger.record(canonical(job.file), ScanLedger.State.MATCHED,
+                                          job.fileSize, job.lastModified, now,
+                                          gameId = r.meta.gameId)
                         }
+                        // An id with no title is not a match, and it is not a refusal
+                        // either — it is the source answering about a game it cannot
+                        // describe. Retried, not written off.
+                        r.meta != null && r.meta.gameId > 0 -> {
+                            ledger.record(canonical(job.file), ScanLedger.State.API_RETRY,
+                                          job.fileSize, job.lastModified, now,
+                                          gameId = r.meta.gameId,
+                                          detail = "the source knows id ${r.meta.gameId} but gave no title")
+                        }
+                        // gameId 0: the source was asked and said no. A real verdict,
+                        // remembered until its TTL runs out.
+                        else -> ledger.record(canonical(job.file), ScanLedger.State.NOT_FOUND,
+                                              job.fileSize, job.lastModified, now)
                     }
                     processed++
                     if (processed % step == 0 || processed == total) {
@@ -230,36 +273,46 @@ class RomScanPipeline(
         }
 
         val indexed = writeDiscoveryIndex()
+        ledger.save { f, text -> BridgePaths.writeAtomic(f, text) }
+        val states = ledger.counts()
         BridgeLog.i(TAG, "scan ${if (abortReason.isEmpty()) "complete" else "aborted"}: " +
                          "$processed/$total processed, $newEntries new, " +
                          "$cached cached, $skipped skipped, $indexed indexed, " +
-                         "$failedLookups lookups failed")
+                         "$failedLookups lookups failed; " +
+                         states.entries.sortedBy { it.key.name }
+                               .joinToString(", ") { "${it.key.name}=${it.value}" })
         return Summary(
             total = total, processed = processed, newEntries = newEntries,
             cachedHits = cached, skippedPlatforms = skipped, indexed = indexed,
             aborted = abortReason.isNotEmpty(), reason = abortReason,
-            failedLookups = failedLookups
+            failedLookups = failedLookups, states = states,
+            ambiguousArchives = ledger.ambiguousArchives()
         )
     }
 
     private suspend fun processFile(
         file: File,
         metaCache: Map<String, CachedMeta>,
+        ledger: ScanLedger,
+        now: Long,
         hashQueue: Channel<HashJob>,
         resultQueue: Channel<ResultJob>
     ) {
         val rawPlatform = file.parentFile?.name ?: "unknown"
         val platform    = FuzzyMatch.normalizePlatform(rawPlatform)
+        val path        = canonical(file)
+        val size        = file.length()
+        val modified    = file.lastModified()
 
         if (platform in UNSUPPORTED_PLATFORMS) {
+            ledger.record(path, ScanLedger.State.UNSUPPORTED, size, modified, now,
+                          detail = "RetroAchievements does not cover $platform")
             resultQueue.send(ResultJob(HashJob(file, "", HashResult("", 0), rawPlatform, 0, 0),
                                        null, skipped = true))
             return
         }
 
         val cacheKey = FuzzyMatch.makeCacheKey(file.nameWithoutExtension, rawPlatform)
-        val size     = file.length()
-        val modified = file.lastModified()
 
         // Unchanged since the last scan: the metadata is already on disk and the
         // index rebuild will pick it up, so skip both hashing and the network.
@@ -270,27 +323,66 @@ class RomScanPipeline(
         val known = metaCache[cacheKey]
         if (known != null && known.hash.isNotEmpty() && known.fileMd5.isNotEmpty() &&
             known.fileSize == size && known.lastModified == modified) {
+            ledger.record(path, ScanLedger.State.MATCHED, size, modified, now)
             resultQueue.send(ResultJob(
                 HashJob(file, cacheKey, HashResult(known.hash, 0), rawPlatform, size, modified),
                 null, cached = true))
             return
         }
 
-        // Throwable: one file that cannot be read must cost that file, not the
-        // scan. Cancellation still propagates.
-        val result = try { withContext(Dispatchers.IO) { hasher.hash(file.absolutePath) } }
-                     catch (c: kotlinx.coroutines.CancellationException) { throw c }
-                     catch (t: Throwable) { BridgeLog.w(TAG, "hash failed: ${file.name}", t); null }
-
-        if (result == null) {
+        // A verdict from a previous scan that is still standing. The one that
+        // matters is NOT_FOUND: a library of mostly-unknown ROMs used to ask the
+        // source about every one of them on every run, because a miss left no
+        // trace to find. A refusal is never stored as a verdict, so this can only
+        // ever skip an answer the source actually gave.
+        val settled = ledger.canSkip(path, size, modified, now)
+        if (settled != null && settled.state != ScanLedger.State.MATCHED) {
+            ledger.count(settled.state)
             resultQueue.send(ResultJob(
-                HashJob(file, cacheKey, HashResult("", 0), rawPlatform, size, modified), null))
+                HashJob(file, cacheKey, HashResult("", 0), rawPlatform, size, modified),
+                null, preRecorded = true))
             return
         }
 
-        throttleMs().takeIf { it > 0 }?.let { delay(it) }
-        hashQueue.send(HashJob(file, cacheKey, result, rawPlatform, size, modified))
+        // Throwable: one file that cannot be read must cost that file, not the
+        // scan. Cancellation still propagates.
+        val outcome = try { withContext(Dispatchers.IO) { hasher.hashDetailed(file.absolutePath, rawPlatform) } }
+                      catch (c: kotlinx.coroutines.CancellationException) { throw c }
+                      catch (t: Throwable) {
+                          BridgeLog.w(TAG, "hash failed: ${file.name}", t)
+                          HashOutcome.Failed(t.message ?: t.javaClass.simpleName)
+                      }
+
+        when (outcome) {
+            is HashOutcome.AmbiguousArchive -> {
+                // Deliberately not hashed. The old rule picked the largest entry,
+                // which could be a bonus disc or an included patch, and recorded the
+                // resulting miss as a game the database does not have.
+                BridgeLog.w(TAG, "${file.name}: ${outcome.candidates.size} entries could each " +
+                                 "be the ROM (${outcome.candidates.take(3).joinToString(", ")})")
+                ledger.record(path, ScanLedger.State.AMBIGUOUS_ARCHIVE, size, modified, now,
+                              detail = outcome.candidates.joinToString(", "))
+                resultQueue.send(ResultJob(
+                    HashJob(file, cacheKey, HashResult("", 0), rawPlatform, size, modified),
+                    null, preRecorded = true))
+            }
+            is HashOutcome.Failed -> {
+                ledger.record(path, ScanLedger.State.HASH_FAILED, size, modified, now,
+                              detail = outcome.reason)
+                resultQueue.send(ResultJob(
+                    HashJob(file, cacheKey, HashResult("", 0), rawPlatform, size, modified),
+                    null, preRecorded = true))
+            }
+            is HashOutcome.Ok -> {
+                throttleMs().takeIf { it > 0 }?.let { delay(it) }
+                hashQueue.send(HashJob(file, cacheKey, outcome.result, rawPlatform, size, modified))
+            }
+        }
     }
+
+    /** One spelling per file, so two roots reaching it by different symlinks agree. */
+    private fun canonical(file: File): String =
+        runCatching { file.canonicalPath }.getOrDefault(file.absolutePath)
 
     private fun writeMetadata(job: HashJob, meta: GameMetadata) {
         val now = BridgePaths.epochSeconds()
@@ -386,7 +478,9 @@ class RomScanPipeline(
     private data class ResultJob(
         val job: HashJob, val meta: GameMetadata?,
         val cached: Boolean = false, val skipped: Boolean = false,
-        val failed: Boolean = false   // never got an answer — not the same as "unknown"
+        val failed: Boolean = false,  // never got an answer — not the same as "unknown"
+        /** The producer already wrote this file's verdict; the collector only counts it. */
+        val preRecorded: Boolean = false
     )
     private data class CachedMeta(val hash: String, val fileMd5: String,
                                   val fileSize: Long, val lastModified: Long)

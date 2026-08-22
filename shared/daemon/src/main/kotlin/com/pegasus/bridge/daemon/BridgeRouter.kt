@@ -410,7 +410,21 @@ class BridgeRouter(
                     .put("failedLookups", summary.failedLookups)
                     .put("indexed", summary.indexed)
                     .put("aborted", summary.aborted)
-                    .put("reason", summary.reason))
+                    .put("reason", summary.reason)
+                    // What happened to every file, not only the ones that matched.
+                    // "37 indexed of 900" is not an answer to "why is this game
+                    // missing"; MATCHED/NOT_FOUND/HASH_FAILED/API_RETRY/UNSUPPORTED/
+                    // AMBIGUOUS_ARCHIVE is.
+                    .put("states", JSONObject().also { s ->
+                        summary.states.forEach { (state, n) -> s.put(state.name, n) }
+                    })
+                    // Named, not just counted: the fix for an ambiguous archive is
+                    // for a person to open it, and a count does not say which one.
+                    .put("ambiguousArchives", JSONArray().also { arr ->
+                        summary.ambiguousArchives.take(50).forEach { (path, candidates) ->
+                            arr.put(JSONObject().put("file", path).put("candidates", candidates))
+                        }
+                    }))
             } catch (t: Throwable) {
                 BridgeLog.e(TAG, "scan failed", t)
                 jobs.fail(job, t.message ?: t.javaClass.simpleName)

@@ -84,7 +84,10 @@ class PlainRomHasherTest {
         assertTrue(fromZip.fromArchive)
     }
 
-    @Test fun `the largest entry is the ROM`() {
+    // Not "the largest entry" any more: the two text files are refused because a
+    // `.txt` is never a ROM, and `b.rom` is then the only candidate left. Being
+    // biggest is a consequence here, not the reason.
+    @Test fun `the one playable entry is the ROM, whatever the others weigh`() {
         val big = ByteArray(4096) { it.toByte() }
         tmp.mkdirs()
         val zip = File(tmp, "multi.zip")
@@ -93,7 +96,37 @@ class PlainRomHasherTest {
             z.putNextEntry(ZipEntry("b.rom")); z.write(big);               z.closeEntry()
             z.putNextEntry(ZipEntry("c.txt")); z.write("yy".toByteArray()); z.closeEntry()
         }
-        assertEquals(4096L, PlainRomHasher.hash(zip.absolutePath, tmp)!!.size)
+        val h = PlainRomHasher.hash(zip.absolutePath, tmp)!!
+        assertEquals(4096L, h.size)
+        assertEquals("b.rom", h.archiveEntry)
+    }
+
+    // A bonus file that outweighs the game is exactly where the old rule broke.
+    @Test fun `a picture larger than the game does not become the ROM`() {
+        tmp.mkdirs()
+        val zip = File(tmp, "Contra (USA).zip")
+        ZipOutputStream(zip.outputStream()).use { z ->
+            z.putNextEntry(ZipEntry("Contra (USA).nes")); z.write(ByteArray(1024)); z.closeEntry()
+            z.putNextEntry(ZipEntry("box.png"));          z.write(ByteArray(65536)); z.closeEntry()
+        }
+        val h = PlainRomHasher.hash(zip.absolutePath, tmp, "nes")!!
+        assertEquals(1024L, h.size)
+        assertEquals("Contra (USA).nes", h.archiveEntry)
+    }
+
+    // When it cannot tell, it hashes the container and says which entries it could
+    // not choose between — so the caller can decline to spend a lookup on a digest
+    // that matches nothing.
+    @Test fun `an unresolvable archive reports its candidates`() {
+        tmp.mkdirs()
+        val zip = File(tmp, "Sonic Collection.zip")
+        ZipOutputStream(zip.outputStream()).use { z ->
+            z.putNextEntry(ZipEntry("Sonic 1.md")); z.write(ByteArray(512)); z.closeEntry()
+            z.putNextEntry(ZipEntry("Sonic 2.md")); z.write(ByteArray(1024)); z.closeEntry()
+        }
+        val h = PlainRomHasher.hash(zip.absolutePath, tmp, "megadrive")!!
+        assertEquals(2, h.ambiguous.size)
+        assertTrue(!h.fromArchive, "the digests describe the container, and must say so")
     }
 
     @Test fun `a ROM misnamed as an archive is hashed anyway`() {

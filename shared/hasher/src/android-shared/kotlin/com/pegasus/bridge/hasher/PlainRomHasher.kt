@@ -1,10 +1,8 @@
 package com.pegasus.bridge.hasher
 
 import com.pegasus.bridge.core.BridgeLog
-import org.apache.commons.compress.archivers.sevenz.SevenZFile
 import java.io.File
 import java.util.zip.CRC32
-import java.util.zip.ZipFile
 
 /**
  * MD5, CRC32 and size of a ROM, with no rcheevos involved.
@@ -44,32 +42,63 @@ object PlainRomHasher {
         val md5: String,
         val crc32: String,
         val size: Long,
-        val fromArchive: Boolean
+        val fromArchive: Boolean,
+        /** Which entry the digests describe, or empty for a plain file. */
+        val archiveEntry: String = "",
+        /**
+         * Several entries could each be the ROM, and none was picked.
+         *
+         * The hashes then describe the container, which matches nothing in a ROM
+         * database — so a caller that sends them is asking a question whose answer
+         * it cannot use. Better to know than to receive a confident miss.
+         */
+        val ambiguous: List<String> = emptyList()
     )
 
-    /** Null only when the file cannot be read at all. */
-    fun hash(path: String, tempDir: File): FileHashes? {
+    /**
+     * Null only when the file cannot be read at all.
+     *
+     * [platform] steers which entry of an archive is the ROM. Optional because a
+     * caller that does not know the collection still gets the union of every ROM
+     * extension, which settles most archives; naming the platform settles the rest.
+     */
+    fun hash(path: String, tempDir: File, platform: String = ""): FileHashes? {
         val file = File(path)
         if (!file.isFile) {
             BridgeLog.w(TAG, "no such file: $path")
             return null
         }
-        return when (file.extension.lowercase()) {
-            "zip" -> fromArchive(file, tempDir, ::zipLargest) ?: digest(file, file.name, false)
-            "7z"  -> fromArchive(file, tempDir, ::sevenZLargest) ?: digest(file, file.name, false)
-            else  -> digest(file, file.name, false)
+        if (!ArchiveReader.isArchive(file)) return digest(file, file.name, false)
+
+        return when (val opened = ArchiveReader.list(file)) {
+            // An extension is a claim, not a fact, and a plain ROM named `.7z` is
+            // common enough that refusing it loses real games.
+            is ArchiveReader.Opened.Unreadable -> digest(file, file.name, false)
+            is ArchiveReader.Opened.Entries ->
+                when (val pick = ArchiveSelector.select(opened.entries, file.name, platform)) {
+                    is ArchiveSelector.Selection.One -> fromArchive(file, tempDir, pick.entry)
+                        ?: digest(file, file.name, false)
+                    is ArchiveSelector.Selection.Ambiguous ->
+                        // The container's digest, plus the fact that it is one. A
+                        // scraper can decline to spend a lookup on it.
+                        digest(file, file.name, false)
+                            ?.copy(ambiguous = pick.candidates.map { it.name })
+                    is ArchiveSelector.Selection.NoPlayableEntry -> digest(file, file.name, false)
+                }
         }
     }
 
     private fun fromArchive(
         file: File,
         tempDir: File,
-        extract: (File, File) -> Boolean
+        entry: ArchiveSelector.Entry
     ): FileHashes? = try {
         tempDir.mkdirs()
         val tmp = File.createTempFile("ss_", ".bin", tempDir)
         try {
-            if (extract(file, tmp)) digest(tmp, file.name, true) else null
+            if (ArchiveReader.extract(file, entry.name, tmp))
+                digest(tmp, file.name, true)?.copy(archiveEntry = entry.name)
+            else null
         } finally {
             tmp.delete()
         }
@@ -107,32 +136,6 @@ object PlainRomHasher {
         BridgeLog.w(TAG, "hash failed: ${target.name}: ${t.message}")
         null
     }
-
-    private fun zipLargest(archive: File, out: File): Boolean =
-        ZipFile(archive).use { zf ->
-            val largest = zf.entries().asSequence()
-                .filter { !it.isDirectory }
-                .maxByOrNull { it.size } ?: return false
-            zf.getInputStream(largest).use { input ->
-                out.outputStream().use { input.copyTo(it) }
-            }
-            true
-        }
-
-    private fun sevenZLargest(archive: File, out: File): Boolean =
-        SevenZFile(archive).use { sz ->
-            val largest = sz.entries
-                .filter { !it.isDirectory && it.size > 0 }
-                .maxByOrNull { it.size } ?: return false
-            // SevenZFile only streams the current entry, so walk to the target.
-            var entry = sz.nextEntry
-            while (entry != null && entry.name != largest.name) entry = sz.nextEntry
-            if (entry == null) return false
-            sz.getInputStream(entry).use { input ->
-                out.outputStream().use { input.copyTo(it) }
-            }
-            true
-        }
 
     private const val TAG = "PlainRomHasher"
 }

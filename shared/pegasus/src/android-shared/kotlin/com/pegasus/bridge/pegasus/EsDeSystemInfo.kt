@@ -87,9 +87,15 @@ object EsDeSystemInfo {
             .map { it.trim().removePrefix(".").lowercase() }
             .filter { it.isNotEmpty() && it.all { c -> c.isLetterOrDigit() } }
             .distinct()
+        // Singular and plural both appear in the wild: the file ES-DE ships for
+        // `psx` says "Alternative launch commands:", and the one MrJud keeps for
+        // `amiga` says "Alternative launch command:". Keying on the plural alone
+        // silently dropped the second core of a two-core system.
         val launches =
-            sections["launch command"].orEmpty().map { it to true } +
-            sections["alternative launch commands"].orEmpty().map { it to false }
+            (sections["launch command"].orEmpty() + sections["launch commands"].orEmpty())
+                .map { it to true } +
+            (sections["alternative launch commands"].orEmpty() +
+             sections["alternative launch command"].orEmpty()).map { it to false }
         val options = launches.mapNotNull { (line, primary) ->
             val emu = EMULATOR_MACRO.find(line)?.groupValues?.get(1) ?: return@mapNotNull null
             LaunchOption(emu, CORE_MACRO.find(line)?.groupValues?.get(1).orEmpty(), primary)

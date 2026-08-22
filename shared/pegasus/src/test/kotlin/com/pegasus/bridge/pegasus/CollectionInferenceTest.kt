@@ -320,6 +320,31 @@ class EsDeLaunchTest {
         assertEquals("retroarch", EsDeSystemInfo.idForMacro("RetroArch"))
     }
 
+    /**
+     * Verbatim from the `amiga` file MrJud keeps beside his library. Its heading
+     * is singular where ES-DE's own `psx` file is plural, and keying on the
+     * plural alone dropped the second of its two cores without a word.
+     */
+    @Test fun `a singular alternative heading is read too`() {
+        val o = EsDeSystemInfo.parse("""
+            System name:
+            amiga
+
+            Supported file extensions:
+            .adf .ADF .hdf .HDF .zip .ZIP
+
+            Launch command:
+            %EMULATOR_RETROARCH% %EXTRA_LIBRETRO%=puae_libretro_android.so %EXTRA_ROM%=%ROM%
+
+            Alternative launch command:
+            %EMULATOR_RETROARCH% %EXTRA_LIBRETRO%=puae2021_libretro_android.so %EXTRA_ROM%=%ROM%
+        """.trimIndent())!!.launchOptions
+        assertEquals(2, o.size)
+        assertEquals("puae_libretro_android.so", o[0].core)
+        assertEquals("puae2021_libretro_android.so", o[1].core)
+        assertFalse(o[1].primary)
+    }
+
     @Test fun `the android package placeholder is resolved against what is installed`() {
         val dir = Files.createTempDirectory("esde").toFile()
         File(dir, EsDeSystemInfo.FILE_NAME).writeText(snes)

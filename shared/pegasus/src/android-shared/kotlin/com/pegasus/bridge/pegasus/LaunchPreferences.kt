@@ -139,7 +139,30 @@ class LaunchPreferences(private val file: File) {
             preferred: String?,
             commandOf: (String) -> String?,
             overlayLaunch: String
-        ): String = preferred?.let(commandOf).orEmpty().ifEmpty { overlayLaunch }
+        ): String = preferred?.let(commandOf).orEmpty().takeIf { runnable(it) }.orEmpty()
+            .ifEmpty { overlayLaunch }
+
+        /**
+         * Whether a resolved command is one that could actually be written.
+         *
+         * `{core}` is the Bridge's own placeholder, not Pegasus'. Pegasus
+         * expands `{file.path}` and its siblings itself; nothing expands
+         * `{core}`, so a line still carrying one reaches the emulator verbatim
+         * and fails.
+         *
+         * Enforced here rather than at each call site because it was enforced at
+         * one call site and not the other, which is how it went wrong: apply
+         * refuses a launch containing `{core}` and says "pick one first", while
+         * the metadata export took the same unresolved template from the same
+         * preference and wrote it into the same overlay without a word. Caught
+         * on the tablet, where choosing RetroArch for `snes` — the only
+         * emulator installed that handles it — produced exactly that file.
+         *
+         * Treated like a preference naming an uninstalled emulator, for the same
+         * reason given above: the overlay's existing line is carried instead,
+         * because losing a launch that works is the worse failure.
+         */
+        internal fun runnable(command: String): Boolean = !command.contains("{core}")
 
         /**
          * A game's own launch line, or empty when it should not have one.
@@ -154,7 +177,9 @@ class LaunchPreferences(private val file: File) {
             commandOf: (String) -> String?
         ): String {
             if (chosen == null || chosen == collectionChoice) return ""
-            return chosen.let(commandOf).orEmpty()
+            // A per-game override that cannot run is worse than none: the
+            // collection's line, which can, would be shadowed by it.
+            return chosen.let(commandOf).orEmpty().takeIf { runnable(it) }.orEmpty()
         }
 
         const val FILE_NAME = "launch-preferences.json"

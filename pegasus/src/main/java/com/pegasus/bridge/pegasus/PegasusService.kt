@@ -360,6 +360,15 @@ class PegasusService : Service() {
         val rom = p["file"]?.let(::File)
         val dir = p["directory"]?.let(::File) ?: rom?.parentFile
             ?: return error("missing file or directory")
+        // A `file=` that names a directory is not a game, and accepting one
+        // writes a per-game preference keyed by the collection's own path —
+        // found by passing an empty ROM name, which produced a `games` entry
+        // identical to the `collections` entry beside it. Existence is not
+        // required (a caller may name a ROM inside an archive), but a directory
+        // is never a game whatever else is true.
+        if (rom != null && rom.isDirectory)
+            return error("file=$rom is a directory — pass it as directory= to choose " +
+                         "for the whole collection")
 
         val known = runCatching { discover() }.getOrDefault(emptyList())
         if (known.none { it.id == emulator })
@@ -381,6 +390,9 @@ class PegasusService : Service() {
         val rom = p["file"]?.let(::File)
         val dir = p["directory"]?.let(::File) ?: rom?.parentFile
             ?: return error("missing file or directory")
+        if (rom != null && rom.isDirectory)
+            return error("file=$rom is a directory — pass it as directory= to clear " +
+                         "the whole collection's choice")
         val prefs = preferences()
         val cleared = if (rom != null) prefs.clearGame(rom) else prefs.clearCollection(dir)
         savePreferences(prefs)

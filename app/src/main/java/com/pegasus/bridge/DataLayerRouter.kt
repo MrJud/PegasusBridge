@@ -174,6 +174,13 @@ class DataLayerRouter : Activity() {
                     putExtra(RaService.EXTRA_JOB_ID, jobId)
                 })
             }
+            /** Proves the ScreenScraper credentials. Mirrors the daemon's /screenscraper/user. */
+            "screenscraper-user" -> {
+                startForegroundService(Intent(this, MediaService::class.java).apply {
+                    putExtra(MediaService.EXTRA_VERB,   MediaService.VERB_SS_USER)
+                    putExtra(MediaService.EXTRA_JOB_ID, jobId)
+                })
+            }
             "search-video" -> {
                 val query = uri.getQueryParameter("q") ?: return stub(jobId, verb)
                 startForegroundService(Intent(this, VideoService::class.java).apply {

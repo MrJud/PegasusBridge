@@ -142,6 +142,26 @@ class LaunchPreferencesTest {
 
     // A chosen emulator is reason enough for an entry even with no metadata: it
     // is a decision, and it has nowhere else to be expressed.
+    /**
+     * RetroArch's command is a template with a hole in it, and only `apply`
+     * refused to write one. Choosing RetroArch for `snes` on the tablet — the
+     * one emulator installed that handles it — and exporting the metadata
+     * produced an overlay reading `-e LIBRETRO {core}`, which reaches the
+     * emulator verbatim.
+     */
+    @Test fun `a command still needing a core is not written`() {
+        val withHole = { _: String -> "am start -e LIBRETRO {core} -e ROM {file.path}" }
+        assertEquals("", LaunchPreferences.collectionLaunch("retroarch", withHole, ""))
+        assertEquals("", LaunchPreferences.gameLaunch("retroarch", null, withHole))
+    }
+
+    /** And the line already in the overlay — which has a real core — survives it. */
+    @Test fun `an unresolved template falls back to the overlay's own line`() {
+        val resolved = "am start -e LIBRETRO /data/data/com.retroarch/cores/snes9x.so"
+        assertEquals(resolved, LaunchPreferences.collectionLaunch(
+            "retroarch", { "am start -e LIBRETRO {core}" }, resolved))
+    }
+
     @Test fun `a launch alone is enough to write an entry`() {
         val bare = GameEntry(title = "X", fileName = "X.z64")
         assertEquals("", bare.render())

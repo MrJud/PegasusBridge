@@ -396,6 +396,16 @@ class PegasusRoutes(private val paths: BridgePaths) {
         val rom = req.param("file")?.let(::File)
         val dir = req.param("directory")?.let(::File) ?: rom?.parentFile
             ?: return Response.badRequest("missing file or directory")
+        // A `file=` that names a directory is not a game, and accepting one
+        // writes a per-game preference keyed by the collection's own path —
+        // found by passing an empty ROM name, which produced a `games` entry
+        // identical to the `collections` entry beside it. Existence is not
+        // required (a caller may name a ROM inside an archive), but a directory
+        // is never a game whatever else is true.
+        if (rom != null && rom.isDirectory)
+            return Response.badRequest(
+                "file=$rom is a directory — pass it as directory= to choose " +
+                "for the whole collection")
 
         val known = runCatching { EmulatorDiscovery.discover() }.getOrDefault(emptyList())
         if (known.none { it.id == emulator })
@@ -421,6 +431,10 @@ class PegasusRoutes(private val paths: BridgePaths) {
         val rom = req.param("file")?.let(::File)
         val dir = req.param("directory")?.let(::File) ?: rom?.parentFile
             ?: return Response.badRequest("missing file or directory")
+        if (rom != null && rom.isDirectory)
+            return Response.badRequest(
+                "file=$rom is a directory — pass it as directory= to clear " +
+                "the whole collection's choice")
         val prefs = preferences()
         val cleared = if (rom != null) prefs.clearGame(rom) else prefs.clearCollection(dir)
         savePreferences(prefs)

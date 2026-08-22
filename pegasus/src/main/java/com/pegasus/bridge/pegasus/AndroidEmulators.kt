@@ -65,9 +65,39 @@ object AndroidEmulators {
          * documentation.
          */
         val args: List<String>,
+        /**
+         * Where this launch line came from.
+         *
+         * Not decoration. Most of these were transcribed from a
+         * `metadata.pegasus.txt` that launches on a real device, and a few were
+         * written from documentation and have never been run. The difference is
+         * the difference between a proposal somebody can accept and one they
+         * should try first, and it is exactly the distinction the desktop's
+         * `verified` makes about the *emulator*. This makes it about the
+         * *command*, which is the part that can be wrong while the package is
+         * perfectly installed.
+         *
+         * Earned the hard way: Lime3DS was first given
+         * `.features.settings.ui.SettingsActivity` — a real class, and the
+         * settings screen. The package manager reported the app installed and
+         * verified, discovery proposed it confidently, and the launch would
+         * have opened preferences instead of a game. Asking the device settled
+         * it: Lime3DS is a Citra fork and keeps Citra's class names.
+         */
+        val provenance: Provenance,
         /** Conventional libretro cores, when [args] leaves a `{core}` behind. */
         val coreHints: List<String> = emptyList()
     )
+
+    /** How much is actually known about a probe's launch line. */
+    enum class Provenance(val describe: String) {
+        /** Read back from the device's own package manager. */
+        ON_THIS_DEVICE("component confirmed on this device"),
+        /** Transcribed from a metadata file that launches games today. */
+        WORKING_LIBRARY("launch line taken from a working library"),
+        /** Written from documentation. Plausible, never run. */
+        UNVERIFIED("launch line from documentation, never run here")
+    }
 
     /**
      * The emulators, and the launch line each one wants.
@@ -94,103 +124,126 @@ object AndroidEmulators {
                 "-e ROM {file.path}",
                 "-e LIBRETRO {core}",
                 "-e CONFIGFILE /storage/emulated/0/Android/data/{package}/files/retroarch.cfg",
-                "-e QUITFOCUS")),
+                "-e QUITFOCUS"),
+            provenance = Provenance.WORKING_LIBRARY),
 
         Probe("ppsspp", "PPSSPP", listOf("psp"),
             packages = listOf("org.ppsspp.ppsspp", "org.ppsspp.ppssppgold"),
             component = ".PpssppActivity",
-            args = listOf("-a android.intent.action.VIEW", "-d \"{file.documenturi}\"")),
+            args = listOf("-a android.intent.action.VIEW", "-d \"{file.documenturi}\""),
+            provenance = Provenance.ON_THIS_DEVICE),
 
         Probe("drastic", "DraStic", listOf("nds"),
             packages = listOf("com.dsemu.drastic"),
             component = ".DraSticActivity",
-            args = listOf("-a android.intent.action.VIEW", "-d \"{file.uri}\"")),
+            args = listOf("-a android.intent.action.VIEW", "-d \"{file.uri}\""),
+            provenance = Provenance.ON_THIS_DEVICE),
 
         Probe("melonds", "melonDS", listOf("nds"),
             packages = listOf("me.magnum.melonds"),
             component = ".ui.romlist.RomListActivity",
-            args = listOf("-a android.intent.action.VIEW", "-d \"{file.uri}\"")),
+            args = listOf("-a android.intent.action.VIEW", "-d \"{file.uri}\""),
+            provenance = Provenance.UNVERIFIED),
 
         Probe("duckstation", "DuckStation", listOf("psx"),
             packages = listOf("com.github.stenzek.duckstation"),
             component = ".EmulationActivity",
-            args = listOf("-e bootPath \"{file.path}\"", "--ez resumeState 0")),
+            args = listOf("-e bootPath \"{file.path}\"", "--ez resumeState 0"),
+            provenance = Provenance.WORKING_LIBRARY),
 
         Probe("dolphin", "Dolphin", listOf("gc", "wii"),
             packages = listOf("org.dolphinemu.dolphinemu"),
             component = ".ui.main.MainActivity",
-            args = listOf("-a android.intent.action.VIEW", "-e AutoStartFile \"{file.path}\"")),
+            args = listOf("-a android.intent.action.VIEW", "-e AutoStartFile \"{file.path}\""),
+            provenance = Provenance.WORKING_LIBRARY),
 
         Probe("aethersx2", "AetherSX2", listOf("ps2"),
             packages = listOf("xyz.aethersx2.android"),
             component = ".EmulationActivity",
-            args = listOf("-a android.intent.action.MAIN", "-e bootPath \"{file.documenturi}\"")),
+            args = listOf("-a android.intent.action.MAIN", "-e bootPath \"{file.documenturi}\""),
+            provenance = Provenance.WORKING_LIBRARY),
 
         Probe("flycast", "Flycast", listOf("dreamcast", "atomiswave", "naomi"),
             packages = listOf("com.flycast.emulator"),
             component = "com.reicast.emulator.MainActivity",
-            args = listOf("-a android.intent.action.VIEW", "-d \"{file.uri}\"")),
+            args = listOf("-a android.intent.action.VIEW", "-d \"{file.uri}\""),
+            provenance = Provenance.WORKING_LIBRARY),
 
+        // A Citra fork, and it kept Citra's package names inside its own
+        // application id — so the component is `org.citra.…` even though the
+        // app is `io.github.lime3ds.android`. Read off the tablet, not guessed.
         Probe("lime3ds", "Lime3DS", listOf("3ds", "n3ds"),
             packages = listOf("io.github.lime3ds.android", "org.citra.citra_emu"),
-            component = ".features.settings.ui.SettingsActivity",
-            args = listOf("-a android.intent.action.VIEW", "-d \"{file.uri}\"")),
+            component = "org.citra.citra_emu.activities.EmulationActivity",
+            args = listOf("-a android.intent.action.VIEW", "-d \"{file.uri}\""),
+            provenance = Provenance.ON_THIS_DEVICE),
 
         Probe("citron", "Citron", listOf("switch"),
             packages = listOf("org.citron.citron_emu"),
             component = ".activities.EmulationActivity",
-            args = listOf("-a android.intent.action.VIEW", "-d {file.uri}")),
+            args = listOf("-a android.intent.action.VIEW", "-d {file.uri}"),
+            provenance = Provenance.WORKING_LIBRARY),
 
         Probe("snes9xplus", "Snes9x EX+", listOf("snes"),
             packages = listOf("com.explusalpha.Snes9xPlus"),
             component = "com.imagine.BaseActivity",
-            args = listOf("-a android.intent.action.VIEW", "-d \"{file.uri}\"")),
+            args = listOf("-a android.intent.action.VIEW", "-d \"{file.uri}\""),
+            provenance = Provenance.WORKING_LIBRARY),
 
         Probe("mdemu", "MD.emu", listOf("genesis", "segacd", "sega32x", "mastersystem"),
             packages = listOf("com.explusalpha.MdEmu"),
             component = "com.imagine.BaseActivity",
-            args = listOf("-a android.intent.action.VIEW", "-d \"{file.uri}\"")),
+            args = listOf("-a android.intent.action.VIEW", "-d \"{file.uri}\""),
+            provenance = Provenance.WORKING_LIBRARY),
 
         Probe("nesemu", "NES.emu", listOf("nes"),
             packages = listOf("com.explusalpha.NesEmu"),
             component = "com.imagine.BaseActivity",
-            args = listOf("-a android.intent.action.VIEW", "-d \"{file.uri}\"")),
+            args = listOf("-a android.intent.action.VIEW", "-d \"{file.uri}\""),
+            provenance = Provenance.WORKING_LIBRARY),
 
         Probe("gbcemu", "GBC.emu", listOf("gb", "gbc"),
             packages = listOf("com.explusalpha.GbcEmu"),
             component = "com.imagine.BaseActivity",
-            args = listOf("-a android.intent.action.VIEW", "-d \"{file.uri}\"")),
+            args = listOf("-a android.intent.action.VIEW", "-d \"{file.uri}\""),
+            provenance = Provenance.WORKING_LIBRARY),
 
         Probe("gbaemu", "GBA.emu", listOf("gba"),
             packages = listOf("com.explusalpha.GbaEmu"),
             component = "com.imagine.BaseActivity",
-            args = listOf("-a android.intent.action.VIEW", "-d \"{file.uri}\"")),
+            args = listOf("-a android.intent.action.VIEW", "-d \"{file.uri}\""),
+            provenance = Provenance.UNVERIFIED),
 
         Probe("mupen64plusfz", "Mupen64Plus FZ", listOf("n64"),
             packages = listOf("org.mupen64plusae.v3.fzurita",
                               "org.mupen64plusae.v3.fzurita.pro"),
             component = "paulscode.android.mupen64plusae.SplashActivity",
-            args = listOf("-a android.intent.action.VIEW", "-d \"{file.uri}\"")),
+            args = listOf("-a android.intent.action.VIEW", "-d \"{file.uri}\""),
+            provenance = Provenance.UNVERIFIED),
 
         Probe("redream", "Redream", listOf("dreamcast"),
             packages = listOf("io.recompiled.redream"),
             component = ".MainActivity",
-            args = listOf("-a android.intent.action.VIEW", "-d \"{file.uri}\"")),
+            args = listOf("-a android.intent.action.VIEW", "-d \"{file.uri}\""),
+            provenance = Provenance.UNVERIFIED),
 
         Probe("eka2l1", "EKA2L1", listOf("symbian", "ngage"),
             packages = listOf("com.github.eka2l1"),
             component = ".emu.EmulatorActivity",
-            args = listOf("-a android.intent.action.VIEW", "-d \"{file.uri}\"")),
+            args = listOf("-a android.intent.action.VIEW", "-d \"{file.uri}\""),
+            provenance = Provenance.UNVERIFIED),
 
         Probe("vita3k", "Vita3K", listOf("psvita", "vita"),
             packages = listOf("org.vita3k.emulator"),
             component = ".Emulator",
-            args = listOf("-a android.intent.action.VIEW", "-d \"{file.uri}\"")),
+            args = listOf("-a android.intent.action.VIEW", "-d \"{file.uri}\""),
+            provenance = Provenance.UNVERIFIED),
 
         Probe("mgba", "mGBA", listOf("gba", "gb", "gbc"),
             packages = listOf("io.mgba"),
             component = ".GameActivity",
-            args = listOf("-a android.intent.action.VIEW", "-d \"{file.uri}\""))
+            args = listOf("-a android.intent.action.VIEW", "-d \"{file.uri}\""),
+            provenance = Provenance.UNVERIFIED)
     )
 
     /**
@@ -199,6 +252,12 @@ object AndroidEmulators {
      * Hints for the `{core}` RetroArch leaves behind. Marked as hints all the
      * way through — [EmulatorCandidate.coreHints], not `cores` — because the
      * core directory is app-private and nothing here has looked inside it.
+     *
+     * Bare filenames here; [coreHintsFor] turns them into the absolute paths
+     * RetroArch actually wants. The one launch line in the library that runs
+     * RetroArch today spells it in full —
+     * `-e LIBRETRO /data/data/com.retroarch/cores/genesis_plus_gx_wide_libretro_android.so`
+     * — and a bare name was offered until that line was read back.
      */
     private val CORE_HINTS: Map<String, List<String>> = mapOf(
         "nes" to listOf("fceumm_libretro_android.so", "nestopia_libretro_android.so"),
@@ -288,10 +347,7 @@ object AndroidEmulators {
         version: String,
         platform: String?
     ): EmulatorCandidate {
-        val hints = platform
-            ?.let { com.pegasus.bridge.core.FuzzyMatch.normalizePlatform(it) }
-            ?.let { CORE_HINTS[it] }
-            ?: probe.platforms.flatMap { CORE_HINTS[it].orEmpty() }.distinct()
+        val hints = coreHintsFor(probe, pkg, platform)
 
         return EmulatorCandidate(
             id = probe.id,
@@ -304,14 +360,31 @@ object AndroidEmulators {
             // the version without the package being run. See the class comment.
             verified = true,
             version = version,
-            confidence = "installed package $pkg",
+            confidence = "installed package $pkg — ${probe.provenance.describe}",
             canReadLibrary = null,
             readabilityUnknownBecause =
                 "whether $pkg can read the library depends on storage permissions " +
                 "granted to it, and reading another package's app-ops needs " +
                 "GET_APP_OPS_STATS, which is a signature permission",
-            coreHints = if (launchCommand(probe, pkg).contains("{core}")) hints else emptyList()
+            coreHints = if (launchCommand(probe, pkg).contains("{core}")) hints else emptyList(),
+            launchVerified = probe.provenance != Provenance.UNVERIFIED
         )
+    }
+
+    /**
+     * The cores to offer for [probe], as absolute paths under [pkg]'s own
+     * private core directory — which is where RetroArch keeps them and where
+     * the library's one working RetroArch line points.
+     *
+     * Narrowed to [platform] when the caller named one; otherwise every core
+     * the probe's platforms could want, which is what a general listing needs.
+     */
+    private fun coreHintsFor(probe: Probe, pkg: String, platform: String?): List<String> {
+        val names = platform
+            ?.let { com.pegasus.bridge.core.FuzzyMatch.normalizePlatform(it) }
+            ?.let { CORE_HINTS[it] }
+            ?: probe.platforms.flatMap { CORE_HINTS[it].orEmpty() }.distinct()
+        return names.map { "/data/data/$pkg/cores/$it" }
     }
 
     /**

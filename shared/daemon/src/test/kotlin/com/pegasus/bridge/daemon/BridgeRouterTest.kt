@@ -216,6 +216,37 @@ class BridgeRouterTest {
 
     // ── video ───────────────────────────────────────────────────────────────
 
+    // ── choosing an emulator ────────────────────────────────────────────────
+
+    /**
+     * Found on the tablet, by passing a `file=` whose ROM name was empty.
+     *
+     * The path collapsed to the collection's own directory, `rom != null` held,
+     * and `setGame` wrote a per-game preference keyed by exactly the path the
+     * `collections` map already used — two entries, same key, one of them
+     * meaningless. Existence is deliberately still not required, because a
+     * caller may legitimately name a ROM inside an archive that no `isFile`
+     * would find; a directory is refused because a directory is never a game.
+     */
+    @Test fun `select refuses a directory handed in as a game file`() {
+        val dir = File(romRoot, "snes").apply { mkdirs() }
+        get("/launch/select?emulator=retroarch&file=${dir.absolutePath}").use { r ->
+            assertEquals(400, r.code)
+            val j = JSONObject(r.body!!.string())
+            assertTrue(j.getString("error").contains("is a directory"), j.toString())
+        }
+        // And nothing was recorded on the way to refusing.
+        assertFalse(File(paths.config, "launch-preferences.json").exists())
+    }
+
+    @Test fun `clear refuses a directory handed in as a game file`() {
+        val dir = File(romRoot, "snes").apply { mkdirs() }
+        get("/launch/clear?file=${dir.absolutePath}").use { r ->
+            assertEquals(400, r.code)
+            assertTrue(JSONObject(r.body!!.string()).getString("error").contains("is a directory"))
+        }
+    }
+
     @Test fun `video resolve refuses a non-https url`() {
         get("/video/resolve?url=http%3A%2F%2Fexample.com%2Fv.mp4").use { r ->
             assertEquals(400, r.code)

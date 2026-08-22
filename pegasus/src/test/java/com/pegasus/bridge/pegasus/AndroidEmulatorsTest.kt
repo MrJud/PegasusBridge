@@ -15,12 +15,12 @@ import java.io.File
  */
 class AndroidEmulatorsTest {
 
-    /** What the tablet reports, and nothing else. */
+    /** Verbatim what the tablet's package manager answered on 2026-08-22. */
     private val onTheTablet = mapOf(
-        "com.retroarch" to "1.19.1",
+        "com.retroarch" to "1.22.2_GIT",
         "org.ppsspp.ppsspp" to "1.17.1",
-        "com.dsemu.drastic" to "2.5.2.2a",
-        "io.github.lime3ds.android" to "2114"
+        "com.dsemu.drastic" to "r2.5.2.2a",
+        "io.github.lime3ds.android" to "2126.0-googleplay"
     )
 
     private fun discover(platform: String? = null) =
@@ -38,7 +38,7 @@ class AndroidEmulatorsTest {
     @Test fun `every android candidate is verified, and none was executed`() {
         assertTrue(discover().all { it.verified })
         assertTrue(discover().all { it.kind == EmulatorKind.ANDROID_PACKAGE })
-        assertEquals("1.19.1", discover().first { it.id == "retroarch" }.version)
+        assertEquals("1.22.2_GIT", discover().first { it.id == "retroarch" }.version)
     }
 
     /**
@@ -54,8 +54,8 @@ class AndroidEmulatorsTest {
     /** Two RetroArch builds are two ways to run one thing, not two choices. */
     @Test fun `one candidate per emulator even with several packages installed`() {
         val both = AndroidEmulators.discover(
-            installed = { mapOf("com.retroarch" to "1.19.1",
-                                "com.retroarch.aarch64" to "1.19.1")[it] })
+            installed = { mapOf("com.retroarch" to "1.22.2_GIT",
+                                "com.retroarch.aarch64" to "1.22.2_GIT")[it] })
         assertEquals(1, both.count { it.id == "retroarch" })
         // The preferred package wins: aarch64 is listed first in the probe.
         assertEquals("com.retroarch.aarch64", both.first { it.id == "retroarch" }.executable)
@@ -81,7 +81,11 @@ class AndroidEmulatorsTest {
     @Test fun `retroarch offers core hints rather than pretending to know`() {
         val ra = EmulatorRanking.rankedFor("snes", discover(platform = "snes")).single()
         assertTrue(ra.launchCommand.contains("{core}"))
-        assertTrue(ra.coreHints.contains("snes9x_libretro_android.so"))
+        // Absolute, under the package's own private core directory: a bare
+        // filename is not what RetroArch resolves, and the library's one
+        // working RetroArch line spells the path out in full.
+        assertTrue(ra.coreHints.toString(),
+                   ra.coreHints.contains("/data/data/com.retroarch/cores/snes9x_libretro_android.so"))
         // A dedicated emulator has no hole to fill, so it offers none.
         assertTrue(EmulatorRanking.bestFor("psp", discover())!!.coreHints.isEmpty())
     }
@@ -102,9 +106,40 @@ class AndroidEmulatorsTest {
     /** RetroArch's config path is per-package, so it has to follow the package. */
     @Test fun `the retroarch config path names the package that was found`() {
         val ra = AndroidEmulators.discover(installed = {
-            if (it == "com.retroarch.aarch64") "1.19.1" else null }).single()
+            if (it == "com.retroarch.aarch64") "1.22.2_GIT" else null }).single()
         assertTrue(ra.launchCommand.contains(
             "/storage/emulated/0/Android/data/com.retroarch.aarch64/files/retroarch.cfg"))
+    }
+
+    /**
+     * Lime3DS is a Citra fork and keeps Citra's class names inside its own
+     * application id. The first probe pointed at `.features.settings.ui.
+     * SettingsActivity` — a real class, and the settings screen — so the app
+     * resolved, discovery was confident, and pressing A would have opened
+     * preferences. Read off the tablet afterwards; pinned here so it stays read.
+     */
+    @Test fun `lime3ds launches citra's emulation activity, not its settings`() {
+        val lime = discover().first { it.id == "lime3ds" }
+        assertTrue(lime.launchCommand.contains(
+            "-n io.github.lime3ds.android/org.citra.citra_emu.activities.EmulationActivity"))
+        assertFalse(lime.launchCommand.contains("Settings"))
+        assertTrue(lime.launchVerified)
+    }
+
+    /**
+     * A launch line written from documentation is not the same claim as one
+     * transcribed from a library that launches games, and the answer says which.
+     */
+    @Test fun `an unverified launch line is reported as unverified`() {
+        val guessed = AndroidEmulators.discover(installed = {
+            if (it == "org.vita3k.emulator") "0.1" else null }).single()
+        assertTrue(guessed.verified)          // the package really is installed
+        assertFalse(guessed.launchVerified)   // the command naming its activity is not
+        assertTrue(guessed.confidence, guessed.confidence.contains("never run here"))
+
+        val known = discover().first { it.id == "ppsspp" }
+        assertTrue(known.launchVerified)
+        assertTrue(known.confidence, known.confidence.contains("confirmed on this device"))
     }
 
     /**

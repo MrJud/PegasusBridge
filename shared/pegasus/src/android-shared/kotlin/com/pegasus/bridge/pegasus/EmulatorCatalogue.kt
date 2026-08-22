@@ -92,7 +92,19 @@ data class EmulatorCandidate(
      * lets a review screen present a choice; claiming it is installed would be
      * a lie that fails at launch.
      */
-    val coreHints: List<String> = emptyList()
+    val coreHints: List<String> = emptyList(),
+    /**
+     * Whether the *launch line* is known to work, as opposed to the emulator
+     * being known to exist.
+     *
+     * Two different claims, and conflating them is a real failure mode. On the
+     * desktop a launch command is built from an executable that was resolved
+     * and run, so it is true by construction. On Android the command names an
+     * activity inside the package, and the package manager will happily confirm
+     * an app while the activity named is the wrong one — which is exactly what
+     * happened to Lime3DS, whose first probe pointed at its settings screen.
+     */
+    val launchVerified: Boolean = true
 ) {
     /** Whether the launch line still has a decision in it that discovery cannot make. */
     val needsCore: Boolean get() = launchCommand.contains("{core}")
@@ -207,6 +219,7 @@ fun EmulatorCandidate.toProposalJson(
          readabilityUnknownBecause.takeIf { it.isNotEmpty() } ?: JSONObject.NULL)
     .put("needsCore", needsCore)
     .put("coreHints", JSONArray(coreHints))
+    .put("launchVerified", launchVerified)
     .put("why", EmulatorRanking.rankReason(this, position, peers))
 
 /** One candidate as an entry in the `/emulators` list. */
@@ -228,5 +241,6 @@ fun EmulatorCandidate.toListJson(): JSONObject = JSONObject()
          readabilityUnknownBecause.takeIf { it.isNotEmpty() } ?: JSONObject.NULL)
     .put("needsCore", needsCore)
     .put("coreHints", JSONArray(coreHints))
+    .put("launchVerified", launchVerified)
     // The one command that fixes it, ready to show or to run.
     .put("grantCommand", if (canReadLibrary == false) grantCommand else JSONObject.NULL)

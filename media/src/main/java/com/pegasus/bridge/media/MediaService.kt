@@ -8,8 +8,10 @@ import android.content.Intent
 import android.os.Bundle
 import android.os.IBinder
 import android.util.Log
+import com.pegasus.bridge.core.Config
 import com.pegasus.bridge.core.Paths
 import com.pegasus.bridge.core.SchemaVersion
+import com.pegasus.bridge.scrapers.ScreenScraperClient
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -45,6 +47,7 @@ class MediaService : Service() {
                 when (verb) {
                     VERB_SCRAPE_MEDIA  -> handleScrapeMedia(intent, jobId)
                     VERB_SCRAPE_SOURCE -> handleScrapeSource(intent, jobId)
+                    VERB_SS_USER       -> handleScreenScraperUser(jobId)
                     else               -> writeScrapeError(jobId, "unknown", "unknown", "unknown verb: $verb")
                 }
             } catch (e: Exception) {
@@ -72,6 +75,44 @@ class MediaService : Service() {
         val platform = intent.getStringExtra("platform") ?: ""
         val payload  = MediaAggregator.scrape(gameId, title, platform)
         Paths.media(gameId).writeText(payload.toJson().toString(2))
+    }
+
+    /**
+     * Proves the ScreenScraper credentials and reports the quota.
+     *
+     * The Android half of the daemon's `/screenscraper/user`, which had no
+     * counterpart here: the `ss` ops were `game`, `media` and `systems`, and
+     * none of those separates "your password is wrong" from "no such game". A
+     * login card needs the one call whose failure means the former, or it shows
+     * a green tick for credentials nothing has checked.
+     *
+     * The answer goes to the `search-ra` slot, where `credentials-status` and
+     * `clear-credentials` already put theirs — it is a credentials verb, not a
+     * scrape, whatever service happens to own the client.
+     *
+     * "ok" or "error" in the payload rather than a thrown failure, matching the
+     * daemon: the request was answered, and what failed is upstream. The message
+     * is the useful part — it says which of the two passwords is in the wrong box.
+     */
+    private fun handleScreenScraperUser(jobId: String) {
+        val payload = ScreenScraperClient.userInfo(Config).fold(
+            onSuccess = { q ->
+                JSONObject()
+                    .put("schemaVersion", SchemaVersion.CURRENT)
+                    .put("status", "ok")
+                    .put("user", q.user)
+                    .put("maxThreads", q.maxThreads)
+                    .put("requestsToday", q.requestsToday)
+                    .put("maxRequestsPerDay", q.maxRequestsPerDay)
+                    .put("maxRequestsPerMinute", q.maxRequestsPerMinute)
+            },
+            onFailure = { t ->
+                JSONObject()
+                    .put("schemaVersion", SchemaVersion.CURRENT)
+                    .put("status", "error")
+                    .put("error", t.message ?: "ScreenScraper refused the credentials")
+            })
+        Paths.searchRa(jobId).writeText(payload.toString())
     }
 
     private fun handleScrapeSource(intent: Intent, jobId: String) {
@@ -158,5 +199,6 @@ class MediaService : Service() {
 
         const val VERB_SCRAPE_MEDIA  = "scrape-media"
         const val VERB_SCRAPE_SOURCE = "scrape-source"
+        const val VERB_SS_USER       = "screenscraper-user"
     }
 }

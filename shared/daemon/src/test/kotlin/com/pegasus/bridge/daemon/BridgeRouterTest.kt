@@ -10,6 +10,7 @@ import com.pegasus.bridge.hasher.HashResult
 import com.pegasus.bridge.hasher.RaHashLookup
 import com.pegasus.bridge.hasher.RomHasher
 import com.pegasus.bridge.hasher.RomScanPipeline
+import com.pegasus.bridge.pegasus.MetadataFile
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
@@ -215,6 +216,76 @@ class BridgeRouterTest {
     }
 
     // ── video ───────────────────────────────────────────────────────────────
+
+    // ── declaring a collection nobody declared ──────────────────────────────
+
+    /**
+     * The tablet's `n64`: three hundred megabytes of cartridges, no metafile,
+     * and therefore no games at all as far as Pegasus is concerned.
+     */
+    @Test fun `propose finds a directory of roms that declares nothing`() {
+        val n64 = File(romRoot, "n64").apply { mkdirs() }
+        File(n64, "Super Mario 64.z64").writeText("rom")
+        File(n64, "GoldenEye 007.z64").writeText("rom")
+
+        get("/collections/propose?roots=${romRoot.absolutePath}").use { r ->
+            assertEquals(200, r.code)
+            val j = JSONObject(r.body!!.string())
+            val c = j.getJSONArray("collections").getJSONObject(0)
+            assertEquals(n64.absolutePath, c.getString("directory"))
+            assertEquals(2, c.getInt("candidateFiles"))
+            assertTrue(c.getString("because").contains("no Pegasus metadata file"))
+            // With no system table cached, the extensions come off the files and
+            // the answer says so rather than implying a platform was recognised.
+            assertEquals("absent", j.getString("systemTable"))
+            assertEquals("observed", c.getString("extensionsFrom"))
+        }
+    }
+
+    /** A collection that already finds its games is not proposed again. */
+    @Test fun `propose leaves a working collection alone`() {
+        val n64 = File(romRoot, "n64").apply { mkdirs() }
+        File(n64, "Super Mario 64.z64").writeText("rom")
+        File(n64, "metadata.pegasus.txt").writeText(
+            "collection: Nintendo 64\nshortname: n64\nextensions: z64\n")
+        get("/collections/propose?roots=${romRoot.absolutePath}").use { r ->
+            assertEquals(0, JSONObject(r.body!!.string()).getInt("count"))
+        }
+    }
+
+    @Test fun `apply writes an overlay that declares the extensions`() {
+        val n64 = File(romRoot, "n64").apply { mkdirs() }
+        File(n64, "Super Mario 64.z64").writeText("rom")
+
+        get("/collections/apply?directory=${n64.absolutePath}" +
+            "&name=Nintendo%2064&shortName=n64&extensions=z64,n64,v64").use { r ->
+            assertEquals(200, r.code)
+            assertEquals("ok", JSONObject(r.body!!.string()).getString("status"))
+        }
+        val overlay = File(n64, "zz-pegasusbridge.metadata.pegasus.txt")
+        assertTrue(overlay.isFile)
+        val text = overlay.readText()
+        assertTrue(text.contains("collection: Nintendo 64"), text)
+        assertTrue(text.contains("shortname: n64"), text)
+        assertTrue(text.contains("extensions: z64, n64, v64"), text)
+        // No launch was asked for, so none was invented.
+        assertFalse(text.contains("launch:"), text)
+        // And the collection is now readable by the same parser Pegasus uses.
+        assertEquals("Nintendo 64", MetadataFile.readCollection(n64)?.name)
+    }
+
+    /**
+     * Without extensions Pegasus finds nothing, so an overlay lacking them is a
+     * file that looks like it worked and did not.
+     */
+    @Test fun `apply refuses to declare a collection with no extensions`() {
+        val n64 = File(romRoot, "n64").apply { mkdirs() }
+        get("/collections/apply?directory=${n64.absolutePath}&name=Nintendo%2064").use { r ->
+            assertEquals(400, r.code)
+            assertTrue(JSONObject(r.body!!.string()).getString("error").contains("extensions"))
+        }
+        assertFalse(File(n64, "zz-pegasusbridge.metadata.pegasus.txt").exists())
+    }
 
     // ── choosing an emulator ────────────────────────────────────────────────
 

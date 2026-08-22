@@ -32,6 +32,10 @@ dependencies {
     // ArtifactKey, BridgeLog, FuzzyMatch and Paths. Nothing else: the shared
     // half of this module reads and writes files and speaks to no network.
     implementation(project(":core"))
+    // For ScreenScraperSystemMap only: CollectionInference takes the system
+    // table as a parameter precisely so the shared half needs no scraper, and
+    // this is the shell wiring it from the module that owns the file's format.
+    implementation(project(":media"))
     implementation("org.json:json:20240303")
     implementation("androidx.core:core-ktx:1.13.1")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1")

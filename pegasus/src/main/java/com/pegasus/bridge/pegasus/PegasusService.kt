@@ -9,6 +9,8 @@ import android.content.pm.PackageManager
 import android.os.IBinder
 import android.util.Log
 import com.pegasus.bridge.core.Paths
+import com.pegasus.bridge.scrapers.ScreenScraperClient
+import com.pegasus.bridge.scrapers.ScreenScraperSystemMap
 import com.pegasus.bridge.core.SchemaVersion
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -84,6 +86,8 @@ class PegasusService : Service() {
                     VERB_LAUNCH_OPTIONS   -> launchOptions(p)
                     VERB_LAUNCH_SELECT    -> launchSelect(p)
                     VERB_LAUNCH_CLEAR     -> launchClear(p)
+                    VERB_PROPOSE_COLLECTIONS -> proposeCollections(p)
+                    VERB_APPLY_COLLECTION    -> applyCollection(p)
                     else                  -> error("verb not implemented: $verb")
                 }
                 write(jobId, answer)
@@ -403,6 +407,139 @@ class PegasusService : Service() {
     private fun commandFor(emulatorId: String?, known: List<EmulatorCandidate>): String =
         emulatorId?.let { id -> known.firstOrNull { it.id == id }?.launchCommand }.orEmpty()
 
+    // ── Collections that do not exist yet ───────────────────────────────────
+
+    /**
+     * The system table the Bridge already keeps for scraping, as a lookup.
+     *
+     * Empty when nothing has fetched it yet, and that is not fatal: inference
+     * falls back to the directory and says it did. Fetching it here would turn a
+     * read-only verb into one that spends API quota.
+     */
+    private fun systemLookup(): CollectionInference.SystemLookup {
+        val file = Paths.cache(SS_SYSTEMS_FILE)
+        val systems = if (file.isFile)
+            runCatching { ScreenScraperSystemMap.fromJson(file.readText()) }.getOrDefault(emptyList())
+        else emptyList()
+
+        val byName = HashMap<String, ScreenScraperClient.SsSystem>()
+        for (s in systems) for (n in s.names) byName.putIfAbsent(key(n), s)
+
+        return CollectionInference.SystemLookup { name ->
+            byName[key(name)]?.let { s ->
+                CollectionInference.SystemFacts(
+                    // The first name is the canonical one. Picking the longest
+                    // was tried and answered "Super Aladdin Boy" for the
+                    // Megadrive, which is a real alias and a terrible label.
+                    displayName = s.names.firstOrNull().orEmpty(),
+                    // Anything that is not a plain extension is dropped: the
+                    // table has entries whose list is a bare "." — `switch` is
+                    // one — and writing that would match nothing.
+                    extensions = s.extensions
+                        .map { it.trim().removePrefix(".").lowercase() }
+                        .filter { it.isNotEmpty() && it.all(Char::isLetterOrDigit) })
+            }
+        }
+    }
+
+    private fun key(s: String) = s.lowercase().replace(Regex("[^a-z0-9]"), "")
+
+    /**
+     * Directories that hold ROMs and produce no games, and what each would be.
+     *
+     * Reads nothing of the user's beyond their filenames and writes nothing at
+     * all. Every field says where it came from, and `review` says what a person
+     * has to settle before accepting it — because a wrong `extensions:` line
+     * does not fail loudly, it makes games quietly disappear.
+     */
+    private fun proposeCollections(p: Map<String, String>): JSONObject {
+        val roots = rootsOf(p) ?: return error("missing roots")
+        val found = discover()
+        val lookup = systemLookup()
+        val arr = JSONArray()
+        for (c in CollectionInference.undeclaredUnder(roots, lookup)) {
+            val ranked = EmulatorRanking.rankedFor(c.shortName.value, found)
+            arr.put(JSONObject()
+                .put("directory", c.directory.absolutePath)
+                .put("name", c.name.value)
+                .put("nameFrom", c.name.source.name.lowercase())
+                .put("shortName", c.shortName.value)
+                .put("shortNameFrom", c.shortName.source.name.lowercase())
+                .put("extensions", JSONArray(c.extensions.value))
+                .put("extensionsFrom", c.extensions.source.name.lowercase())
+                .put("matchedFiles", c.matchedFiles)
+                .put("candidateFiles", c.candidateFiles)
+                .put("bytes", c.bytes)
+                .put("because", c.because)
+                .put("confident", c.confident)
+                .put("review", JSONArray(c.review))
+                .put("proposals", JSONArray().also { out ->
+                    ranked.forEachIndexed { i, e -> out.put(e.toProposalJson(i, ranked)) }
+                })
+                .put("proposal", ranked.firstOrNull()?.toProposalJson(0, ranked) ?: JSONObject.NULL))
+        }
+        return ok()
+            .put("count", arr.length())
+            .put("systemTable", if (Paths.cache(SS_SYSTEMS_FILE).isFile) "cached" else "absent")
+            .put("collections", arr)
+    }
+
+    /**
+     * Declares a collection that did not exist.
+     *
+     * The same overlay everything else writes, so the same sentence applies:
+     * delete the file and the directory is exactly as it was. `launch` is
+     * optional — a collection Pegasus can *see* is already worth having, and a
+     * person may want to pick the emulator separately.
+     */
+    private fun applyCollection(p: Map<String, String>): JSONObject {
+        val dir = p["directory"]?.let(::File) ?: return error("missing directory")
+        if (!dir.isDirectory) return error("no such directory: $dir")
+        val name = p["name"]?.takeIf { it.isNotBlank() } ?: return error("missing name")
+        val extensions = p["extensions"].orEmpty()
+            .split(',', '|').map { it.trim().removePrefix(".").lowercase() }.filter { it.isNotEmpty() }
+        if (extensions.isEmpty())
+            return error("missing extensions — without them Pegasus finds no games in $dir")
+        val launch = p["launch"].orEmpty()
+        if (launch.contains("{core}"))
+            return error("the launch command still contains {core}: pick one first")
+
+        val existing = MetadataFile.readCollection(dir)
+        val target = File(dir, OVERLAY_FILE)
+        val theirFile = existing?.launchFile ?: existing?.file
+        val conflicts = launch.isNotEmpty() && theirFile != null && theirFile != target &&
+                        MetadataFile.declaresLaunch(theirFile)
+        if (conflicts && p["standAside"] != "1")
+            return error("${theirFile!!.name} already sets a launch command here; pass " +
+                         "standAside=1, or leave launch empty to declare the collection only")
+
+        p["emulator"]?.takeIf { it.isNotBlank() && launch.isNotEmpty() }?.let { id ->
+            val prefs = preferences()
+            prefs.setCollection(dir, id)
+            savePreferences(prefs)
+        }
+
+        var commented = false
+        if (conflicts) commented = MetadataFile.commentOutLaunch(theirFile!!)
+        val text = MetadataFile.renderCollection(
+            name = name,
+            shortName = p["shortName"].orEmpty(),
+            launch = launch,
+            // `extensions` is not a field this writer owns, so it rides through
+            // `preserve` — which is also what keeps a hand-written `regex:` or
+            // `ignore-file:` alive on a collection that already had one.
+            preserve = (existing?.raw ?: emptyMap()) + ("extensions" to extensions.joinToString(", ")),
+            note = "This collection was not declared anywhere; PegasusBridge inferred it. " +
+                   "Delete this file and Pegasus stops seeing it again.")
+        Paths.writeAtomic(target, text)
+        return ok()
+            .put("written", target.absolutePath)
+            .put("collection", name)
+            .put("extensions", JSONArray(extensions))
+            .put("keptLaunch", launch.isNotEmpty())
+            .put("commentedOutLaunchIn", if (commented) theirFile!!.absolutePath else JSONObject.NULL)
+    }
+
     // ── Media export ────────────────────────────────────────────────────────
 
     /**
@@ -686,11 +823,17 @@ class PegasusService : Service() {
         const val VERB_LAUNCH_OPTIONS   = "launch-options"
         const val VERB_LAUNCH_SELECT    = "launch-select"
         const val VERB_LAUNCH_CLEAR     = "launch-clear"
+        const val VERB_PROPOSE_COLLECTIONS = "propose-collections"
+        const val VERB_APPLY_COLLECTION    = "apply-collection"
+
+        /** Written by the scrapers; read here. One name, one place. */
+        const val SS_SYSTEMS_FILE = "screenscraper_systems.json"
 
         /** Every verb this service answers — the router's dispatch table. */
         val VERBS = setOf(
             VERB_EMULATORS, VERB_EMULATORS_APPLY, VERB_EMULATORS_REVERT, VERB_COLLECTIONS,
             VERB_EXPORT_MEDIA, VERB_EXPORT_STATUS, VERB_EXPORT_REVERT, VERB_EXPORT_MIGRATE,
-            VERB_EXPORT_METADATA, VERB_LAUNCH_OPTIONS, VERB_LAUNCH_SELECT, VERB_LAUNCH_CLEAR)
+            VERB_EXPORT_METADATA, VERB_LAUNCH_OPTIONS, VERB_LAUNCH_SELECT, VERB_LAUNCH_CLEAR,
+            VERB_PROPOSE_COLLECTIONS, VERB_APPLY_COLLECTION)
     }
 }

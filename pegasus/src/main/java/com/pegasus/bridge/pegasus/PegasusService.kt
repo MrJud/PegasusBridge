@@ -197,6 +197,10 @@ class PegasusService : Service() {
             .put("present", file.isFile)
             .put("accepted", cfg.probes.size)
             .put("rejected", JSONArray(cfg.rejected))
+            .put("warnings", JSONArray(cfg.warnings))
+            .put("coreHints", JSONObject().also { o ->
+                for ((platform, cores) in cfg.coreHints) o.put(platform, JSONArray(cores))
+            })
             .put("note", cfg.note.takeIf { it.isNotEmpty() } ?: JSONObject.NULL)
             .put("seesAllPackages", canSeeAllPackages())
             .put("visibilityWarning",
@@ -677,7 +681,7 @@ class PegasusService : Service() {
                     // system RetroArch handles — and taking the first of those
                     // offered the NES core for `gba` and for `n64` alike.
                     core = AndroidEmulators
-                        .coreHintsFor(best.id, best.executable, platform)
+                        .coreHintsFor(best.id, best.executable, platform, emulatorConfig())
                         .firstOrNull().orEmpty()
                     from = "hint"
                 }

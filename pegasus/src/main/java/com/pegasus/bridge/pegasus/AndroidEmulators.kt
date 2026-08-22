@@ -371,7 +371,28 @@ object AndroidEmulators {
     data class Config(
         val probes: List<Probe> = emptyList(),
         val rejected: List<String> = emptyList(),
-        val note: String = ""
+        /**
+         * Entries that were kept, with something wrong worth saying out loud.
+         *
+         * Separate from [rejected] because they are not the same fact and were
+         * once reported as one: a `{core}` nobody can fill used to be listed
+         * under "rejected" while the entry was added anyway, which told the
+         * reader their emulator had been dropped when it had not.
+         */
+        val warnings: List<String> = emptyList(),
+        val note: String = "",
+        /**
+         * Cores by platform, from the file's top-level `coreHints`.
+         *
+         * Separate from a probe's own [Probe.coreHints] because a core is a
+         * property of the *platform*, not of the emulator: RetroArch needs a
+         * different one for every system it runs, so a flat per-emulator list
+         * cannot express what it needs. Keyed by normalised platform name, and
+         * a platform named here replaces the built-in list rather than adding
+         * to it — the reason to write one is usually that the built-in is
+         * wrong, not that it is missing.
+         */
+        val coreHints: Map<String, List<String>> = emptyMap()
     )
 
     /**
@@ -404,6 +425,7 @@ object AndroidEmulators {
      *
      *     {
      *       "schemaVersion": 1,
+     *       "coreHints": { "3do": ["opera_libretro_android.so"] },
      *       "emulators": [
      *         { "id": "myboy", "displayName": "My Boy!",
      *           "platforms": ["gba"], "packages": ["com.fastemulator.gba"],
@@ -412,9 +434,16 @@ object AndroidEmulators {
      *           "coreHints": [] }
      *       ]
      *     }
+     *
+     * The top-level `coreHints` is keyed by platform and is the one that can
+     * teach this build a core it was compiled without — `3do` and `apple2` had
+     * no entry in [CORE_HINTS], and before this existed neither could be given
+     * one without a new APK. An emulator's own `coreHints` is a fallback for
+     * when nothing is keyed by platform; see [coreHintsFor] for the order.
      */
     fun parseConfig(text: String): Config {
         val rejected = mutableListOf<String>()
+        val warnings = mutableListOf<String>()
         val root = runCatching { JSONObject(text) }.getOrElse {
             return Config(note = "emulators.json is not valid JSON: ${it.message}")
         }
@@ -422,6 +451,23 @@ object AndroidEmulators {
         if (schema > CONFIG_SCHEMA_VERSION)
             return Config(note = "emulators.json is schema $schema and this build reads " +
                                  "$CONFIG_SCHEMA_VERSION — left alone rather than half-read")
+
+        // Read before the emulators, because whether an entry's `{core}` can
+        // ever be filled depends on what this map says.
+        val hints = LinkedHashMap<String, List<String>>()
+        root.optJSONObject("coreHints")?.let { obj ->
+            for (key in obj.keys()) {
+                val platform = com.pegasus.bridge.core.FuzzyMatch.normalizePlatform(key)
+                if (platform.isEmpty()) { rejected += "coreHints key '$key' is not a platform"; continue }
+                val cores = obj.optJSONArray(key).toStringList()
+                if (cores.isEmpty()) {
+                    rejected += "coreHints for '$key' names no cores — " +
+                                "remove the key to keep the built-in list, or name one"
+                    continue
+                }
+                hints[platform] = cores
+            }
+        }
 
         val arr = root.optJSONArray("emulators") ?: JSONArray()
         val out = mutableListOf<Probe>()
@@ -437,11 +483,17 @@ object AndroidEmulators {
                 .filter { it.isNotEmpty() }
             if (platforms.isEmpty()) { rejected += "'$id' names no platforms"; continue }
             val args = o.optJSONArray("args").toStringList()
-            // A `{core}` with no hints is a hole nobody can fill, and it would
-            // be written into somebody's library as a literal.
-            if (args.any { it.contains("{core}") } && o.optJSONArray("coreHints") == null)
-                rejected += "'$id' leaves {core} in its args and offers no coreHints — " +
-                            "it will never produce a runnable launch"
+            val ownHints = o.optJSONArray("coreHints").toStringList()
+            // A `{core}` nothing can fill would be written into somebody's
+            // library as a literal. "Nothing" means all three sources: the
+            // entry's own hints, the file's per-platform map, and the built-in
+            // table — a corrected RetroArch line needs none of its own, because
+            // the platforms it names are already covered.
+            if (args.any { it.contains("{core}") } && ownHints.isEmpty() &&
+                platforms.none { hints[it]?.isNotEmpty() == true || CORE_HINTS[it]?.isNotEmpty() == true })
+                warnings += "'$id' leaves {core} in its args and nothing names a core for " +
+                            platforms.joinToString("/") + " — add a top-level coreHints entry " +
+                            "for one of those platforms, or coreHints to '$id' itself"
             out += Probe(
                 id = id,
                 displayName = o.optString("displayName").ifEmpty { id },
@@ -452,9 +504,9 @@ object AndroidEmulators {
                 args = args,
                 provenance = if (args.isEmpty()) Provenance.NO_KNOWN_LAUNCH
                              else Provenance.USER_SUPPLIED,
-                coreHints = o.optJSONArray("coreHints").toStringList())
+                coreHints = ownHints)
         }
-        return Config(out, rejected)
+        return Config(probes = out, rejected = rejected, warnings = warnings, coreHints = hints)
     }
 
     private fun JSONArray?.toStringList(): List<String> =
@@ -512,7 +564,7 @@ object AndroidEmulators {
             for (pkg in probe.packages) {
                 val version = runCatching { installed(pkg) }.getOrNull() ?: continue
                 out += candidate(probe, pkg, version, platform,
-                                 runCatching { labelOf(pkg) }.getOrNull())
+                                 runCatching { labelOf(pkg) }.getOrNull(), config)
                 // One candidate per emulator, not one per package: two RetroArch
                 // builds are two ways to run the same thing, and offering both
                 // asks somebody to choose between them on no information.
@@ -565,9 +617,10 @@ object AndroidEmulators {
         pkg: String,
         version: String,
         platform: String?,
-        label: String? = null
+        label: String? = null,
+        config: Config = Config()
     ): EmulatorCandidate {
-        val hints = coreHintsFor(probe, pkg, platform)
+        val hints = coreHintsFor(probe, pkg, platform, config)
 
         return EmulatorCandidate(
             id = probe.id,
@@ -616,16 +669,41 @@ object AndroidEmulators {
      * per platform. Asking the platform-less [discover] instead returns the union
      * across everything RetroArch handles, whose first entry is the NES core —
      * which is how `gba` and `n64` were both once offered `fceumm`.
+     *
+     * Takes [config] because the answer can now come out of `emulators.json`,
+     * and because an emulator that only exists in that file is not in [PROBES]
+     * at all — asking the built-in table about it returned nothing.
      */
-    fun coreHintsFor(emulatorId: String, pkg: String, platform: String): List<String> =
-        PROBES.firstOrNull { it.id == emulatorId }
-            ?.let { coreHintsFor(it, pkg, platform) }.orEmpty()
+    fun coreHintsFor(emulatorId: String, pkg: String, platform: String,
+                     config: Config = Config()): List<String> =
+        probesWith(config).firstOrNull { it.id == emulatorId }
+            ?.let { coreHintsFor(it, pkg, platform, config) }.orEmpty()
 
-    private fun coreHintsFor(probe: Probe, pkg: String, platform: String?): List<String> {
-        val names = platform
-            ?.let { com.pegasus.bridge.core.FuzzyMatch.normalizePlatform(it) }
-            ?.let { CORE_HINTS[it] }
-            ?: probe.platforms.flatMap { CORE_HINTS[it].orEmpty() }.distinct()
+    /**
+     * The cores to offer for [probe], as absolute paths under [pkg]'s own
+     * private core directory — which is where RetroArch keeps them and where
+     * the library's one working RetroArch line points.
+     *
+     * When [platform] is named the answer is that platform's, in order: the
+     * file's `coreHints`, then the built-in [CORE_HINTS], then the probe's own.
+     * **A platform with no core anywhere answers nothing.** It used to fall
+     * through to the union instead, so asking for 3DO's core returned all 27
+     * built-in cores headed by the NES one — "no hints for this platform" and
+     * "no platform named" gave the same answer, and the first of them was a
+     * core that cannot load a 3DO disc.
+     *
+     * With no [platform] the union is still right: that is a general listing,
+     * and it is what a review screen showing every emulator wants.
+     */
+    private fun coreHintsFor(probe: Probe, pkg: String, platform: String?,
+                             config: Config = Config()): List<String> {
+        val names = if (platform != null) {
+            val p = com.pegasus.bridge.core.FuzzyMatch.normalizePlatform(platform)
+            config.coreHints[p] ?: CORE_HINTS[p] ?: probe.coreHints
+        } else {
+            (probe.platforms.flatMap { config.coreHints[it] ?: CORE_HINTS[it].orEmpty() } +
+                probe.coreHints).distinct()
+        }
         return names.map { "/data/data/$pkg/cores/$it" }
     }
 

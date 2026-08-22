@@ -323,13 +323,77 @@ class EmulatorConfigTest {
         assertTrue(c.rejected.toString(), c.rejected.any { it.contains("no id") })
     }
 
-    /** A hole nobody can fill would be written into the library as a literal. */
-    @Test fun `a core placeholder with no hints is called out`() {
+    /**
+     * A hole nobody can fill would be written into the library as a literal.
+     *
+     * `zx81` is the point: no built-in core hint, none in the file, none on the
+     * entry. A warning and not a rejection, because the entry is kept — saying
+     * "rejected" for something that was added is what this used to do.
+     */
+    @Test fun `a core placeholder no one can fill is called out`() {
+        val c = AndroidEmulators.parseConfig("""
+            { "emulators": [ { "id": "x", "platforms": ["zx81"], "packages": ["a.b"],
+                               "args": ["-e LIBRETRO {core}"] } ] }
+        """.trimIndent())
+        assertTrue(c.warnings.toString(), c.warnings.any { it.contains("{core}") })
+        assertTrue(c.rejected.toString(), c.rejected.isEmpty())
+        assertEquals(listOf("x"), c.probes.map { it.id })
+    }
+
+    /**
+     * Correcting RetroArch's launch line must not require restating its cores.
+     *
+     * The built-in table already names one for `snes`, so the placeholder is
+     * fillable and there is nothing to warn about. This warned before, which
+     * made a correct entry look broken.
+     */
+    @Test fun `a core placeholder the built-in table covers is not called out`() {
         val c = AndroidEmulators.parseConfig("""
             { "emulators": [ { "id": "x", "platforms": ["snes"], "packages": ["a.b"],
                                "args": ["-e LIBRETRO {core}"] } ] }
         """.trimIndent())
-        assertTrue(c.rejected.toString(), c.rejected.any { it.contains("{core}") })
+        assertTrue(c.warnings.toString(), c.warnings.isEmpty())
+    }
+
+    /**
+     * The file can name a core for a platform this build was compiled without.
+     *
+     * `3do` is the case that forced it: RetroArch runs it through Opera, the
+     * built-in table has no entry, and before this the only way to say so was a
+     * new APK.
+     */
+    @Test fun `the file can teach a core for a platform the build never knew`() {
+        val c = AndroidEmulators.parseConfig("""
+            { "coreHints": { "3do": ["opera_libretro_android.so"] },
+              "emulators": [ { "id": "retroarch", "platforms": ["3do"],
+                               "packages": ["com.retroarch"],
+                               "component": ".browser.retroactivity.RetroActivityFuture",
+                               "args": ["-e LIBRETRO {core}"] } ] }
+        """.trimIndent())
+        assertEquals(mapOf("3do" to listOf("opera_libretro_android.so")), c.coreHints)
+        assertTrue(c.warnings.toString(), c.warnings.isEmpty())
+        assertEquals(listOf("/data/data/com.retroarch/cores/opera_libretro_android.so"),
+                     AndroidEmulators.coreHintsFor("retroarch", "com.retroarch", "3do", c))
+    }
+
+    /** The file wins over the built-in, because the reason to write one is that it is wrong. */
+    @Test fun `a core named in the file replaces the built-in one`() {
+        val c = AndroidEmulators.parseConfig("""
+            { "coreHints": { "snes": ["bsnes_hd_libretro_android.so"] } }
+        """.trimIndent())
+        assertEquals(listOf("/data/data/com.retroarch/cores/bsnes_hd_libretro_android.so"),
+                     AndroidEmulators.coreHintsFor("retroarch", "com.retroarch", "snes", c))
+    }
+
+    /**
+     * Asking for a platform with no core anywhere answers nothing.
+     *
+     * It used to answer the union across every platform RetroArch handles,
+     * whose first entry is the NES core — so `link-emulators --useHints` would
+     * have written `fceumm` into a 3DO collection and called it a launch.
+     */
+    @Test fun `a platform with no core answers nothing rather than everything`() {
+        assertTrue(AndroidEmulators.coreHintsFor("retroarch", "com.retroarch", "3do").isEmpty())
     }
 
     /** Broken JSON leaves the built-in table alone rather than emptying it. */

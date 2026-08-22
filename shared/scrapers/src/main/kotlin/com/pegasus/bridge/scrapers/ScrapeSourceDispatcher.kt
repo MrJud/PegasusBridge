@@ -1,10 +1,15 @@
 package com.pegasus.bridge.scrapers
 
+import com.pegasus.bridge.core.ArtifactKey
 import com.pegasus.bridge.core.BridgeLog
 import com.pegasus.bridge.core.BridgePaths
 import com.pegasus.bridge.core.Config
 import com.pegasus.bridge.hasher.PlainRomHasher
+import com.pegasus.bridge.hasher.RomIdentity
+import com.pegasus.bridge.hasher.withHashes
 import java.io.File
+import java.util.concurrent.CompletableFuture
+import java.util.concurrent.ExecutionException
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -285,30 +290,81 @@ class ScrapeSourceDispatcher(
     // archive is not free either.
 
     /**
-     * The last few identified ROMs, keyed by file path.
+     * The last few identified ROMs.
      *
      * Small and in memory on purpose: it exists to stop one game's four contents
      * costing four requests, not to remember a library. Persisting it would mean
      * promising the database never gains a game, and a wrong "not found" that survives
      * a restart is the shape of bug this project has already paid for once.
+     *
+     * ── What the key has to carry, and why each part is there ──
+     *
+     * It used to be `platform|path`, which was wrong in three separate ways and every
+     * one of them was reachable from the theme:
+     *
+     * - **Language.** The synopsis and the genre names are per-language, so asking for
+     *   the same ROM in Italian after English returned the English answer. The cache
+     *   was keyed on the question's subject and not on the question.
+     * - **The file.** A ROM replaced at the same path — a better dump, a patch — kept
+     *   the old identity for as long as the entry lived.
+     * - **`systemeid`.** The override parameter exists precisely so a caller can ask
+     *   the same file under a different system; keyed without it, the second answer was
+     *   the first one.
+     *
+     * So the key is the [RomIdentity] signature — path, size, mtime — plus language and
+     * the system id actually sent.
      */
-    private val ssCache = object : LinkedHashMap<String, ScreenScraperClient.Game>(
-        16, 0.75f, true
-    ) {
+    private val ssCache = object : LinkedHashMap<String, Identified>(16, 0.75f, true) {
         override fun removeEldestEntry(
-            eldest: MutableMap.MutableEntry<String, ScreenScraperClient.Game>?
-        ): Boolean = size > 64
+            eldest: MutableMap.MutableEntry<String, Identified>?
+        ): Boolean = size > SS_CACHE_ENTRIES
     }
+
+    /**
+     * One answer: the game, and the ROM the question was about.
+     *
+     * They travel together because both halves are needed downstream and the second
+     * is expensive. `op=media` names its file from the ROM's digests, and recomputing
+     * them would mean hashing a 40 MB archive again to name a picture that has already
+     * been fetched.
+     */
+    private data class Identified(
+        val game: ScreenScraperClient.Game,
+        val identity: RomIdentity
+    )
+
+    /**
+     * The identification currently in flight for a key, so a second caller waits
+     * for it instead of repeating it.
+     *
+     * The daemon serves requests on a worker pool, and the theme's game screen asks
+     * for a cover, a wheel, a wallpaper and a video at once. Without this, four
+     * threads miss the cache together and issue four `jeuInfos` calls for one game —
+     * against an account the API reports as `maxThreads: 1`. [ScreenScraperClient]'s
+     * gate serialises them, so they do not fail; they just cost four times the quota
+     * and take four times as long.
+     *
+     * A plain `LinkedHashMap` was also being read and written from those threads with
+     * no synchronisation at all, which is a data race on a structure that rebalances
+     * on *read* (access-order LRU).
+     */
+    private val ssInFlight = HashMap<String, CompletableFuture<Identified>>()
+
+    /** Guards [ssCache] and [ssInFlight]. Never held across hashing or HTTP. */
+    private val ssLock = Any()
 
     private fun dispatchScreenScraper(op: String, params: Map<String, String>): Result = when (op) {
         "game"    -> Result(ssGameToJson(ssIdentify(params)))
         "media"   -> Result(ssFetchMedia(params))
-        "systems" -> Result(ssSystems())
+        "systems" -> Result(ssSystems(force = params["refresh"] == "1"))
         else      -> throw IllegalArgumentException("ss: unknown op '$op'")
     }
 
     /** The system table, refreshed from the API and kept on disk between runs. */
-    private fun ssSystems(): JSONArray {
+    private fun ssSystems(force: Boolean = false): JSONArray {
+        if (!force) {
+            cachedSystems()?.let { return systemsToJson(it) }
+        }
         val list = ScreenScraperClient.systems(config).getOrThrow()
         paths?.let { p ->
             try {
@@ -319,6 +375,10 @@ class ScrapeSourceDispatcher(
                 BridgeLog.w(TAG, "could not cache the ScreenScraper systems: ${t.message}")
             }
         }
+        return systemsToJson(list)
+    }
+
+    private fun systemsToJson(list: List<ScreenScraperClient.SsSystem>): JSONArray {
         val arr = JSONArray()
         for (s in list) {
             arr.put(JSONObject()
@@ -330,37 +390,83 @@ class ScrapeSourceDispatcher(
     }
 
     /**
-     * The cached table, fetched once if it is not there.
+     * The table on disk, if it is still worth trusting.
+     *
+     * Null means "ask the API": the file is missing, unreadable, written by an older
+     * schema, or older than [SS_SYSTEMS_TTL_SECONDS]. It was previously kept forever,
+     * so a system ScreenScraper added after the first fetch could never be found and
+     * the failure looked exactly like a ROM the database does not have.
+     *
+     * Thirty days is chosen against what the table actually is: a list of consoles.
+     * It gains an entry a few times a year, and re-fetching it more often spends quota
+     * on an answer that has not changed.
+     */
+    private fun cachedSystems(): List<ScreenScraperClient.SsSystem>? {
+        val p = paths ?: return null
+        val f = p.cache(SS_SYSTEMS_FILE)
+        if (!f.isFile) return null
+        val text = runCatching { f.readText() }.getOrNull() ?: return null
+        if (ScreenScraperSystemMap.schemaVersionOf(text) != ScreenScraperSystemMap.SCHEMA_VERSION) {
+            BridgeLog.i(TAG, "the cached ScreenScraper system table is from an older schema")
+            return null
+        }
+        val age = BridgePaths.epochSeconds() - ScreenScraperSystemMap.fetchedAtOf(text)
+        if (age > SS_SYSTEMS_TTL_SECONDS) {
+            BridgeLog.i(TAG, "the cached ScreenScraper system table is ${age / 86_400} days old")
+            return null
+        }
+        return ScreenScraperSystemMap.fromJson(text).takeIf { it.isNotEmpty() }
+    }
+
+    /**
+     * The cached table, fetched when it is missing, stale or does not know [platform].
      *
      * Empty is a usable answer: without it a hash lookup still works, and only a
-     * `romnom` one — arcade — actually needs an id.
+     * `romnom` one — arcade — actually needs an id. A refresh that *fails* keeps
+     * whatever was on disk rather than falling back to nothing, because a stale id is
+     * still overwhelmingly likely to be right and no id at all is certainly not.
      */
-    private fun ssSystemIndex(): Map<String, Int> {
+    private fun ssSystemIndex(platform: String = ""): Map<String, Int> {
         val p = paths ?: return emptyMap()
         val f = p.cache(SS_SYSTEMS_FILE)
-        if (f.isFile) {
-            val cached = ScreenScraperSystemMap.fromJson(f.readText())
-            if (cached.isNotEmpty()) return ScreenScraperSystemMap.index(cached)
+
+        val fresh = cachedSystems()
+        if (fresh != null) {
+            val index = ScreenScraperSystemMap.index(fresh)
+            // A platform the table does not cover is the other refresh trigger: it is
+            // indistinguishable from a stale table, and asking once is cheap.
+            if (platform.isEmpty() || ScreenScraperSystemMap.systemeId(platform, index) > 0)
+                return index
+            BridgeLog.i(TAG, "no ScreenScraper system for '$platform'; refreshing the table")
         }
+
         return try {
-            ssSystems()
+            ssSystems(force = true)
             val refreshed = if (f.isFile) ScreenScraperSystemMap.fromJson(f.readText()) else emptyList()
             ScreenScraperSystemMap.index(refreshed)
         } catch (t: Throwable) {
-            BridgeLog.w(TAG, "no ScreenScraper system table: ${t.message}")
-            emptyMap()
+            BridgeLog.w(TAG, "could not refresh the ScreenScraper system table: ${t.message}")
+            // Keep the stale one. Losing the whole table because a refresh timed out
+            // would take arcade lookups down with it, and those cannot work without an id.
+            val stale = if (f.isFile) ScreenScraperSystemMap.fromJson(f.readText()) else emptyList()
+            if (stale.isEmpty()) emptyMap() else ScreenScraperSystemMap.index(stale)
         }
     }
 
-    private fun ssIdentify(params: Map<String, String>): Pair<ScreenScraperClient.Game, String> {
+    /** What a caller asked, resolved: the ROM, the language and the system id sent. */
+    private data class SsRequest(
+        val identity: RomIdentity,
+        val lang: String,
+        val systemeId: Int
+    ) {
+        val cacheKey: String get() = "${identity.signature}|$lang|$systemeId"
+    }
+
+    private fun ssRequestOf(params: Map<String, String>): SsRequest {
         val path = params["file"].orEmpty()
         if (path.isEmpty()) throw IllegalArgumentException("missing file")
         val platform = params["platform"].orEmpty()
         val lang = params["lang"]?.takeIf { it.isNotEmpty() } ?: "en"
-
-        val cached = ssCache[cacheKey(path, platform)]
-        if (cached != null) return cached to path
-
         val byName = ScreenScraperSystemMap.matchedByName(platform)
         // An explicit id overrides the table. It exists because the table's arcade entry
         // could only ever be settled by measurement — the API publishes sixty-odd boards
@@ -368,36 +474,75 @@ class ScrapeSourceDispatcher(
         // these actually answers for pacman.zip?" without editing and rebuilding the
         // daemon between guesses.
         val systemeId = params["systemeid"]?.toIntOrNull()?.takeIf { it > 0 }
-            ?: ScreenScraperSystemMap.systemeId(platform, ssSystemIndex())
-        val name = File(path).name
+            ?: ScreenScraperSystemMap.systemeId(platform, ssSystemIndex(platform))
+        return SsRequest(RomIdentity.of(path, platform, byName), lang, systemeId)
+    }
 
-        val game = if (byName) {
+    /**
+     * Identifies a ROM, at most once per distinct question however many callers ask.
+     *
+     * The lock covers the cache and the in-flight map and nothing else: the hashing
+     * and the HTTP call happen outside it, so a 40 MB archive being digested does not
+     * block a second thread's cache hit. Followers await the owner's future.
+     */
+    private fun ssIdentify(params: Map<String, String>): Identified {
+        val req = ssRequestOf(params)
+        val key = req.cacheKey
+
+        var mine: CompletableFuture<Identified>? = null
+        val waitOn = synchronized(ssLock) {
+            ssCache[key]?.let { return it }
+            ssInFlight[key] ?: CompletableFuture<Identified>().also { mine = it; ssInFlight[key] = it }
+        }
+
+        val owned = mine
+        if (owned == null) {
+            // Someone else is already asking. Their failure is ours too — which is
+            // right: two threads asking the same question of a source that has just
+            // refused should not both spend an attempt discovering it.
+            return try {
+                waitOn.get()
+            } catch (e: ExecutionException) {
+                throw e.cause ?: e
+            }
+        }
+
+        return try {
+            val answer = ssFetchIdentity(req)
+            synchronized(ssLock) { ssCache[key] = answer; ssInFlight.remove(key) }
+            owned.complete(answer)
+            answer
+        } catch (t: Throwable) {
+            // Nothing is cached: a refusal must be asked again next time. Only the
+            // in-flight claim is released.
+            synchronized(ssLock) { ssInFlight.remove(key) }
+            owned.completeExceptionally(t)
+            throw t
+        }
+    }
+
+    /** The actual call. Outside the lock, on purpose — it hashes and it does HTTP. */
+    private fun ssFetchIdentity(req: SsRequest): Identified {
+        val id = req.identity
+        if (id.matchedByName) {
             // Arcade: the romset name is the identity and the hashes would describe the
             // wrong thing entirely — a MAME zip holds a pile of separately-dumped chips,
             // so neither the archive's digest nor its largest entry's means anything to
             // the database. Sending them alongside the name is not a belt-and-braces
             // fallback, it is a worse request.
-            //
-            // No system id is required, and for the MAME family there is none to give:
-            // ScreenScraper models the *boards*, sixty-odd of them, and every one calls
-            // itself `arcade`. `systemeId` refuses to pick one for that reason, so this
-            // sends 0 and lets the romset name — which is unique across boards — do the
-            // work it is already doing. Neo Geo is a real single system and does get one.
-            ScreenScraperClient.jeuInfos(config, romName = name, systemeId = systemeId, lang = lang)
-        } else {
-            val tempDir = paths?.cache ?: File(System.getProperty("java.io.tmpdir"), "pegasus-bridge")
-            val h = PlainRomHasher.hash(path, tempDir)
-                ?: throw IllegalStateException("could not read $name")
-            ScreenScraperClient.jeuInfos(
-                config, md5 = h.md5, crc = h.crc32, size = h.size,
-                romName = h.name, systemeId = systemeId, lang = lang)
-        }.getOrThrow()
-
-        ssCache[cacheKey(path, platform)] = game
-        return game to path
+            val game = ScreenScraperClient.jeuInfos(
+                config, romName = id.romName, systemeId = req.systemeId, lang = req.lang).getOrThrow()
+            return Identified(game, id)
+        }
+        val tempDir = paths?.cache ?: File(System.getProperty("java.io.tmpdir"), "pegasus-bridge")
+        val h = PlainRomHasher.hash(id.canonicalPath, tempDir)
+            ?: throw IllegalStateException("could not read ${id.romName}")
+        val game = ScreenScraperClient.jeuInfos(
+            config, md5 = h.md5, crc = h.crc32, size = h.size,
+            romName = h.name, systemeId = req.systemeId, lang = req.lang).getOrThrow()
+        // The digests come back with the answer so an artwork key can use them.
+        return Identified(game, id.withHashes(h))
     }
-
-    private fun cacheKey(path: String, platform: String) = "$platform|$path"
 
     /**
      * The identified game, plus which kinds of art it actually has.
@@ -410,11 +555,11 @@ class ScrapeSourceDispatcher(
      * reads — `developer`, `publisher`, `genres`, `releaseYear`, `gameModes`, `score` —
      * so this source needs no mapping of its own on the far side.
      */
-    private fun ssGameToJson(pair: Pair<ScreenScraperClient.Game, String>): JSONObject {
-        val (g, path) = pair
+    private fun ssGameToJson(found: Identified): JSONObject {
+        val g = found.game
         val kinds = JSONObject()
-        for (kind in listOf("cover", "wheel", "wallpaper", "screenshot", "video"))
-            kinds.put(kind, ScreenScraperClient.pickMedia(g.media, kind, File(path).name) != null)
+        for (kind in MEDIA_KINDS)
+            kinds.put(kind, ScreenScraperClient.pickMedia(g.media, kind, found.identity.romName) != null)
 
         val media = JSONArray()
         // Types and regions only. The URLs are deliberately not here: a ScreenScraper
@@ -444,23 +589,44 @@ class ScrapeSourceDispatcher(
     /**
      * Downloads the best media of one kind and answers with where it landed.
      *
-     * Named by digest rather than by title: two ROMs of the same game in different
-     * regions carry different art, and a title-keyed file would let the second overwrite
-     * the first. Already-fetched files are reused — the picture cannot change under a
-     * digest, so re-downloading it would spend quota to get the same bytes.
+     * ── Why the name is a digest ───────────────────────────────
+     *
+     * It used to be `ss-<gameId>-<kind>.<ext>`, and the comment above it claimed the
+     * name was a digest. It was not, and the difference is a wrong picture on screen:
+     * `Contra (USA).nes` and `Contra (Japan).nes` resolve to one ScreenScraper game id
+     * and select *different* box art, so the second file found the first one's path
+     * already occupied, skipped its download and displayed the American cover for the
+     * Japanese release — and because the skip is also the cache, it would never
+     * correct itself.
+     *
+     * The key now mixes the selected media's URL, kind, type, region, format and the
+     * ROM's own fingerprint, so the two get different files. The URL goes in as a
+     * digest, never as text: it carries `devid`, `devpassword` and `sspassword`.
+     *
+     * Reuse survives, and is now actually sound: the same ROM asking for the same kind
+     * a second time produces the same key and the existing bytes are returned. A
+     * *changed* selected URL produces a different key, so a picture ScreenScraper has
+     * replaced is fetched rather than served stale from a name that no longer describes
+     * it.
      */
     private fun ssFetchMedia(params: Map<String, String>): JSONObject {
         val p = paths ?: throw IllegalStateException("no data root: cannot store fetched media")
         val kind = params["kind"] ?: throw IllegalArgumentException("missing kind")
-        val (game, path) = ssIdentify(params)
-        val romName = File(path).name
+        val found = ssIdentify(params)
+        val game = found.game
+        val identity = found.identity
 
-        val media = ScreenScraperClient.pickMedia(game.media, kind, romName)
+        val media = ScreenScraperClient.pickMedia(game.media, kind, identity.romName)
             ?: return JSONObject().put("localPath", "").put("kind", kind)
 
         val ext = media.format.ifEmpty { if (kind == "video") "mp4" else "png" }
-        val id = game.id.ifEmpty { romName.replace(Regex("[^A-Za-z0-9]"), "") }
-        val target = p.artwork("ss-$id-$kind.$ext")
+        val id = game.id.ifEmpty { ArtifactKey.sanitize(identity.romName) }
+        val variant = ArtifactKey.variant(
+            source = "ss", mediaUrl = media.url, kind = kind, type = media.type,
+            region = media.region, format = media.format,
+            romFingerprint = identity.fingerprint())
+        val target = p.artwork(ArtifactKey.fileName("ss", id, kind, variant, ext))
+
         if (!target.isFile || target.length() == 0L)
             ScreenScraperClient.fetchMedia(config, media, target).getOrThrow()
 
@@ -469,6 +635,11 @@ class ScrapeSourceDispatcher(
             .put("kind", kind)
             .put("type", media.type)
             .put("region", media.region)
+            // The variant digest, so a caller can tell two regional covers of one game
+            // apart without being handed the credential-bearing URL that distinguishes
+            // them. This is also what the Pegasus media export keys its copies on.
+            .put("variant", variant)
+            .put("gameId", game.id)
             .put("bytes", target.length())
     }
 
@@ -485,5 +656,21 @@ class ScrapeSourceDispatcher(
     private companion object {
         const val TAG = "ScrapeSourceDispatcher"
         const val SS_SYSTEMS_FILE = "screenscraper_systems.json"
+
+        /** Enough for one screen's worth of games, far short of a library. */
+        const val SS_CACHE_ENTRIES = 64
+
+        /**
+         * How long the system table is trusted: thirty days.
+         *
+         * It is a list of consoles. It gains an entry a few times a year, and
+         * re-fetching it more often spends quota on an answer that has not changed —
+         * but keeping it *forever*, which is what it did, means a system added after
+         * the first fetch can never be found, and that failure is indistinguishable
+         * from a ROM the database genuinely lacks.
+         */
+        const val SS_SYSTEMS_TTL_SECONDS = 30L * 24 * 60 * 60
+
+        val MEDIA_KINDS = listOf("cover", "wheel", "wallpaper", "screenshot", "video")
     }
 }

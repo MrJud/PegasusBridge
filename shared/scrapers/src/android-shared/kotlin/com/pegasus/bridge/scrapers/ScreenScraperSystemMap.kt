@@ -165,9 +165,29 @@ object ScreenScraperSystemMap {
             // daemon's, and this file is compiled by the Android shell too, where the
             // data root is `Paths` instead. One clock reference is not worth a seam.
             .put("fetchedAt", System.currentTimeMillis() / 1000L)
+            // Stamped so a reader can refuse a file an older shape wrote, rather than
+            // parsing it into a table that is quietly missing half its fields.
+            .put("schemaVersion", SCHEMA_VERSION)
             .put("systemes", arr)
             .toString()
     }
+
+    /** The schema this file's shape belongs to. Bumped when the shape changes. */
+    const val SCHEMA_VERSION = 1
+
+    /** When the cached table was fetched, or 0 if the file does not say. */
+    fun fetchedAtOf(text: String): Long =
+        runCatching { JSONObject(text).optLong("fetchedAt", 0L) }.getOrDefault(0L)
+
+    /**
+     * The schema the cached table claims, or 0.
+     *
+     * A file written before the stamp existed answers 0, which is not
+     * [SCHEMA_VERSION], so it is refetched once. That is the intended cost of adding
+     * the stamp: one request, on one machine, once.
+     */
+    fun schemaVersionOf(text: String): Int =
+        runCatching { JSONObject(text).optInt("schemaVersion", 0) }.getOrDefault(0)
 
     fun fromJson(text: String): List<ScreenScraperClient.SsSystem> = try {
         val arr = JSONObject(text).optJSONArray("systemes") ?: JSONArray()

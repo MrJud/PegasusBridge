@@ -41,6 +41,14 @@ data class GameEntry(
     val release: String = "",
     /** 0–100, written with a percent sign. */
     val rating: Int = 0,
+    /**
+     * This game's own launch command, overriding its collection's.
+     *
+     * Pegasus supports it — `GameAttrib::LAUNCH_CMD` calls `setLaunchCmd` on the
+     * game — and it is what makes "choose an emulator for this one title"
+     * expressible at all. Empty means the collection's applies.
+     */
+    val launch: String = "",
     /** Where this came from, for a comment above the entry. */
     val source: String = ""
 ) {
@@ -65,6 +73,9 @@ data class GameEntry(
             if (players.isNotEmpty()) appendLine("players: ${oneLine(players)}")
             if (release.isNotEmpty()) appendLine("release: ${oneLine(release)}")
             if (rating in 1..100) appendLine("rating: $rating%")
+            // After the metadata and before the description, so a long synopsis
+            // cannot come between the game and the command that runs it.
+            if (launch.isNotEmpty()) appendLine("launch: ${oneLine(launch)}")
             if (description.isNotEmpty()) {
                 appendLine("description: ${descriptionBody()}")
             }
@@ -75,7 +86,10 @@ data class GameEntry(
         title.isNotEmpty() && fileName.isNotEmpty() && (
             developer.isNotEmpty() || publisher.isNotEmpty() || genres.isNotEmpty() ||
             description.isNotEmpty() || players.isNotEmpty() || release.isNotEmpty() ||
-            rating in 1..100)
+            rating in 1..100 ||
+            // A chosen emulator is reason enough on its own: it is a decision
+            // somebody made, and it has nowhere else to be expressed.
+            launch.isNotEmpty())
 
     /**
      * A description across several lines, indented so the field does not end.

@@ -304,6 +304,61 @@ up in `notInstalled` instead of becoming a launch line that fails.
 `launch:`, and a `launch:` on any game that differs from it — Pegasus supports
 both, `GameAttrib::LAUNCH_CMD` calling `setLaunchCmd` on the game.
 
+### Teaching it an emulator it does not know — Android
+
+Which emulators exist, and how each one is handed a game, is a table. It has to
+be: a manifest says a door exists, not what to say at it. Asked which activities
+on a real tablet claim to open a `.gba`, `.z64`, `.nes`, `.sfc` or `.iso`, the
+answer was none — so there is nothing to derive from, and Linkboy's own manifest
+actively misleads, declaring no file handler while `linkboy://emulator/<title>`
+works perfectly.
+
+What the table does not have to be is *code*. `config/emulators.json` is read on
+every `emulators` call and merged over the built-in one:
+
+```json
+{
+  "schemaVersion": 1,
+  "emulators": [
+    {
+      "id": "myboy",
+      "displayName": "My Boy!",
+      "platforms": ["gba"],
+      "packages": ["com.fastemulator.gba", "com.fastemulator.gbafree"],
+      "component": ".EmulatorActivity",
+      "args": ["-a android.intent.action.VIEW", "-d \"{file.uri}\""],
+      "coreHints": []
+    }
+  ]
+}
+```
+
+`id`, `platforms` and `packages` are required; everything else is optional. An
+entry whose `id` matches a built-in **replaces** it, keeping its position, which
+is how a wrong launch line gets corrected without waiting for a new APK. An
+unknown id is added. `packages` is in preference order, for an emulator that
+ships under several. Leaving `component` empty reaches the app through its own
+URI scheme instead of naming an activity — Linkboy needs that. Leaving `args`
+empty records an emulator that can be *recognised* and not driven.
+
+Placeholders are Pegasus', not the Bridge's: `{file.path}`, `{file.uri}`,
+`{file.documenturi}`, `{file.basename}`. Which one an emulator wants is a
+property of the emulator and only trying it establishes — DraStic takes a
+`file://` URI, PPSSPP a document URI, and Linkboy the bare title.
+
+A malformed entry is dropped and named rather than taking the file with it, and
+unreadable JSON leaves the built-in table exactly as it was. The `emulators`
+answer carries a `config` block saying what was read, what was refused and why —
+a configuration that is silently ignored is worse than none.
+
+**One limit, and it is Android's.** From API 30 a package the app's manifest
+does not name under `<queries>` is invisible, and `getPackageInfo` throws the
+same exception for it as for one that is not installed. The manifest is fixed
+when the APK is built, so a package added to this file afterwards may be
+installed and still not be found. The Bridge cannot fix that from inside the
+file, so it says so: `config.visibilityWarning` names the packages affected.
+Correcting an emulator the build already knows about is unaffected.
+
 ### Sources
 
 | source | ops | needs |

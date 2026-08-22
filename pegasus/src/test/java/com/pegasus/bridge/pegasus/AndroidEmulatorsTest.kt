@@ -234,3 +234,148 @@ class AndroidEmulatorsTest {
                      emptySet<String>(), declared - probed)
     }
 }
+
+/**
+ * `config/emulators.json` — the table as data rather than as code.
+ *
+ * It exists because the table was wrong twice in one day and both fixes needed
+ * a new APK: Linkboy was missing entirely, and Lime3DS pointed at its settings
+ * screen. Neither should have required a rebuild.
+ */
+class EmulatorConfigTest {
+
+    private fun installed(vararg pkgs: String) = { p: String -> if (p in pkgs) "1.0" else null }
+
+    @Test fun `a new id is added to the built-in table`() {
+        val c = AndroidEmulators.parseConfig("""
+            { "schemaVersion": 1, "emulators": [
+              { "id": "myboy", "displayName": "My Boy!", "platforms": ["gba"],
+                "packages": ["com.fastemulator.gba"],
+                "component": ".EmulatorActivity",
+                "args": ["-a android.intent.action.VIEW", "-d \"{file.uri}\""] } ] }
+        """.trimIndent())
+        assertEquals(emptyList<String>(), c.rejected)
+        assertEquals(1, c.probes.size)
+
+        val found = AndroidEmulators.discover(
+            installed = installed("com.fastemulator.gba"), config = c).single()
+        assertEquals("My Boy!", found.displayName)
+        assertTrue(found.canTakeARom)
+        assertTrue(found.confidence, found.confidence.contains("your emulators.json"))
+        // Somebody else's line, not one this project has run.
+        assertFalse(found.launchVerified)
+    }
+
+    /**
+     * A name written in the file beats the app's own label, which beats the
+     * built-in table. Found on the device: the file renamed Linkboy and the
+     * answer still said "Linkboy", because the label was winning over a choice
+     * somebody had made deliberately.
+     */
+    @Test fun `a name from the file wins over the app's own label`() {
+        val c = AndroidEmulators.parseConfig("""
+            { "emulators": [ { "id": "linkboy", "displayName": "Il mio Linkboy",
+                               "platforms": ["gba"], "packages": ["com.pixelrespawn.linkboy"],
+                               "args": ["-d x"] } ] }
+        """.trimIndent())
+        val f = AndroidEmulators.discover(
+            installed = installed("com.pixelrespawn.linkboy"), config = c,
+            labelOf = { "Linkboy" }).single()
+        assertEquals("Il mio Linkboy", f.displayName)
+
+        // With no name given, the label still wins over the table.
+        val noName = AndroidEmulators.parseConfig("""
+            { "emulators": [ { "id": "linkboy", "platforms": ["gba"],
+                               "packages": ["com.pixelrespawn.linkboy"], "args": ["-d x"] } ] }
+        """.trimIndent())
+        assertEquals("Linkboy", AndroidEmulators.discover(
+            installed = installed("com.pixelrespawn.linkboy"), config = noName,
+            labelOf = { "Linkboy" }).single().displayName)
+    }
+
+    /** The reason the file exists: correcting a built-in without a new APK. */
+    @Test fun `an existing id replaces the built-in, keeping its place`() {
+        val c = AndroidEmulators.parseConfig("""
+            { "emulators": [
+              { "id": "lime3ds", "displayName": "Azahar", "platforms": ["3ds"],
+                "packages": ["io.github.lime3ds.android"],
+                "component": ".SomeOtherActivity",
+                "args": ["-d \"{file.uri}\""] } ] }
+        """.trimIndent())
+        val merged = AndroidEmulators.probesWith(c)
+        assertEquals(1, merged.count { it.id == "lime3ds" })
+        assertTrue(merged.first { it.id == "lime3ds" }.component.contains("SomeOtherActivity"))
+        // Position kept, so a review screen does not reshuffle under somebody.
+        assertEquals(AndroidEmulators.PROBES.indexOfFirst { it.id == "lime3ds" },
+                     merged.indexOfFirst { it.id == "lime3ds" })
+    }
+
+    @Test fun `a bad entry is dropped and named, and the rest survive`() {
+        val c = AndroidEmulators.parseConfig("""
+            { "emulators": [
+              { "displayName": "no id" },
+              { "id": "nopkg", "platforms": ["gba"] },
+              { "id": "noplat", "packages": ["a.b"] },
+              { "id": "good", "platforms": ["gba"], "packages": ["a.b.c"], "args": ["-d x"] } ] }
+        """.trimIndent())
+        assertEquals(listOf("good"), c.probes.map { it.id })
+        assertEquals(3, c.rejected.size)
+        assertTrue(c.rejected.toString(), c.rejected.any { it.contains("no id") })
+    }
+
+    /** A hole nobody can fill would be written into the library as a literal. */
+    @Test fun `a core placeholder with no hints is called out`() {
+        val c = AndroidEmulators.parseConfig("""
+            { "emulators": [ { "id": "x", "platforms": ["snes"], "packages": ["a.b"],
+                               "args": ["-e LIBRETRO {core}"] } ] }
+        """.trimIndent())
+        assertTrue(c.rejected.toString(), c.rejected.any { it.contains("{core}") })
+    }
+
+    /** Broken JSON leaves the built-in table alone rather than emptying it. */
+    @Test fun `an unreadable file changes nothing`() {
+        val c = AndroidEmulators.parseConfig("{ not json ")
+        assertTrue(c.probes.isEmpty())
+        assertTrue(c.note, c.note.contains("not valid JSON"))
+        assertEquals(AndroidEmulators.PROBES, AndroidEmulators.probesWith(c))
+    }
+
+    /** A file from a newer build is left alone rather than half-read. */
+    @Test fun `a future schema is refused whole`() {
+        val c = AndroidEmulators.parseConfig("""{ "schemaVersion": 99, "emulators": [
+            { "id": "x", "platforms": ["gba"], "packages": ["a.b"] } ] }""")
+        assertTrue(c.probes.isEmpty())
+        assertTrue(c.note, c.note.contains("schema 99"))
+    }
+
+    /** An entry with no args records something recognised but not drivable. */
+    @Test fun `an entry with no args is recognised and not proposed`() {
+        val c = AndroidEmulators.parseConfig("""
+            { "emulators": [ { "id": "weird", "platforms": ["gba"], "packages": ["a.b"] } ] }
+        """.trimIndent())
+        val f = AndroidEmulators.discover(installed = installed("a.b"), config = c).single()
+        assertFalse(f.canTakeARom)
+    }
+
+    /**
+     * The catch worth stating out loud: the manifest is fixed at build time and
+     * cannot name a package added to the file afterwards, and Android hides
+     * undeclared packages from API 30.
+     */
+    @Test fun `a package the manifest cannot know about is warned about`() {
+        val c = AndroidEmulators.parseConfig("""
+            { "emulators": [ { "id": "myboy", "platforms": ["gba"],
+                               "packages": ["com.fastemulator.gba"], "args": ["-d x"] } ] }
+        """.trimIndent())
+        val w = AndroidEmulators.visibilityWarning(c)
+        assertTrue(w.orEmpty(), w!!.contains("com.fastemulator.gba"))
+        assertTrue(w, w.contains("<queries>"))
+
+        // …and no warning when the file only corrects something already declared.
+        val known = AndroidEmulators.parseConfig("""
+            { "emulators": [ { "id": "linkboy", "platforms": ["gba"],
+                               "packages": ["com.pixelrespawn.linkboy"], "args": ["-d x"] } ] }
+        """.trimIndent())
+        assertEquals(null, AndroidEmulators.visibilityWarning(known))
+    }
+}

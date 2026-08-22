@@ -150,8 +150,22 @@ class PegasusService : Service() {
             ?.map { it.trim() }?.filter { it.isNotEmpty() }?.map(::File)
             ?.takeIf { it.isNotEmpty() }
 
+    /**
+     * `config/emulators.json`, re-read per request.
+     *
+     * Per request and not cached: the point of the file is that somebody can
+     * add an emulator without rebuilding the app, and making them restart it
+     * instead would only move the wait.
+     */
+    private fun emulatorConfig(): AndroidEmulators.Config {
+        val f = File(Paths.CONFIG, AndroidEmulators.CONFIG_FILE)
+        if (!f.isFile) return AndroidEmulators.Config()
+        return runCatching { AndroidEmulators.parseConfig(f.readText()) }
+            .getOrElse { AndroidEmulators.Config(note = "could not read ${f.name}: ${it.message}") }
+    }
+
     private fun discover(platform: String? = null) =
-        AndroidEmulators.discover(packageManager, platform)
+        AndroidEmulators.discover(packageManager, platform, emulatorConfig())
 
     /** Whether a launch line would do anything on *this* device. */
     private fun launchCheck(launch: String) = LaunchCheck.check(
@@ -163,10 +177,26 @@ class PegasusService : Service() {
 
     /** What is installed. Reads nothing of the user's and writes nothing at all. */
     private fun emulators(p: Map<String, String>): JSONObject {
-        val found = discover(p["platform"])
+        val cfg = emulatorConfig()
+        val found = AndroidEmulators.discover(packageManager, p["platform"], cfg)
         val arr = JSONArray()
         for (c in found) arr.put(c.toListJson())
-        return ok().put("count", arr.length()).put("emulators", arr)
+
+        // What the file did, said out loud. A configuration that is silently
+        // ignored is worse than none: the first version of this project's
+        // emulator table was wrong for a week because nothing ever reported
+        // what it had and had not read.
+        val file = File(Paths.CONFIG, AndroidEmulators.CONFIG_FILE)
+        val config = JSONObject()
+            .put("path", file.absolutePath)
+            .put("present", file.isFile)
+            .put("accepted", cfg.probes.size)
+            .put("rejected", JSONArray(cfg.rejected))
+            .put("note", cfg.note.takeIf { it.isNotEmpty() } ?: JSONObject.NULL)
+            .put("visibilityWarning",
+                 AndroidEmulators.visibilityWarning(cfg) ?: JSONObject.NULL)
+
+        return ok().put("count", arr.length()).put("emulators", arr).put("config", config)
     }
 
     /**

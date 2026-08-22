@@ -2,6 +2,8 @@ package com.pegasus.bridge.pegasus
 
 import android.content.pm.PackageManager
 import com.pegasus.bridge.core.BridgeLog
+import org.json.JSONArray
+import org.json.JSONObject
 
 /**
  * What emulators are installed on this device.
@@ -86,7 +88,17 @@ object AndroidEmulators {
          */
         val provenance: Provenance,
         /** Conventional libretro cores, when [args] leaves a `{core}` behind. */
-        val coreHints: List<String> = emptyList()
+        val coreHints: List<String> = emptyList(),
+        /**
+         * Whether [displayName] was chosen deliberately rather than carried as
+         * a fallback.
+         *
+         * The built-in table's names are fallbacks: the app's own label is the
+         * better answer, which is how `io.github.lime3ds.android` correctly
+         * shows as Azahar. A name written in `emulators.json` is not a
+         * fallback — somebody typed it — so it wins over the label instead.
+         */
+        val nameIsExplicit: Boolean = false
     )
 
     /** How much is actually known about a probe's launch line. */
@@ -97,6 +109,15 @@ object AndroidEmulators {
         WORKING_LIBRARY("launch line taken from a working library"),
         /** Written from documentation. Plausible, never run. */
         UNVERIFIED("launch line from documentation, never run here"),
+        /**
+         * Supplied by whoever owns the device, in `config/emulators.json`.
+         *
+         * Trusted as far as it goes and no further: nobody here has run it
+         * either. It is separated from [UNVERIFIED] so a review screen can say
+         * "this is yours" rather than "this came from documentation", which are
+         * different things to a person deciding whether to accept a proposal.
+         */
+        USER_SUPPLIED("launch line from your emulators.json"),
         /**
          * Installed, and there is no known way to hand it a game.
          *
@@ -333,8 +354,129 @@ object AndroidEmulators {
         "dreamcast" to listOf("flycast_libretro_android.so")
     )
 
-    /** Every package this knows how to look for — the input to the manifest check. */
+    /**
+     * Every package the *built-in* table looks for — the input to the manifest
+     * check. Deliberately not including anything from `emulators.json`: the
+     * manifest is fixed at build time and cannot know about a file written
+     * afterwards, which is the whole point of [visibilityWarning].
+     */
     val KNOWN_PACKAGES: Set<String> = PROBES.flatMap { it.packages }.toSet()
+
+    // ── emulators.json ──────────────────────────────────────────────────────
+
+    const val CONFIG_FILE = "emulators.json"
+    const val CONFIG_SCHEMA_VERSION = 1
+
+    /** What reading the file produced, including what it refused and why. */
+    data class Config(
+        val probes: List<Probe> = emptyList(),
+        val rejected: List<String> = emptyList(),
+        val note: String = ""
+    )
+
+    /**
+     * The emulator table, with `config/emulators.json` merged over it.
+     *
+     * An entry whose `id` matches a built-in **replaces** it — that is how a
+     * wrong launch line gets corrected without waiting for a new APK. An
+     * unknown id is added. Order is preserved so a replacement keeps the
+     * built-in's position rather than jumping to the end of a review screen.
+     *
+     * A bad entry is dropped and named; it never takes the rest of the file
+     * with it. A file that is entirely unreadable leaves the built-in table
+     * exactly as it was, because the alternative — no emulators at all — is a
+     * worse answer to a misplaced comma.
+     */
+    fun probesWith(config: Config): List<Probe> {
+        if (config.probes.isEmpty()) return PROBES
+        val byId = LinkedHashMap<String, Probe>()
+        for (p in PROBES) byId[p.id] = p
+        for (p in config.probes) byId[p.id] = p
+        return byId.values.toList()
+    }
+
+    /**
+     * Parses `emulators.json`.
+     *
+     * Shape, with only `id`, `platforms`, `packages` required — an entry with
+     * no `args` is one that can be recognised but not driven, which is a legal
+     * thing to want to record:
+     *
+     *     {
+     *       "schemaVersion": 1,
+     *       "emulators": [
+     *         { "id": "myboy", "displayName": "My Boy!",
+     *           "platforms": ["gba"], "packages": ["com.fastemulator.gba"],
+     *           "component": ".EmulatorActivity",
+     *           "args": ["-a android.intent.action.VIEW", "-d \"{file.uri}\""],
+     *           "coreHints": [] }
+     *       ]
+     *     }
+     */
+    fun parseConfig(text: String): Config {
+        val rejected = mutableListOf<String>()
+        val root = runCatching { JSONObject(text) }.getOrElse {
+            return Config(note = "emulators.json is not valid JSON: ${it.message}")
+        }
+        val schema = root.optInt("schemaVersion", CONFIG_SCHEMA_VERSION)
+        if (schema > CONFIG_SCHEMA_VERSION)
+            return Config(note = "emulators.json is schema $schema and this build reads " +
+                                 "$CONFIG_SCHEMA_VERSION — left alone rather than half-read")
+
+        val arr = root.optJSONArray("emulators") ?: JSONArray()
+        val out = mutableListOf<Probe>()
+        for (i in 0 until arr.length()) {
+            val o = arr.optJSONObject(i)
+            if (o == null) { rejected += "entry $i is not an object"; continue }
+            val id = o.optString("id").trim()
+            if (id.isEmpty()) { rejected += "entry $i has no id"; continue }
+            val packages = o.optJSONArray("packages").toStringList()
+            if (packages.isEmpty()) { rejected += "'$id' names no packages"; continue }
+            val platforms = o.optJSONArray("platforms").toStringList()
+                .map { com.pegasus.bridge.core.FuzzyMatch.normalizePlatform(it) }
+                .filter { it.isNotEmpty() }
+            if (platforms.isEmpty()) { rejected += "'$id' names no platforms"; continue }
+            val args = o.optJSONArray("args").toStringList()
+            // A `{core}` with no hints is a hole nobody can fill, and it would
+            // be written into somebody's library as a literal.
+            if (args.any { it.contains("{core}") } && o.optJSONArray("coreHints") == null)
+                rejected += "'$id' leaves {core} in its args and offers no coreHints — " +
+                            "it will never produce a runnable launch"
+            out += Probe(
+                id = id,
+                displayName = o.optString("displayName").ifEmpty { id },
+                nameIsExplicit = o.optString("displayName").isNotEmpty(),
+                platforms = platforms,
+                packages = packages,
+                component = o.optString("component"),
+                args = args,
+                provenance = if (args.isEmpty()) Provenance.NO_KNOWN_LAUNCH
+                             else Provenance.USER_SUPPLIED,
+                coreHints = o.optJSONArray("coreHints").toStringList())
+        }
+        return Config(out, rejected)
+    }
+
+    private fun JSONArray?.toStringList(): List<String> =
+        if (this == null) emptyList()
+        else (0 until length()).map { optString(it).trim() }.filter { it.isNotEmpty() }
+
+    /**
+     * Why an emulator added to `emulators.json` may still not be found.
+     *
+     * From API 30 a package the manifest does not name in `<queries>` is
+     * invisible, and `getPackageInfo` throws the same exception for it as for
+     * one that is genuinely absent. The built-in table's packages are all
+     * declared; a package added afterwards cannot be, because the manifest was
+     * fixed when the APK was built. Null when there is nothing to warn about.
+     */
+    fun visibilityWarning(config: Config): String? {
+        val added = config.probes.flatMap { it.packages }.filter { it !in KNOWN_PACKAGES }
+        if (added.isEmpty()) return null
+        return "emulators.json names ${added.size} package(s) the app's manifest does not " +
+               "declare under <queries>: ${added.joinToString(", ")}. Android hides undeclared " +
+               "packages from API 30, so these can be installed and still not be found."
+    }
 
     /**
      * Every emulator installed on this device, most trustworthy first.
@@ -347,6 +489,8 @@ object AndroidEmulators {
     fun discover(
         installed: (String) -> String? = { null },
         platform: String? = null,
+        /** `emulators.json`, already parsed. Empty leaves the built-in table alone. */
+        config: Config = Config(),
         /**
          * What the installed app calls itself, when that can be asked.
          *
@@ -360,7 +504,7 @@ object AndroidEmulators {
         labelOf: (String) -> String? = { null }
     ): List<EmulatorCandidate> {
         val out = mutableListOf<EmulatorCandidate>()
-        for (probe in PROBES) {
+        for (probe in probesWith(config)) {
             for (pkg in probe.packages) {
                 val version = runCatching { installed(pkg) }.getOrNull() ?: continue
                 out += candidate(probe, pkg, version, platform,
@@ -375,9 +519,14 @@ object AndroidEmulators {
     }
 
     /** The same thing, against a real [PackageManager]. */
-    fun discover(pm: PackageManager, platform: String? = null): List<EmulatorCandidate> =
+    fun discover(
+        pm: PackageManager,
+        platform: String? = null,
+        config: Config = Config()
+    ): List<EmulatorCandidate> =
         discover(installed = { pkg -> versionOf(pm, pkg) },
                  platform = platform,
+                 config = config,
                  labelOf = { pkg -> labelOf(pm, pkg) })
 
     /** What [pkg] calls itself, or null when it cannot be asked. */
@@ -418,9 +567,11 @@ object AndroidEmulators {
 
         return EmulatorCandidate(
             id = probe.id,
-            // The app's own name where it has one, and the table's only as a
-            // fallback — see `labelOf` for the emulator that taught this.
-            displayName = label?.takeIf { it.isNotBlank() } ?: probe.displayName,
+            // A name somebody wrote in emulators.json wins; otherwise the app's
+            // own label, which is how Lime3DS correctly shows as Azahar; and the
+            // table's name only as a last resort.
+            displayName = if (probe.nameIsExplicit) probe.displayName
+                          else label?.takeIf { it.isNotBlank() } ?: probe.displayName,
             platforms = probe.platforms,
             executable = pkg,
             launchCommand = if (probe.provenance == Provenance.NO_KNOWN_LAUNCH) ""

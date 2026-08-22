@@ -557,14 +557,24 @@ object AndroidEmulators {
          * Azahar reasonably concluded it had been missed. The app's own label is
          * the answer that stays right when a project renames itself.
          */
-        labelOf: (String) -> String? = { null }
+        labelOf: (String) -> String? = { null },
+        /**
+         * The activity a launcher would start for a package, when it has one.
+         *
+         * Only used for an emulator that cannot be handed a game: opening it on
+         * its own library is the whole of what can be offered, and the activity
+         * has to come from the system because these are exactly the packages
+         * the table knows no component for.
+         */
+        launcherOf: (String) -> String? = { null }
     ): List<EmulatorCandidate> {
         val out = mutableListOf<EmulatorCandidate>()
         for (probe in probesWith(config)) {
             for (pkg in probe.packages) {
                 val version = runCatching { installed(pkg) }.getOrNull() ?: continue
                 out += candidate(probe, pkg, version, platform,
-                                 runCatching { labelOf(pkg) }.getOrNull(), config)
+                                 runCatching { labelOf(pkg) }.getOrNull(), config,
+                                 runCatching { launcherOf(pkg) }.getOrNull())
                 // One candidate per emulator, not one per package: two RetroArch
                 // builds are two ways to run the same thing, and offering both
                 // asks somebody to choose between them on no information.
@@ -583,7 +593,15 @@ object AndroidEmulators {
         discover(installed = { pkg -> versionOf(pm, pkg) },
                  platform = platform,
                  config = config,
-                 labelOf = { pkg -> labelOf(pm, pkg) })
+                 labelOf = { pkg -> labelOf(pm, pkg) },
+                 launcherOf = { pkg -> launcherOf(pm, pkg) })
+
+    /** The activity a launcher would start for [pkg], or null when it has none. */
+    fun launcherOf(pm: PackageManager, pkg: String): String? = try {
+        pm.getLaunchIntentForPackage(pkg)?.component?.className
+    } catch (t: Throwable) {
+        null
+    }
 
     /** What [pkg] calls itself, or null when it cannot be asked. */
     fun labelOf(pm: PackageManager, pkg: String): String? = try {
@@ -618,7 +636,8 @@ object AndroidEmulators {
         version: String,
         platform: String?,
         label: String? = null,
-        config: Config = Config()
+        config: Config = Config(),
+        launcherActivity: String? = null
     ): EmulatorCandidate {
         val hints = coreHintsFor(probe, pkg, platform, config)
 
@@ -650,7 +669,13 @@ object AndroidEmulators {
             coreHints = if (probe.provenance != Provenance.NO_KNOWN_LAUNCH &&
                             launchCommand(probe, pkg).contains("{core}")) hints else emptyList(),
             launchVerified = probe.provenance == Provenance.ON_THIS_DEVICE ||
-                             probe.provenance == Provenance.WORKING_LIBRARY
+                             probe.provenance == Provenance.WORKING_LIBRARY,
+            // Only for the ones that cannot be handed a game. An emulator with a
+            // real launch line has no use for this, and offering both would
+            // invite a caller to pick the wrong one.
+            appLaunchCommand =
+                if (probe.provenance == Provenance.NO_KNOWN_LAUNCH && !launcherActivity.isNullOrBlank())
+                    appLaunchCommand(pkg, launcherActivity) else ""
         )
     }
 
@@ -705,6 +730,23 @@ object AndroidEmulators {
                 probe.coreHints).distinct()
         }
         return names.map { "/data/data/$pkg/cores/$it" }
+    }
+
+    /**
+     * The line that opens an app on nothing, in the same multi-line form.
+     *
+     * A launcher intent and not the bare component: an activity started without
+     * MAIN/LAUNCHER can come up in a state its author never meant to be entered
+     * cold. `--activity-clear-task` is kept for the same reason it is on every
+     * other line here — otherwise the emulator resumes wherever it was left.
+     */
+    fun appLaunchCommand(pkg: String, activity: String): String = buildString {
+        append("am start\n")
+        append("  -a android.intent.action.MAIN\n")
+        append("  -c android.intent.category.LAUNCHER\n")
+        append("  -n $pkg/$activity\n")
+        append("  --activity-clear-task\n")
+        append("  --activity-clear-top")
     }
 
     /**

@@ -615,6 +615,16 @@ class PegasusService : Service() {
         val launch = p["launch"].orEmpty()
         if (launch.contains("{core}"))
             return error("the launch command still contains {core}: pick one first")
+        // A launch that never names the file opens the emulator on nothing,
+        // whichever game was picked. That is a real thing to want for an
+        // emulator that keeps its own library — Lemuroid, Egg NS — and it is
+        // also what a mistyped line looks like, so it is allowed and never
+        // assumed. Pegasus would otherwise show every game in the collection as
+        // launchable and start none of them.
+        if (launch.isNotEmpty() && !launch.contains("{file.") && p["allowAppOnly"] != "1")
+            return error("this launch command never mentions the game — it would open the " +
+                         "emulator on its own menu for every title in the collection. Pass " +
+                         "allowAppOnly=1 if that is what you meant, and tell the person.")
 
         val existing = MetadataFile.readCollection(dir)
         val target = File(dir, OVERLAY_FILE)

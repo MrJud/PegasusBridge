@@ -233,6 +233,49 @@ class AndroidEmulatorsTest {
         assertEquals("packages declared but no longer probed",
                      emptySet<String>(), declared - probed)
     }
+    /**
+     * An emulator that cannot be handed a game can still be opened.
+     *
+     * Egg NS keeps its own library and exports nothing taking a file, so there
+     * is no launch to offer — but opening it is most of what the person wanted,
+     * because the game is already in there. The two facts live in two fields:
+     * `launchCommand` stays empty, so `canTakeARom` stays false and nothing
+     * mistakes this for a working launch.
+     */
+    @Test fun `an emulator with no way in still offers a way to open it`() {
+        val eggns = AndroidEmulators.discover(
+            installed = { onTheTablet[it] },
+            launcherOf = { "com.xiaoji.egggame.MainActivity" }
+        ).single { it.id == "eggns" }
+
+        assertEquals("", eggns.launchCommand)
+        assertFalse(eggns.canTakeARom)
+        assertTrue(eggns.opensAppOnly)
+        assertTrue(eggns.appLaunchCommand,
+                   eggns.appLaunchCommand.contains("android.intent.category.LAUNCHER"))
+        assertTrue(eggns.appOnlyCaveat, eggns.appOnlyCaveat.contains("its own menu"))
+    }
+
+    /** An emulator that *can* take a game is never offered the app-only door. */
+    @Test fun `an emulator that takes a game is offered no app-only launch`() {
+        val ra = AndroidEmulators.discover(
+            installed = { onTheTablet[it] },
+            launcherOf = { "some.Launcher" }
+        ).single { it.id == "retroarch" }
+
+        assertEquals("", ra.appLaunchCommand)
+        assertFalse(ra.opensAppOnly)
+        assertEquals("", ra.appOnlyCaveat)
+    }
+
+    /** No launcher activity to be had, so nothing offered and none invented. */
+    @Test fun `an emulator with no launcher activity offers nothing`() {
+        val eggns = AndroidEmulators.discover(installed = { onTheTablet[it] })
+            .single { it.id == "eggns" }
+        assertEquals("", eggns.appLaunchCommand)
+        assertFalse(eggns.opensAppOnly)
+    }
+
 }
 
 /**

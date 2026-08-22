@@ -104,10 +104,41 @@ data class EmulatorCandidate(
      * an app while the activity named is the wrong one — which is exactly what
      * happened to Lime3DS, whose first probe pointed at its settings screen.
      */
-    val launchVerified: Boolean = true
+    val launchVerified: Boolean = true,
+    /**
+     * How to open this emulator on nothing at all.
+     *
+     * For an emulator that keeps its own library and exports no way to be
+     * handed a file — Lemuroid, Egg NS — opening it *is* most of what a person
+     * wanted, because the game is already in there and two taps away. Refusing
+     * to offer that because it is not a real launch helps nobody.
+     *
+     * Deliberately **not** [launchCommand]. That field means "hand this
+     * emulator this game", and putting an app-opener in it would make
+     * [canTakeARom] true, let a review screen present it as a working launch,
+     * and land somebody on an emulator's main menu wondering why their game
+     * did not start. The two facts are kept in two fields so nothing has to
+     * guess which one it is holding.
+     */
+    val appLaunchCommand: String = ""
 ) {
     /** Whether the launch line still has a decision in it that discovery cannot make. */
     val needsCore: Boolean get() = launchCommand.contains("{core}")
+
+    /**
+     * Opens, but never with the game.
+     *
+     * True for exactly the case above: something to run, and it will not carry
+     * the chosen game with it. Anything acting on this must say so to the
+     * person before doing it.
+     */
+    val opensAppOnly: Boolean get() = launchCommand.isEmpty() && appLaunchCommand.isNotEmpty()
+
+    /** The sentence to show beside an app-only launch. Empty when it does not apply. */
+    val appOnlyCaveat: String get() = if (!opensAppOnly) "" else
+        "$displayName keeps its own library and exports no way to be handed a file, so this " +
+        "opens it on its own menu — the game has to be picked there. Nothing else about it " +
+        "is known to be wrong."
 
     /**
      * Whether this can be handed a game at all.
@@ -236,6 +267,9 @@ fun EmulatorCandidate.toProposalJson(
     .put("coreHints", JSONArray(coreHints))
     .put("launchVerified", launchVerified)
     .put("canTakeARom", canTakeARom)
+    .put("appLaunchCommand", appLaunchCommand.takeIf { it.isNotEmpty() } ?: JSONObject.NULL)
+    .put("opensAppOnly", opensAppOnly)
+    .put("appOnlyCaveat", appOnlyCaveat.takeIf { it.isNotEmpty() } ?: JSONObject.NULL)
     .put("why", EmulatorRanking.rankReason(this, position, peers))
 
 /** One candidate as an entry in the `/emulators` list. */
@@ -259,5 +293,8 @@ fun EmulatorCandidate.toListJson(): JSONObject = JSONObject()
     .put("coreHints", JSONArray(coreHints))
     .put("launchVerified", launchVerified)
     .put("canTakeARom", canTakeARom)
+    .put("appLaunchCommand", appLaunchCommand.takeIf { it.isNotEmpty() } ?: JSONObject.NULL)
+    .put("opensAppOnly", opensAppOnly)
+    .put("appOnlyCaveat", appOnlyCaveat.takeIf { it.isNotEmpty() } ?: JSONObject.NULL)
     // The one command that fixes it, ready to show or to run.
     .put("grantCommand", if (canReadLibrary == false) grantCommand else JSONObject.NULL)

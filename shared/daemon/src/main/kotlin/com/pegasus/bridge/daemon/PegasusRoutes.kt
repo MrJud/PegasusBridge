@@ -148,9 +148,9 @@ class PegasusRoutes(private val paths: BridgePaths) {
                 // proposal whose alternatives are invisible is a decision made
                 // for somebody, which is not what "propose, never apply" means.
                 .put("proposals", JSONArray().also { arr ->
-                    ranked.forEachIndexed { i, e -> arr.put(proposalJson(e, i)) }
+                    ranked.forEachIndexed { i, e -> arr.put(proposalJson(e, i, ranked)) }
                 })
-                .put("proposal", best?.let { proposalJson(it, 0) } ?: JSONObject.NULL))
+                .put("proposal", best?.let { proposalJson(it, 0, ranked) } ?: JSONObject.NULL))
         }
         return Response.json(JSONObject()
             .put("schemaVersion", SchemaVersion.CURRENT)
@@ -160,7 +160,11 @@ class PegasusRoutes(private val paths: BridgePaths) {
             .toString())
     }
 
-    private fun proposalJson(e: EmulatorDiscovery.Candidate, position: Int): JSONObject =
+    private fun proposalJson(
+        e: EmulatorDiscovery.Candidate,
+        position: Int,
+        peers: List<EmulatorDiscovery.Candidate> = emptyList()
+    ): JSONObject =
         JSONObject()
             .put("emulator", e.id)
             .put("displayName", e.displayName)
@@ -172,7 +176,7 @@ class PegasusRoutes(private val paths: BridgePaths) {
             .put("grantCommand",
                  if (e.canReadLibrary == false) e.grantCommand else JSONObject.NULL)
             .put("needsCore", e.launchCommand.contains("{core}"))
-            .put("why", EmulatorDiscovery.rankReason(e, position))
+            .put("why", EmulatorDiscovery.rankReason(e, position, peers))
 
     /**
      * Whether a launch line could run on this machine at all.

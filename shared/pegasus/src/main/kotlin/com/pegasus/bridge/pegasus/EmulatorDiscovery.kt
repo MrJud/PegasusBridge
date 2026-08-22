@@ -272,15 +272,38 @@ object EmulatorDiscovery {
         )
     }
 
-    /** Why a candidate sits where it does, in one sentence a person can read. */
-    fun rankReason(c: Candidate, position: Int): String = when {
-        c.canReadLibrary == false -> "cannot read the library as installed"
-        position == 0 && c.id == "retroarch" -> "the only one installed for this platform"
-        c.id == "retroarch" -> "covers everything, so never the most specific choice"
-        !c.verified -> "installed, but it did not identify itself"
-        position == 0 -> "dedicated to this platform, and verified"
-        else -> "also handles this platform"
+    /**
+     * Why a candidate sits where it does, in one sentence a person can read.
+     *
+     * [peers] is the whole ranked list, and it is there for one case: two
+     * candidates that are equally verified, equally able to read the library and
+     * equally specialised are separated only by name. Saying the first is
+     * "dedicated to this platform, and verified" would imply a distinction that
+     * does not exist — measured on a real machine, where Gopher64 and
+     * Mupen64Plus tie exactly for N64 and the order is alphabetical.
+     */
+    fun rankReason(c: Candidate, position: Int, peers: List<Candidate> = emptyList()): String {
+        val tied = peers.count { it.id != c.id && ranksEqually(it, c) }
+        return when {
+            c.canReadLibrary == false -> "cannot read the library as installed"
+            position == 0 && peers.size == 1 -> "the only one installed for this platform"
+            c.id == "retroarch" -> "covers everything, so never the most specific choice"
+            !c.verified -> "installed, but it did not identify itself"
+            tied > 0 && position == 0 ->
+                "as good a fit as the other ${if (tied == 1) "one" else "$tied"}; " +
+                "listed first by name, so either will do"
+            tied > 0 -> "as good a fit as the one above; the order between them is just the name"
+            position == 0 -> "dedicated to this platform, and verified"
+            else -> "also handles this platform"
+        }
     }
+
+    /** Whether two candidates are separated by nothing but their names. */
+    private fun ranksEqually(a: Candidate, b: Candidate): Boolean =
+        (a.canReadLibrary != false) == (b.canReadLibrary != false) &&
+        a.verified == b.verified &&
+        (a.id == "retroarch") == (b.id == "retroarch") &&
+        a.platforms.size == b.platforms.size
 
     /** The best candidate for [platform], or null. Shorthand over [rankedFor]. */
     fun bestFor(platform: String, candidates: List<Candidate>): Candidate? =

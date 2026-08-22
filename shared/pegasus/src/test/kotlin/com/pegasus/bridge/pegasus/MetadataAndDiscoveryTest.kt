@@ -474,6 +474,62 @@ class MetadataAndDiscoveryTest {
         assertEquals("blastem", EmulatorDiscovery.bestFor("genesis", found)?.id)
     }
 
+    // ── Several emulators for one platform ──────────────────────────────────
+
+    @Test fun `every emulator that fits is returned, best first`() {
+        val found = EmulatorDiscovery.discover(
+            pathDirs = fakePath(),
+            flatpakList = { listOf(flatpak("io.github.gopher64.gopher64", "Gopher64", "v1.1.36"),
+                                   flatpak("com.github.Rosalie241.RMG", "RMG", "v0.9.0"),
+                                   flatpak("org.libretro.RetroArch", "RetroArch", "1.19")) },
+            runner = { null })
+
+        val ranked = EmulatorDiscovery.rankedFor("n64", found)
+        assertEquals(3, ranked.size, "all three handle N64")
+        // RetroArch covers everything, so it is never the most specific answer.
+        assertEquals("retroarch", ranked.last().id)
+    }
+
+    @Test fun `one that cannot read the library sinks below one that can`() {
+        val roms = File(library, "roms").apply { mkdirs() }
+        val found = EmulatorDiscovery.discover(
+            pathDirs = fakePath(),
+            flatpakList = { listOf(flatpak("io.github.gopher64.gopher64", "Gopher64", "v1"),
+                                   flatpak("com.github.Rosalie241.RMG", "RMG", "v1")) },
+            runner = { null },
+            libraryRoots = listOf(roms),
+            // The alphabetically-first one is the one that cannot read it.
+            sandboxReader = { id, _ -> id != "com.github.Rosalie241.RMG" && !id.contains("gopher") })
+        val ranked = EmulatorDiscovery.rankedFor("n64", found)
+        assertTrue(ranked.all { it.canReadLibrary == false })
+    }
+
+    // Two candidates separated by nothing but their names must not be described
+    // as though one had beaten the other. Measured: Gopher64 and Mupen64Plus tie
+    // exactly for N64 on a real install.
+    @Test fun `a tie says it is a tie`() {
+        val found = EmulatorDiscovery.discover(
+            pathDirs = fakePath(),
+            flatpakList = { listOf(flatpak("io.github.gopher64.gopher64", "Gopher64", "v1.1.36"),
+                                   flatpak("com.github.Rosalie241.RMG", "RMG", "v0.9.0")) },
+            runner = { null })
+        val ranked = EmulatorDiscovery.rankedFor("n64", found)
+
+        val why = EmulatorDiscovery.rankReason(ranked[0], 0, ranked)
+        assertTrue(why.contains("as good a fit"), why)
+        assertTrue(why.contains("either will do"), why)
+    }
+
+    @Test fun `the only candidate says so rather than claiming it won`() {
+        val found = EmulatorDiscovery.discover(
+            pathDirs = fakePath(),
+            flatpakList = { listOf(flatpak("net.pcsx2.PCSX2", "PCSX2", "v2.6.3")) },
+            runner = { null })
+        val ranked = EmulatorDiscovery.rankedFor("ps2", found)
+        assertEquals("the only one installed for this platform",
+                     EmulatorDiscovery.rankReason(ranked[0], 0, ranked))
+    }
+
     // The proposal must never be applied on the strength of discovery alone.
     @Test fun `discovery writes nothing`() {
         val nes = collection("nes", REAL_NES)

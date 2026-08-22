@@ -259,16 +259,19 @@ Point the installer at a theme it did not detect with
 | trailers | `GET /video/search?q=`, `/video/resolve`, `/video/download` | `search-video`, `play-video`, `download-video` |
 | hash a ROM tree | `GET /scan?roots=` | `scan` |
 | credentials | `POST /credentials`, `GET /credentials/status`, `GET /credentials/clear?block=` | `set-credentials`, `credentials-status`, `clear-credentials` |
-| which emulators are installed | `GET /emulators` | — |
-| what each collection is and would be proposed | `GET /collections?roots=` | — |
-| apply a launch command | `GET /emulators/apply?directory=&launch=` | — |
-| undo that | `GET /emulators/revert?directory=` | — |
-| copy one picture into the library | `GET /export/media?source=&file=&kind=` | — |
-| write the scraped metadata | `POST /export/metadata?directory=` | — |
-| what has been exported, and undo it | `GET /export/status`, `GET /export/revert` | — |
-| which emulators could run this | `GET /launch/options?file=` or `?directory=` | — |
-| remember a choice | `GET /launch/select?file=&emulator=` | — |
-| forget one | `GET /launch/clear?file=` | — |
+| which emulators are installed | `GET /emulators` | `emulators` |
+| what each collection is and would be proposed | `GET /collections?roots=` | `collections` |
+| apply a launch command | `GET /emulators/apply?directory=&launch=` | `apply-emulator` |
+| undo that | `GET /emulators/revert?directory=` | `revert-emulator` |
+| copy one picture into the library | `GET /export/media?source=&file=&kind=` | `export-media` |
+| write the scraped metadata | `POST /export/metadata?directory=` | `export-metadata` |
+| what has been exported, and undo it | `GET /export/status`, `GET /export/revert` | `export-status`, `export-revert` |
+| which emulators could run this | `GET /launch/options?file=` or `?directory=` | `launch-options` |
+| remember a choice | `GET /launch/select?file=&emulator=` | `launch-select` |
+| forget one | `GET /launch/clear?file=` | `launch-clear` |
+| declare a collection nobody declared | — | `propose-collections`, `apply-collection` |
+| point every broken collection at something that runs | — | `link-emulators` |
+| who claims to open this extension | — | `discover-by-intent` |
 
 The last six write into the **user's** directories rather than the data root, so
 they follow two rules the rest do not need: nothing is written that was not
@@ -307,11 +310,16 @@ both, `GameAttrib::LAUNCH_CMD` calling `setLaunchCmd` on the game.
 ### Teaching it an emulator it does not know — Android
 
 Which emulators exist, and how each one is handed a game, is a table. It has to
-be: a manifest says a door exists, not what to say at it. Asked which activities
-on a real tablet claim to open a `.gba`, `.z64`, `.nes`, `.sfc` or `.iso`, the
-answer was none — so there is nothing to derive from, and Linkboy's own manifest
+be: a manifest says a door exists, not what to say at it. Linkboy's own manifest
 actively misleads, declaring no file handler while `linkboy://emulator/<title>`
 works perfectly.
+
+The system *can* be asked who claims an extension, and this project said it
+could not — on the strength of a probe that asked about a bare `file://` path
+with no MIME type and got nothing back. An intent filter is matched on scheme,
+type and path together; asked with a `content://` URI and a type, the same
+device answers freely. See [`discover-by-intent`](#discovery-by-intent), which
+is a generator of candidates and still not a table.
 
 What the table does not have to be is *code*. `config/emulators.json` is read on
 every `emulators` call and merged over the built-in one:
@@ -319,6 +327,9 @@ every `emulators` call and merged over the built-in one:
 ```json
 {
   "schemaVersion": 1,
+  "coreHints": {
+    "3do": ["opera_libretro_android.so"]
+  },
   "emulators": [
     {
       "id": "myboy",
@@ -332,6 +343,14 @@ every `emulators` call and merged over the built-in one:
   ]
 }
 ```
+
+The top-level **`coreHints`** is keyed by platform, and it is what teaches a
+build a libretro core it was compiled without — `3do`, `apple2`, `amiga` and
+`amstradcpc` had no entry, so before this existed neither could be given one
+without a new APK. What the file says wins over the built-in table, because the
+reason to write one is usually that the built-in is wrong. A platform named
+nowhere answers with no core at all rather than with every core the emulator
+knows, which is how a 3DO disc was once offered the NES core.
 
 `id`, `platforms` and `packages` are required; everything else is optional. An
 entry whose `id` matches a built-in **replaces** it, keeping its position, which
@@ -349,7 +368,36 @@ property of the emulator and only trying it establishes — DraStic takes a
 A malformed entry is dropped and named rather than taking the file with it, and
 unreadable JSON leaves the built-in table exactly as it was. The `emulators`
 answer carries a `config` block saying what was read, what was refused and why —
-a configuration that is silently ignored is worse than none.
+a configuration that is silently ignored is worse than none. `rejected` means an
+entry was dropped; `warnings` means it was kept and something about it is worth
+saying, which used to be reported as a rejection.
+
+### Discovery by intent
+
+`discover-by-intent` asks the package manager which installed activities claim
+to open a given extension. Name them with `extensions=dsk,cpr`, or point it at a
+collection with `directory=…` and it reads them off the metadata file.
+
+Asked properly the question over-answers: on the tablet this was written
+against, `application/zip` alone returns fifteen activities, eleven of which are
+file managers, archivers, an APK splitter, an ebook reader and a 3D modelling
+app. So every query is run twice — once for the real extension, once for a
+control extension nothing can plausibly have claimed — and the control's answers
+are subtracted. What survives asked for that extension **by name**:
+
+| query | before | after |
+| --- | --- | --- |
+| `.dsk` + `application/octet-stream` | 24 | ColEm |
+| `.iso` + `application/octet-stream` | 24 | PPSSPP |
+| `.dsk`, no type | 6 | Azimuth |
+| `.adf` + `application/octet-stream` | 23 | nothing |
+
+Two limits, both returned rather than hidden. An app declaring a MIME type
+broadly is *in* the control set and cannot be told apart from a file manager at
+all — MAME4droid and CPCemu are exactly that, and arrive under `alsoAnswered`
+alongside RAR. And nothing here establishes which placeholder an app wants;
+`draftEntry` is therefore an `emulators.json` entry with the launch line left
+out. It proposes; it never adds.
 
 **One limit, and it is Android's.** From API 30 a package the app's manifest
 does not name under `<queries>` is invisible, and `getPackageInfo` throws the

@@ -89,6 +89,7 @@ class PegasusService : Service() {
                     VERB_PROPOSE_COLLECTIONS -> proposeCollections(p)
                     VERB_APPLY_COLLECTION    -> applyCollection(p)
                     VERB_LINK_EMULATORS      -> linkEmulators(p)
+                    VERB_DISCOVER_BY_INTENT  -> discoverByIntent(p)
                     else                  -> error("verb not implemented: $verb")
                 }
                 write(jobId, answer)
@@ -216,6 +217,76 @@ class PegasusService : Service() {
      * the one discovery suggests, and whether that suggestion was verified. It
      * writes nothing.
      */
+    /**
+     * Which installed apps claim to open these extensions.
+     *
+     * A generator of candidates and not a table: it never adds an emulator, it
+     * says who answered and how specifically. `extensions` names them directly;
+     * `directory` reads them off the collection instead, which is the form a
+     * review screen wants — the question is always asked about one collection.
+     */
+    private fun discoverByIntent(p: Map<String, String>): JSONObject {
+        val fromDir = p["directory"]?.let(::File)?.takeIf { it.isDirectory }?.let { dir ->
+            MetadataFile.readCollection(dir)?.extensions.orEmpty()
+        }.orEmpty()
+        val extensions = (p["extensions"]?.split(',', '|')?.map { it.trim() }.orEmpty() + fromDir)
+            .filter { it.isNotEmpty() }
+            .distinct()
+        if (extensions.isEmpty())
+            return error("name some extensions, or a directory whose collection declares them")
+
+        val cfg = emulatorConfig()
+        val known = AndroidEmulators.probesWith(cfg).flatMap { it.packages }.toSet()
+        val r = IntentDiscovery.discover(packageManager, extensions, known)
+
+        // The proposal is the specific ones. The rest is the heap the control
+        // subtraction exists to remove, and handing back a hundred rows of it
+        // would put the finding back where it was found — three real answers
+        // among a hundred and twenty-three file managers. It is still counted,
+        // and still listable with includeGeneric=1, because "twenty-nine apps
+        // would open this and none of them asked for it" is worth knowing.
+        val (specific, generic) = r.candidates.partition { it.specific }
+        val showGeneric = p["includeGeneric"] == "1"
+
+        fun row(c: IntentDiscovery.Candidate) = JSONObject()
+            .put("package",   c.packageName)
+            .put("activity",  c.activity)
+            .put("label",     c.label)
+            .put("extension", c.extension)
+            .put("mimeType",  c.mimeType ?: JSONObject.NULL)
+            .put("specific",  c.specific)
+            .put("known",     c.known)
+            .put("because",   c.because)
+            // The entry somebody would paste into emulators.json to accept this
+            // candidate — with the launch line left out, because which
+            // placeholder it wants is the one thing this cannot tell.
+            .put("draftEntry", JSONObject()
+                .put("id", c.packageName.substringAfterLast('.'))
+                .put("platforms", JSONArray(listOf(p["platform"].orEmpty()).filter { it.isNotEmpty() }))
+                .put("packages", JSONArray(listOf(c.packageName)))
+                .put("component", c.activity))
+
+        return ok()
+            .put("extensions",  JSONArray(extensions))
+            .put("count",       specific.size)
+            .put("candidates",  JSONArray(specific.map(::row)))
+            .put("alsoAnswered", JSONObject()
+                .put("count",    generic.distinctBy { it.packageName }.size)
+                .put("rows",     generic.size)
+                .put("packages", JSONArray(generic.map { it.packageName }.distinct().sorted()))
+                .put("listed",   showGeneric)
+                .put("candidates", if (showGeneric) JSONArray(generic.map(::row)) else JSONArray())
+                .put("why", "these answer for anything of the same type, including the control " +
+                            "extension '.${IntentDiscovery.CONTROL}' — mostly file managers and " +
+                            "archivers, but an emulator that declares only a MIME type is in here " +
+                            "too and cannot be told apart from them by asking the system"))
+            .put("controlExtension", IntentDiscovery.CONTROL)
+            .put("controlSize", JSONObject().also { o ->
+                for ((k, v) in r.controlSize) o.put(k, v)
+            })
+            .put("note",        r.note)
+    }
+
     private fun collections(p: Map<String, String>): JSONObject {
         val roots = rootsOf(p) ?: return error("missing roots")
         val found = runCatching { discover() }.getOrDefault(emptyList())
@@ -1044,6 +1115,7 @@ class PegasusService : Service() {
         const val VERB_PROPOSE_COLLECTIONS = "propose-collections"
         const val VERB_APPLY_COLLECTION    = "apply-collection"
         const val VERB_LINK_EMULATORS      = "link-emulators"
+        const val VERB_DISCOVER_BY_INTENT  = "discover-by-intent"
 
         /** Written by the scrapers; read here. One name, one place. */
         const val SS_SYSTEMS_FILE = "screenscraper_systems.json"
@@ -1053,6 +1125,7 @@ class PegasusService : Service() {
             VERB_EMULATORS, VERB_EMULATORS_APPLY, VERB_EMULATORS_REVERT, VERB_COLLECTIONS,
             VERB_EXPORT_MEDIA, VERB_EXPORT_STATUS, VERB_EXPORT_REVERT, VERB_EXPORT_MIGRATE,
             VERB_EXPORT_METADATA, VERB_LAUNCH_OPTIONS, VERB_LAUNCH_SELECT, VERB_LAUNCH_CLEAR,
-            VERB_PROPOSE_COLLECTIONS, VERB_APPLY_COLLECTION, VERB_LINK_EMULATORS)
+            VERB_PROPOSE_COLLECTIONS, VERB_APPLY_COLLECTION, VERB_LINK_EMULATORS,
+            VERB_DISCOVER_BY_INTENT)
     }
 }

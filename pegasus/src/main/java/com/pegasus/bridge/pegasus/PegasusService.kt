@@ -748,6 +748,15 @@ class PegasusService : Service() {
 
             var command = best.launchCommand
             if (command.contains("{core}")) {
+                // Asked per platform, and asked once. `best` came from a
+                // platform-less discovery, so `best.coreHints` is the union
+                // across every system RetroArch handles — a general listing,
+                // right for a review screen and wrong for this question. Taking
+                // the first of it offered the NES core for `gba` and for `n64`
+                // alike; *reporting* it offers the same mistake to whoever
+                // reads the answer, which is what it used to do below.
+                val hints = AndroidEmulators
+                    .coreHintsFor(best.id, best.executable, platform, emulatorConfig())
                 var core = EsDeSystemInfo.coreFor(dir, best.id, best.executable)
                 var from = "systeminfo"
                 // `useHints=1` is a person saying "the conventional core will
@@ -757,23 +766,25 @@ class PegasusService : Service() {
                 // filename everybody already knows — the directories with no
                 // `systeminfo.txt` are exactly the ones nobody set up.
                 if (core.isEmpty() && p["useHints"] == "1") {
-                    // Asked per platform. `best` came from a platform-less
-                    // discovery, so its own hints are the union across every
-                    // system RetroArch handles — and taking the first of those
-                    // offered the NES core for `gba` and for `n64` alike.
-                    core = AndroidEmulators
-                        .coreHintsFor(best.id, best.executable, platform, emulatorConfig())
-                        .firstOrNull().orEmpty()
+                    core = hints.firstOrNull().orEmpty()
                     from = "hint"
                 }
                 if (core.isEmpty()) {
                     blocked++
                     arr.put(entry.put("action", "cannot link")
                         .put("emulator", best.id)
-                        .put("why", "${best.displayName} needs a libretro core and nothing here " +
-                                    "names one for '$platform' — its cores are app-private. " +
-                                    "Pass useHints=1 to use the conventional core instead")
-                        .put("coreHints", JSONArray(best.coreHints)))
+                        // Only offer `useHints=1` when there is a hint to use.
+                        // With none, it changes nothing, and saying so sends a
+                        // person to the one place that can fix it.
+                        .put("why", if (hints.isEmpty())
+                                "${best.displayName} needs a libretro core and none is known " +
+                                "for '$platform' — name one under `coreHints` in " +
+                                AndroidEmulators.CONFIG_FILE
+                            else
+                                "${best.displayName} needs a libretro core and nothing here " +
+                                "names one for '$platform' — its cores are app-private. " +
+                                "Pass useHints=1 to use the conventional core instead")
+                        .put("coreHints", JSONArray(hints)))
                     continue
                 }
                 command = command.replace("{core}", core)

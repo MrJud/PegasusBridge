@@ -554,6 +554,38 @@ class EmulatorConfigTest {
         assertTrue(AndroidEmulators.coreHintsFor("retroarch", "com.retroarch", "3do").isEmpty())
     }
 
+    /**
+     * The general listing and this platform's answer are different questions.
+     *
+     * A platform-less discovery carries the union across every system the
+     * emulator handles — right for a review screen listing every emulator, and
+     * headed by the NES core. `link-emulators` held one of those in `best` and
+     * reported *its* `coreHints` when a `{core}` could not be filled: measured
+     * on the tablet, asking about `channelf` answered forty paths starting with
+     * `fceumm`, the NES core offered for a Fairchild cartridge, while
+     * `launch-options` answered nothing on the same state at the same moment.
+     * The logic had always asked per platform; only the report had not.
+     */
+    @Test fun `the cores offered for a platform are not the general listing`() {
+        val c = AndroidEmulators.parseConfig("""
+            { "emulators": [ { "id": "retroarch", "platforms": ["nes", "channelf"],
+                               "packages": ["com.retroarch"],
+                               "component": ".browser.retroactivity.RetroActivityFuture",
+                               "args": ["-e LIBRETRO {core}"] } ] }
+        """.trimIndent())
+        val general = AndroidEmulators.discover(
+            installed = { if (it == "com.retroarch") "1.22.2_GIT" else null },
+            config = c).single().coreHints
+        assertTrue("a general listing should still list something", general.isNotEmpty())
+
+        // `channelf` is named by the probe and has a core in neither the file
+        // nor the built-in table, so the honest answer is nothing — and above
+        // all not `general`, which would hand back somebody else's core.
+        val forPlatform =
+            AndroidEmulators.coreHintsFor("retroarch", "com.retroarch", "channelf", c)
+        assertTrue(forPlatform.toString(), forPlatform.isEmpty())
+    }
+
     /** Broken JSON leaves the built-in table alone rather than emptying it. */
     @Test fun `an unreadable file changes nothing`() {
         val c = AndroidEmulators.parseConfig("{ not json ")

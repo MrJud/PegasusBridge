@@ -2,6 +2,7 @@ package com.pegasus.bridge.pegasus
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.io.File
@@ -197,6 +198,30 @@ class AndroidEmulatorsTest {
         assertTrue(lines.contains("--activity-clear-task"))
         assertFalse("no placeholder should be left behind",
                     psp.launchCommand.contains("{package}"))
+    }
+
+    /**
+     * Every `-e` names a value, because `am` refuses one that does not.
+     *
+     * This was wrong and it was silent: RetroArch only checks that `QUITFOCUS`
+     * is present, so the bare `-e QUITFOCUS` looked fine — while `am` was taking
+     * `--activity-clear-task` as its value and dropping the flag. Rendered
+     * without the trailing flags, as any caller using `launchCommand` on its own
+     * does, the same line makes `am` throw and nothing starts.
+     */
+    @Test fun `every extra passed to am carries a value`() {
+        for (probe in AndroidEmulators.PROBES) {
+            val words = probe.args.flatMap { it.split(" ") }.filter { it.isNotEmpty() }
+            words.forEachIndexed { i, word ->
+                if (word != "-e") return@forEachIndexed
+                val name  = words.getOrNull(i + 1)
+                val value = words.getOrNull(i + 2)
+                assertNotNull("${probe.id}: -e with nothing after it", name)
+                assertTrue("${probe.id}: '-e $name' has no value, so am would take " +
+                           "'${value ?: "the next flag"}' as one",
+                           value != null && value != "-e" && !value.startsWith("--"))
+            }
+        }
     }
 
     /** RetroArch's config path is per-package, so it has to follow the package. */

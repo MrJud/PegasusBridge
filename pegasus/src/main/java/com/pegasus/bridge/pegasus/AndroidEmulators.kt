@@ -158,7 +158,13 @@ object AndroidEmulators {
                 "-e ROM {file.path}",
                 "-e LIBRETRO {core}",
                 "-e CONFIGFILE /storage/emulated/0/Android/data/{package}/files/retroarch.cfg",
-                "-e QUITFOCUS"),
+                // The `1` is load-bearing. RetroArch only checks that QUITFOCUS
+                // is present, but `am` requires a value after every `-e`, and
+                // without one it takes the next word — `--activity-clear-task` —
+                // as the value, silently losing the flag. A caller that renders
+                // these args without the trailing flags gets no launch at all:
+                // `am` throws `Argument expected after "QUITFOCUS"`.
+                "-e QUITFOCUS 1"),
             provenance = Provenance.WORKING_LIBRARY),
 
         Probe("ppsspp", "PPSSPP", listOf("psp"),

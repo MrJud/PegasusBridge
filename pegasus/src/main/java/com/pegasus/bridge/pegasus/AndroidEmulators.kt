@@ -573,7 +573,7 @@ object AndroidEmulators {
          * why the answer is what it is. Null means undecidable from here, which
          * on Android is the common case — see [storageAccess].
          */
-        storageOf: (String) -> Pair<Boolean?, String> = { null to "" }
+        storageOf: (String) -> StorageAccess = { StorageAccess(null, "", false) }
     ): List<EmulatorCandidate> {
         val out = mutableListOf<EmulatorCandidate>()
         for (probe in probesWith(config)) {
@@ -582,7 +582,8 @@ object AndroidEmulators {
                 out += candidate(probe, pkg, version, platform,
                                  runCatching { labelOf(pkg) }.getOrNull(), config,
                                  runCatching { launcherOf(pkg) }.getOrNull(),
-                                 runCatching { storageOf(pkg) }.getOrDefault(null to ""))
+                                 runCatching { storageOf(pkg) }
+                                     .getOrDefault(StorageAccess(null, "", false)))
                 // One candidate per emulator, not one per package: two RetroArch
                 // builds are two ways to run the same thing, and offering both
                 // asks somebody to choose between them on no information.
@@ -628,7 +629,15 @@ object AndroidEmulators {
      * [EmulatorCandidate.pathLaunchWillFail], which is the combination that
      * actually predicts a failure.
      */
-    fun storageAccess(pm: PackageManager, pkg: String): Pair<Boolean?, String> = try {
+    /** What was learnt about one package's access to the library. */
+    data class StorageAccess(
+        val canRead: Boolean?,
+        val why: String,
+        /** Whether All files access is a thing this package could ever be given. */
+        val grantable: Boolean
+    )
+
+    fun storageAccess(pm: PackageManager, pkg: String): StorageAccess = try {
         @Suppress("DEPRECATION")
         val info = pm.getPackageInfo(pkg, PackageManager.GET_PERMISSIONS)
         val names: Array<String> = info.requestedPermissions ?: emptyArray()
@@ -638,19 +647,25 @@ object AndroidEmulators {
             if (i < 0 || i >= flags.size) return false
             return flags[i].and(PackageInfo.REQUESTED_PERMISSION_GRANTED) != 0
         }
+        val asksForAllFiles = "android.permission.MANAGE_EXTERNAL_STORAGE" in names
         when {
-            "android.permission.MANAGE_EXTERNAL_STORAGE" in names -> null to
+            asksForAllFiles -> StorageAccess(null,
                 "$pkg asks for All files access; whether it was granted is an app op, and " +
                 "reading another package's app ops needs GET_APP_OPS_STATS, which is a " +
-                "signature permission this app has no business holding"
-            granted("android.permission.READ_EXTERNAL_STORAGE") -> null to
+                "signature permission this app has no business holding", grantable = true)
+            granted("android.permission.READ_EXTERNAL_STORAGE") -> StorageAccess(null,
                 "$pkg holds READ_EXTERNAL_STORAGE, which covers a library on an older target " +
                 "and does not on API 30 and up — which of the two this is cannot be decided " +
-                "from the permission alone"
-            else -> false to ""
+                "from the permission alone", grantable = false)
+            // It never asked for All files access, so there is no setting to
+            // switch on and no appops line that will stick. Measured: granting
+            // READ_EXTERNAL_STORAGE to ColEm succeeded and changed nothing,
+            // because it targets API 35 where that permission stopped covering
+            // arbitrary files.
+            else -> StorageAccess(false, "", grantable = false)
         }
     } catch (t: Throwable) {
-        null to "could not ask about $pkg: ${t.message}"
+        StorageAccess(null, "could not ask about $pkg: ${t.message}", grantable = false)
     }
 
     /** What a person would run to give [pkg] the access it is missing. */
@@ -700,7 +715,7 @@ object AndroidEmulators {
         label: String? = null,
         config: Config = Config(),
         launcherActivity: String? = null,
-        storage: Pair<Boolean?, String> = null to ""
+        storage: StorageAccess = StorageAccess(null, "", false)
     ): EmulatorCandidate {
         val hints = coreHintsFor(probe, pkg, platform, config)
 
@@ -724,9 +739,12 @@ object AndroidEmulators {
                 (if (label != null && !label.equals(probe.displayName, true))
                      " (known here as ${probe.displayName})" else "") +
                 " — ${probe.provenance.describe}",
-            canReadLibrary = storage.first,
-            grantCommand = if (storage.first == false) grantCommandFor(pkg) else "",
-            readabilityUnknownBecause = if (storage.first == null) storage.second else "",
+            canReadLibrary = storage.canRead,
+            // Only when there is something to grant. Handing somebody a command
+            // for a setting their device does not have is worse than silence.
+            grantCommand = if (storage.canRead == false && storage.grantable)
+                               grantCommandFor(pkg) else "",
+            readabilityUnknownBecause = if (storage.canRead == null) storage.why else "",
             coreHints = if (probe.provenance != Provenance.NO_KNOWN_LAUNCH &&
                             launchCommand(probe, pkg).contains("{core}")) hints else emptyList(),
             launchVerified = probe.provenance == Provenance.ON_THIS_DEVICE ||
@@ -736,7 +754,8 @@ object AndroidEmulators {
             // invite a caller to pick the wrong one.
             appLaunchCommand =
                 if (probe.provenance == Provenance.NO_KNOWN_LAUNCH && !launcherActivity.isNullOrBlank())
-                    appLaunchCommand(pkg, launcherActivity) else ""
+                    appLaunchCommand(pkg, launcherActivity) else "",
+            allFilesGrantable = storage.grantable
         )
     }
 

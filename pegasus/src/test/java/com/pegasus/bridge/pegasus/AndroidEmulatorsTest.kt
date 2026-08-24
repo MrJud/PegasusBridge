@@ -128,7 +128,8 @@ class AndroidEmulatorsTest {
 
         val asked = AndroidEmulators.discover(
             installed = { onTheTablet[it] },
-            storageOf = { null to "asks for All files access; the grant is an app op" }
+            storageOf = { AndroidEmulators.StorageAccess(
+                null, "asks for All files access; the grant is an app op", grantable = true) }
         ).first { it.id == "retroarch" }
         assertEquals(null, asked.canReadLibrary)
         assertTrue(asked.readabilityUnknownBecause.contains("app op"))
@@ -139,7 +140,7 @@ class AndroidEmulatorsTest {
     @Test fun `a package with no storage permission is told how to get one`() {
         val blocked = AndroidEmulators.discover(
             installed = { onTheTablet[it] },
-            storageOf = { false to "" }
+            storageOf = { AndroidEmulators.StorageAccess(false, "", grantable = true) }
         ).first { it.id == "retroarch" }
         assertEquals(false, blocked.canReadLibrary)
         assertTrue(blocked.grantCommand, blocked.grantCommand.contains("MANAGE_EXTERNAL_STORAGE allow"))
@@ -292,10 +293,32 @@ class AndroidEmulatorsTest {
         assertEquals("", ra.caveat)
     }
 
-    private fun candidate(launch: String, canRead: Boolean?) = EmulatorCandidate(
-        id = "x", displayName = "ColEm", platforms = listOf("adam"),
-        executable = "com.fms.colem", launchCommand = launch,
-        kind = EmulatorKind.ANDROID_PACKAGE, verified = true, canReadLibrary = canRead)
+    private fun candidate(launch: String, canRead: Boolean?, grantable: Boolean = true) =
+        EmulatorCandidate(
+            id = "x", displayName = "ColEm", platforms = listOf("adam"),
+            executable = "com.fms.colem", launchCommand = launch,
+            kind = EmulatorKind.ANDROID_PACKAGE, verified = true, canReadLibrary = canRead,
+            allFilesGrantable = grantable)
+
+    /**
+     * The difference that decides what to tell a person, and it is not academic.
+     *
+     * An app only gets All files access if it asks for it. ColEm, CPCemu,
+     * MAME4droid, DroidArcadia and Azahar never ask — so the Settings toggle is
+     * absent rather than hidden, and `appops set` does not stick. Measured:
+     * granting ColEm READ_EXTERNAL_STORAGE succeeded and changed nothing,
+     * because it targets API 35. Telling somebody to enable a setting their
+     * device does not have wastes their evening.
+     */
+    @Test fun `an ungrantable blockage says so instead of asking for a setting`() {
+        val ungrantable = candidate("am start -d \"{file.uri}\"", canRead = false, grantable = false)
+        assertTrue(ungrantable.pathLaunchWillFail)
+        assertTrue(ungrantable.caveat, ungrantable.caveat.contains("nothing to switch on"))
+        assertTrue(ungrantable.caveat, ungrantable.caveat.contains("its own file picker"))
+
+        val grantable = candidate("am start -d \"{file.uri}\"", canRead = false, grantable = true)
+        assertTrue(grantable.caveat, grantable.caveat.contains("Give it access to all files"))
+    }
 
     /**
      * The third state: it knows how, it just cannot read the file.

@@ -120,7 +120,21 @@ data class EmulatorCandidate(
      * did not start. The two facts are kept in two fields so nothing has to
      * guess which one it is holding.
      */
-    val appLaunchCommand: String = ""
+    val appLaunchCommand: String = "",
+    /**
+     * Whether the missing access is a thing anybody could grant.
+     *
+     * An Android app only gets All files access if it *asks* for it in its
+     * manifest. One that never asked has no toggle in Settings — not hidden,
+     * absent — and no `appops` line will stick either. Measured across seven
+     * emulators on the tablet: RetroArch is the only one that asks, and the
+     * only one a path launch works for.
+     *
+     * The distinction is the whole difference between "you forgot to grant
+     * this" and "this cannot be granted by you or anyone". Telling somebody to
+     * enable a setting that does not exist is worse than telling them nothing.
+     */
+    val allFilesGrantable: Boolean = false
 ) {
     /** Whether the launch line still has a decision in it that discovery cannot make. */
     val needsCore: Boolean get() = launchCommand.contains("{core}")
@@ -175,10 +189,16 @@ data class EmulatorCandidate(
             "$displayName keeps its own library and exports no way to be handed a file, so " +
             "this opens it on its own menu — the game has to be picked there. Nothing else " +
             "about it is known to be wrong."
-        pathLaunchWillFail ->
+        pathLaunchWillFail && allFilesGrantable ->
             "$displayName knows how to take a game — this launch line is right — but it has " +
-            "no permission to read the library, so it will open on nothing. Grant it access " +
-            "to all files and the same line works. This is not the emulator being unsuitable."
+            "no permission to read the library, so it will open on nothing. Give it access to " +
+            "all files and the same line works. This is not the emulator being unsuitable."
+        pathLaunchWillFail ->
+            "$displayName cannot be handed a file on this version of Android, and there is " +
+            "nothing to switch on: it never asks for access to all files, so no such setting " +
+            "exists for it. Open it and use its own file picker, or pick an emulator that " +
+            "does ask — this is the app not having kept up with scoped storage, and no " +
+            "permission you grant will change it."
         else -> ""
     }
 
@@ -313,6 +333,7 @@ fun EmulatorCandidate.toProposalJson(
     .put("opensAppOnly", opensAppOnly)
     .put("handsOverAPath", handsOverAPath)
     .put("pathLaunchWillFail", pathLaunchWillFail)
+    .put("allFilesGrantable", allFilesGrantable)
     .put("caveat", caveat.takeIf { it.isNotEmpty() } ?: JSONObject.NULL)
     .put("why", EmulatorRanking.rankReason(this, position, peers))
 
@@ -341,6 +362,7 @@ fun EmulatorCandidate.toListJson(): JSONObject = JSONObject()
     .put("opensAppOnly", opensAppOnly)
     .put("handsOverAPath", handsOverAPath)
     .put("pathLaunchWillFail", pathLaunchWillFail)
+    .put("allFilesGrantable", allFilesGrantable)
     .put("caveat", caveat.takeIf { it.isNotEmpty() } ?: JSONObject.NULL)
     // The one command that fixes it, ready to show or to run.
     .put("grantCommand", if (canReadLibrary == false) grantCommand else JSONObject.NULL)

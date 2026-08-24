@@ -259,6 +259,7 @@ object CollectionInference {
      */
     private val DIRECTORY_ALIASES = mapOf(
         "n3ds" to "3ds",        // ES-DE's folder name for the 3DS
+        "cdimono1" to "cdi",    // the MAME driver, which is what ES-DE calls the CD-i folder
         "nds" to "nintendo ds", // ScreenScraper's first match for `nds` is the DSi
         "psvita" to "ps vita",
         "gc" to "gamecube",

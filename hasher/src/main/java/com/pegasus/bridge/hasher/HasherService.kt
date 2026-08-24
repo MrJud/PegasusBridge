@@ -111,7 +111,6 @@ class HasherService : Service() {
                 isRunning = false
                 releaseWakeLock()
                 Paths.markDone(jobId)
-                Paths.pending(jobId).delete()
                 stopForeground(STOP_FOREGROUND_REMOVE)
                 stopSelf(startId)
             }
@@ -348,7 +347,7 @@ class HasherService : Service() {
         }
 
         writeDiscoveryIndex()
-        writePending(jobId, "scan", "running", 1.0,
+        writePending(jobId, "scan", "done", 1.0,
             "Done — $newEntries new, $cachedHits cached, $skippedPlat skipped, " +
             "$unmatched not in the database",
             newEntries, cachedHits, skippedPlat, unmatched)

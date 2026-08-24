@@ -384,7 +384,7 @@ class PegasusService : Service() {
             name = name, shortName = shortName, launch = launch,
             preserve = existing?.raw ?: emptyMap(),
             note = "Delete this file to go back to " +
-                   (theirFile?.name ?: "no launch command") + ".")
+                   (theirFile?.takeIf { it != target }?.name ?: "no launch command") + ".")
         Paths.writeAtomic(target, text)
         return ok()
             .put("written", target.absolutePath)

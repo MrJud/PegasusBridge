@@ -47,7 +47,7 @@ class RaLookupLoggingTest {
 
         // Fails at every attempt — connection refused — so the retry-exhaustion
         // branch that carries the URL is the one that runs. `runTest` skips the
-        // back-off delays, so this costs milliseconds rather than fifteen seconds.
+        // back-off delays, so this costs milliseconds rather than seven seconds.
         val result = lookup.lookup("8e3630186e35d477231bf8fd50e54cdd")
 
         val log = captured.toString()

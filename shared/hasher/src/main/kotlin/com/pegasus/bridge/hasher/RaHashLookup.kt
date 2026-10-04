@@ -2,36 +2,54 @@ package com.pegasus.bridge.hasher
 
 import com.pegasus.bridge.core.BridgeLog
 import com.pegasus.bridge.core.SafeUrl
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.sync.withPermit
+import okhttp3.Call
+import okhttp3.Callback
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import okhttp3.Response
 import org.json.JSONArray
+import org.json.JSONException
 import org.json.JSONObject
+import java.io.IOException
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicInteger
+import kotlin.coroutines.resumeWithException
 
 /** Resolves a ROM hash to a RetroAchievements game. */
 interface RaHashLookup {
     /**
-     * null means the request never got an answer — not "RetroAchievements does
-     * not know this hash", which is [GameMetadata] with gameId 0. Callers must
+     * null means the request never got a usable answer — not "RetroAchievements
+     * does not know this hash", which is [GameMetadata] with gameId 0. Callers must
      * keep the two apart: recording a failure as an answer writes a game off,
      * and an incremental rescan will never ask about it again.
+     *
+     * A gameId above 0 with a blank title is a third answer: the source knows the
+     * hash but could not describe the game. It is neither a match nor a failure.
      */
     suspend fun lookup(hash: String): GameMetadata?
 
-    /** Consecutive failed requests, so a caller can stop a doomed scan. */
+    /**
+     * Lookups in a row that ended in null, so a caller can stop a doomed scan.
+     * Counted once per lookup, however many requests it took, and cleared by any
+     * answer.
+     */
     val consecutiveFailures: Int get() = 0
 }
 
 /**
  * Live implementation against retroachievements.org.
  *
- * The User-Agent is set deliberately: `dorequest.php` rejects requests that
- * carry none, which is why a curl reproduction without one appears to show the
- * endpoint as blocked when it is not.
+ * The User-Agent is set deliberately: `dorequest.php` refuses generic ones with
+ * a 403 — curl's default and OkHttp's own `okhttp/4.12.0` among them — which is
+ * why a plain curl reproduction appears to show the endpoint as blocked when it
+ * is not.
  */
 class RaApiHashLookup(
     private val raUser: String,
@@ -48,43 +66,63 @@ class RaApiHashLookup(
 
     private val semaphore = Semaphore(MAX_PARALLEL)
 
-    private val paceMutex = kotlinx.coroutines.sync.Mutex()
-    private var lastRequestAt = 0L
+    // nanoTime rather than the wall clock, which NTP or a person can step: a step
+    // backwards made the next wait as long as the step.
+    private val paceMutex = Mutex()
+    private var lastRequestAt = System.nanoTime() - MIN_INTERVAL_NS
 
-    @Volatile private var failures = 0
-    override val consecutiveFailures: Int get() = failures
+    // Per lookup, not per request. Counting requests let the r=gameid call, which
+    // carries no key and so is answered 200 even when the key has been revoked,
+    // zero what the metadata call's 401 had just raised. The count swung between
+    // 0 and 1 and a scan with a dead key went through the whole library.
+    private val failures = AtomicInteger()
+    override val consecutiveFailures: Int get() = failures.get()
 
     /** Spaces requests out, whatever the parallelism, so RA sees a steady trickle. */
     private suspend fun pace() = paceMutex.withLock {
-        val now = System.currentTimeMillis()
-        val wait = MIN_INTERVAL_MS - (now - lastRequestAt)
-        if (wait > 0) delay(wait)
-        lastRequestAt = System.currentTimeMillis()
+        val wait = MIN_INTERVAL_NS - (System.nanoTime() - lastRequestAt)
+        if (wait > 0) delay(TimeUnit.NANOSECONDS.toMillis(wait + 999_999))
+        lastRequestAt = System.nanoTime()
     }
 
     override suspend fun lookup(hash: String): GameMetadata? = semaphore.withPermit {
-        try {
-            val gameId = fetchGameId(hash) ?: return@withPermit null
-            if (gameId == 0) { failures = 0; return@withPermit GameMetadata(gameId = 0) }
-            fetchMetadata(gameId)?.also { failures = 0 }
-        } catch (c: kotlinx.coroutines.CancellationException) {
+        val result = try {
+            when (val gameId = fetchGameId(hash)) {
+                null -> null
+                0    -> GameMetadata(gameId = 0)
+                else -> fetchMetadata(gameId)
+            }
+        } catch (c: CancellationException) {
             // CancellationException is an Exception, so the broad catch below used
             // to swallow it and answer `null` — which reads as "no answer" and
             // bumps the failure count. A scan being aborted would then look like a
             // scan whose source had gone down.
             throw c
         } catch (e: Exception) {
-            BridgeLog.e(TAG, "lookup failed for hash $hash", e)
+            BridgeLog.e(TAG, "lookup failed for hash $hash: ${describe(e)}")
             null
         }
+        if (result == null) failures.incrementAndGet() else failures.set(0)
+        result
     }
 
+    /**
+     * The game id, 0 for a hash RA does not know, or null when the body is not
+     * an answer.
+     *
+     * Only `Success: true` with a whole GameID counts. Most of what falls short used
+     * to read as 0 — an HTML page served with 200 by a proxy or a maintenance
+     * screen, `Success: false`, a missing GameID — and 0 is NOT_FOUND, which the
+     * ledger keeps for fourteen days. RAWeb answers a client it has blocked with
+     * `Success: false` and `GameID: 0`; read loosely, that writes off every ROM in
+     * the library at once.
+     */
     private suspend fun fetchGameId(hash: String): Int? {
         val body = getWithRetry("$base/dorequest.php?r=gameid&m=$hash") ?: return null
-        return try {
-            val obj = JSONObject(body)
-            if (obj.optBoolean("Success")) obj.optInt("GameID", 0) else 0
-        } catch (e: Exception) { 0 }
+        val obj = try { JSONObject(body) } catch (e: JSONException) { null }
+        val id = obj?.takeIf { it.opt("Success") == true }?.let { wholeNumber(it, "GameID") }
+        if (id == null) BridgeLog.w(TAG, "no usable game id for hash $hash: ${excerpt(body)}")
+        return id
     }
 
     /**
@@ -94,21 +132,48 @@ class RaApiHashLookup(
      * carries only Title, Console*, Image*, Developer, Publisher, Genre and
      * Released — so reading the field there always yielded 0 and every scanned
      * game was recorded with zero achievements.
+     *
+     * A body that does not describe the game asked about — `[]`, a page that is not
+     * JSON, another game's ID, no title, no achievement count — comes back as the
+     * id alone, which the pipeline retries rather than writes. That is what RA
+     * sends for its virtual ids: an untested or incompatible dump gets the real id
+     * plus 1 100 000 000 or 1 000 000 000 from `r=gameid`, and `[]` from here.
+     * Making those failures would let a run of them stop a scan whose source is
+     * answering perfectly well. An explicit `Success: false` is RA refusing the
+     * request rather than describing a game, so that one does count.
      */
     private suspend fun fetchMetadata(gameId: Int): GameMetadata? {
         val url = "$base/API/API_GetGameExtended.php?z=$raUser&y=$raApiKey&i=$gameId"
         val body = getWithRetry(url) ?: return null
-        return try {
-            val obj = firstObject(body) ?: return GameMetadata(gameId = gameId)
-            GameMetadata(
-                gameId          = obj.optInt("ID", gameId),
-                title           = obj.optString("Title"),
-                consoleName     = obj.optString("ConsoleName"),
-                imageIcon       = obj.optString("ImageIcon"),
-                numAchievements = obj.optInt("NumAchievements")
-            )
-        } catch (e: Exception) { GameMetadata(gameId = gameId) }
+        val obj = try { firstObject(body) } catch (e: JSONException) { null }
+        if (obj != null && obj.has("Success") && obj.opt("Success") != true) {
+            BridgeLog.w(TAG, "metadata for game $gameId refused: ${excerpt(body)}")
+            return null
+        }
+        val title = (obj?.opt("Title") as? String)?.takeIf { it.isNotBlank() }
+        val achievements = obj?.let { wholeNumber(it, "NumAchievements") }
+        if (obj == null || wholeNumber(obj, "ID") != gameId || title == null || achievements == null) {
+            BridgeLog.w(TAG, "no usable metadata for game $gameId: ${excerpt(body)}")
+            return GameMetadata(gameId = gameId)
+        }
+        return GameMetadata(
+            gameId          = gameId,
+            title           = title,
+            consoleName     = obj.optString("ConsoleName"),
+            imageIcon       = obj.optString("ImageIcon"),
+            numAchievements = achievements
+        )
     }
+
+    /**
+     * A whole number from 0 up, or null.
+     *
+     * `optInt` was the trap: it turns 0.5 into 0, a missing field into 0 and
+     * 4294967296 into 0 as well, and a GameID of 0 means "RA does not know this
+     * ROM". A decimal string passes, being the same number written differently.
+     */
+    private fun wholeNumber(obj: JSONObject, key: String): Int? =
+        obj.opt(key)?.toString()?.toIntOrNull()?.takeIf { it >= 0 }
 
     private fun firstObject(body: String): JSONObject? {
         val t = body.trim()
@@ -122,37 +187,79 @@ class RaApiHashLookup(
         }
     }
 
+    /**
+     * Text from outside made fit for a log: one line, short, and without the API
+     * key. An error page can echo the query it was sent, and the metadata query
+     * carries `y=<key>`; exception messages go through here too, because nothing
+     * promises what a library puts in one.
+     */
+    private fun excerpt(text: String?): String {
+        val line = text.orEmpty().replace(WHITESPACE, " ").trim()
+        if (line.isEmpty()) return "(empty)"
+        val safe = if (raApiKey.isBlank()) line else line.replace(raApiKey, "***")
+        return if (safe.length <= EXCERPT_CHARS) safe else safe.take(EXCERPT_CHARS) + "…"
+    }
+
+    /** The exception's class and its message, through [excerpt], never the throwable itself. */
+    private fun describe(e: Exception): String =
+        e.message?.let { "${e.javaClass.simpleName}: ${excerpt(it)}" } ?: e.javaClass.simpleName
+
     private suspend fun getWithRetry(url: String): String? {
-        var last: Exception? = null
+        var lastFailure = "no attempt made"
         for (attempt in 0 until MAX_RETRIES) {
             try {
                 pace()
                 val req = Request.Builder().url(url).header("User-Agent", USER_AGENT).build()
-                client.newCall(req).execute().use { resp ->
-                    when {
-                        resp.isSuccessful -> { failures = 0; return resp.body?.string() }
-                        // 403 belongs here: it is what being refused for too many
-                        // requests looks like, and treating it as fatal made the
-                        // client give up on the first one.
-                        resp.code == 403 || resp.code == 429 || resp.code >= 500 ->
-                            delay(1000L shl attempt)
-                        else -> { failures++; return null }
+                val reply = execute(req)
+                when {
+                    reply.code in 200..299 -> return reply.body.orEmpty()
+                    // 403 belongs here: it is what being refused for too many
+                    // requests looks like, and treating it as fatal made the
+                    // client give up on the first one.
+                    reply.code == 403 || reply.code == 429 || reply.code >= 500 ->
+                        lastFailure = "HTTP ${reply.code}"
+                    else -> {
+                        BridgeLog.e(TAG, "HTTP ${reply.code} for ${SafeUrl.redact(url)}")
+                        return null
                     }
                 }
-            } catch (c: kotlinx.coroutines.CancellationException) {
+            } catch (c: CancellationException) {
                 throw c
             } catch (e: Exception) {
-                last = e
-                delay(1000L shl attempt)
+                lastFailure = describe(e)
             }
+            // Not after the last attempt: nothing is left to wait for, and sleeping
+            // there added eight seconds to every request that failed for good.
+            if (attempt < MAX_RETRIES - 1) delay(1000L shl attempt)
         }
         // Redacted, because this URL is `API_GetGameExtended.php?z=…&y=<api key>`
         // and the desktop log is stderr or a journal that ends up in bug reports.
         // What survives — host, endpoint and the game id — is what makes the line
         // worth having; the key never was.
-        BridgeLog.e(TAG, "all retries exhausted for ${SafeUrl.redact(url)}", last)
-        failures++
+        BridgeLog.e(TAG, "all retries exhausted for ${SafeUrl.redact(url)} ($lastFailure)")
         return null
+    }
+
+    private class HttpReply(val code: Int, val body: String?)
+
+    /**
+     * One request that a cancelled coroutine actually stops.
+     *
+     * `execute()` blocked its thread in a socket read that cancellation could not
+     * reach, so an abandoned scan kept its requests going until the 30-second read
+     * timeout. Cancelling the call closes the socket under that read. Only a
+     * success's body is read: nothing here uses an error page.
+     */
+    private suspend fun execute(request: Request): HttpReply = suspendCancellableCoroutine { cont ->
+        val call = client.newCall(request)
+        cont.invokeOnCancellation { call.cancel() }
+        call.enqueue(object : Callback {
+            override fun onFailure(call: Call, e: IOException) = cont.resumeWithException(e)
+
+            override fun onResponse(call: Call, response: Response) = cont.resumeWith(runCatching {
+                response.use { HttpReply(it.code, if (it.isSuccessful) it.body?.string() else null) }
+            })
+        })
     }
 
     private companion object {
@@ -163,6 +270,9 @@ class RaApiHashLookup(
         // most one every 250 ms.
         const val MAX_PARALLEL = 2
         const val MIN_INTERVAL_MS = 250L
+        val MIN_INTERVAL_NS = TimeUnit.MILLISECONDS.toNanos(MIN_INTERVAL_MS)
         const val MAX_RETRIES = 4
+        const val EXCERPT_CHARS = 160
+        val WHITESPACE = Regex("\\s+")
     }
 }

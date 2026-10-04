@@ -4,6 +4,11 @@ import com.pegasus.bridge.core.BridgeLog
 import com.pegasus.bridge.core.BridgePaths
 import com.pegasus.bridge.core.NoopLog
 import com.pegasus.bridge.core.StderrLog
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.awaitCancellation
+import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import org.json.JSONObject
@@ -15,6 +20,7 @@ import kotlin.test.BeforeTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 /**
@@ -183,5 +189,146 @@ class ScanAbortTest {
         assertFalse(s.aborted)
         assertEquals("", s.reason)
         assertEquals(s.total, s.processed, "a complete scan processes everything")
+    }
+
+    /**
+     * The shape a real run takes: a library scanned before, then a rescan that
+     * meets a source gone quiet partway through. It must return in seconds rather
+     * than the twenty the tests above allow, leave no lookup running, and keep
+     * the earlier match in the index — an abort is not a rollback. One worker per
+     * stage, the narrowest pipeline that can be built.
+     */
+    @Test fun `an abort over a large library returns within seconds and keeps what was indexed`(): Unit = runBlocking {
+        rom("nes", "Known.nes", "hash-known")
+        val knows = object : RaHashLookup {
+            override suspend fun lookup(hash: String) =
+                GameMetadata(1446, "Super Mario Bros.", "NES", "/i.png", 76)
+        }
+        RomScanPipeline(paths, ContentHasher(), knows, throttleMs = { 0L })
+            .scan(listOf(romRoot.absolutePath))
+        repeat(400) { rom("nes", "Unknown$it.nes", "unknown-$it") }
+
+        val failures = AtomicInteger()
+        val active = AtomicInteger()
+        val quiet = object : RaHashLookup {
+            override val consecutiveFailures: Int get() = failures.get()
+            override suspend fun lookup(hash: String): GameMetadata? {
+                active.incrementAndGet()
+                try {
+                    failures.incrementAndGet()
+                    return null
+                } finally {
+                    active.decrementAndGet()
+                }
+            }
+        }
+        val s = withTimeout(5_000) {
+            RomScanPipeline(paths, ContentHasher(), quiet, throttleMs = { 0L },
+                            hashWorkers = 1, apiWorkers = 1)
+                .scan(listOf(romRoot.absolutePath))
+        }
+
+        assertTrue(s.aborted)
+        assertTrue(s.processed < s.total)
+        assertTrue(s.reason.startsWith("the lookup source stopped answering"), s.reason)
+        assertEquals(0, active.get(), "a lookup was still running after scan() returned")
+        assertEquals(1, s.indexed, "the match from the earlier scan must survive the abort")
+        assertEquals(s.indexed, JSONObject(paths.discoveryIndex.readText()).getInt("count"))
+    }
+
+    /**
+     * A hash is a blocking read, and the slow ones take minutes. Under a plain
+     * withContext an abort had to wait for every read in flight, because the
+     * scope cannot return before its children and a thread inside a read never
+     * learns it was cancelled. With the hasher below, scan() came back only when
+     * the fifteen-second read did.
+     *
+     * The read throws what an interrupted file channel throws, so this also
+     * covers the other half: an interrupted read is the abort happening, not a
+     * broken file, and the summary must not count it as one.
+     */
+    @Test fun `an abort interrupts a hash that is still reading`(): Unit = runBlocking {
+        repeat(100) { rom("nes", "Game$it.nes", "hash-$it") }
+        val stuck = CompletableDeferred<Unit>()
+        val hashed = AtomicInteger()
+        val slow = object : RomHasher {
+            override fun hash(path: String): HashResult? {
+                // The first few are quick, so the lookups have something to fail
+                // on; the rest block the way a cold read of a disc image does.
+                if (hashed.incrementAndGet() > 10) {
+                    stuck.complete(Unit)
+                    try {
+                        Thread.sleep(15_000)
+                    } catch (e: InterruptedException) {
+                        throw java.nio.channels.ClosedByInterruptException()
+                    }
+                }
+                val t = File(path).readText().trim()
+                return HashResult(t, 7, fileMd5 = "md5-$t", fileCrc32 = "crc-$t")
+            }
+        }
+        // Starts failing only once a read is known to be stuck, so the abort
+        // always lands while one is in flight.
+        val failures = AtomicInteger()
+        val dead = object : RaHashLookup {
+            override val consecutiveFailures: Int get() = failures.get()
+            override suspend fun lookup(hash: String): GameMetadata? {
+                stuck.await()
+                failures.incrementAndGet()
+                return null
+            }
+        }
+
+        val started = System.nanoTime()
+        val s = withTimeout(20_000) {
+            RomScanPipeline(paths, slow, dead, throttleMs = { 0L })
+                .scan(listOf(romRoot.absolutePath))
+        }
+        val tookMs = (System.nanoTime() - started) / 1_000_000
+
+        assertTrue(s.aborted)
+        assertTrue(tookMs < 5_000, "scan() took $tookMs ms: the abort waited for a read to finish")
+        assertNull(s.states[ScanLedger.State.HASH_FAILED],
+                   "an interrupted read was recorded as a broken file: ${s.states}")
+    }
+
+    /**
+     * Cancelled from outside — the daemon shutting down, the Android service
+     * being stopped — while one worker owns a lookup that will never answer and
+     * another is waiting on it for a copy of the same ROM. Both must stop, and
+     * the cancel must complete instead of waiting on the lookup.
+     */
+    @Test fun `cancelling the caller stops a lookup owner and the copies waiting on it`(): Unit = runBlocking {
+        repeat(20) { rom("nes", "Copy$it.nes", "hash-same") }
+        val started = CompletableDeferred<Unit>()
+        val calls = AtomicInteger()
+        val active = AtomicInteger()
+        val hangs = object : RaHashLookup {
+            override suspend fun lookup(hash: String): GameMetadata? {
+                calls.incrementAndGet()
+                active.incrementAndGet()
+                started.complete(Unit)
+                try {
+                    awaitCancellation()
+                } finally {
+                    active.decrementAndGet()
+                }
+            }
+        }
+
+        withTimeout(5_000) {
+            val scan = launch {
+                RomScanPipeline(paths, ContentHasher(), hangs, throttleMs = { 0L })
+                    .scan(listOf(romRoot.absolutePath))
+            }
+            started.await()
+            // Time for the second worker to take a copy and start waiting on the owner.
+            delay(200)
+            scan.cancelAndJoin()
+        }
+
+        assertEquals(0, active.get(), "a lookup outlived the cancel")
+        assertEquals(1, calls.get(), "the copies should have waited on the one lookup, not made their own")
+        assertEquals(0, paths.metadata.listFiles { f -> !f.name.startsWith("_") }!!.size)
     }
 }

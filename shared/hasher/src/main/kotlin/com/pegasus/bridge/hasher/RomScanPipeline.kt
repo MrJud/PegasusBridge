@@ -42,6 +42,16 @@ class RomScanPipeline(
     private val extensionsFor: (File) -> Set<String> = { RomScanner.ROM_EXTENSIONS }
 ) {
 
+    // Refused here rather than discovered mid-scan. With no hash workers nothing
+    // reads the file queue, and with no API workers nothing reads the hash queue.
+    // On a library bigger than that queue's buffer, the stage feeding it waits
+    // forever and the scan never returns; on a smaller one it returns having
+    // quietly skipped the work. Neither says why.
+    init {
+        require(hashWorkers > 0) { "hashWorkers must be positive, was $hashWorkers" }
+        require(apiWorkers > 0) { "apiWorkers must be positive, was $apiWorkers" }
+    }
+
     data class Progress(
         val processed: Int,
         val total: Int,
@@ -355,9 +365,22 @@ class RomScanPipeline(
 
         // Throwable: one file that cannot be read must cost that file, not the
         // scan. Cancellation still propagates.
-        val outcome = try { withContext(Dispatchers.IO) { hasher.hashDetailed(file.absolutePath, rawPlatform) } }
+        //
+        // Interruptible, because a hash is a blocking read that can take minutes:
+        // a 7.9 GiB ISO read cold beside three others takes about nine. Under a
+        // plain withContext an abort or a cancel had to wait for every digest in
+        // flight before the scope could return; this interrupts the thread, so a
+        // read that honours interrupts stops where it is. A java.io stream does
+        // not, and a loop reading one has to look for the interrupt itself.
+        val outcome = try { runInterruptible(Dispatchers.IO) { hasher.hashDetailed(file.absolutePath, rawPlatform) } }
                       catch (c: kotlinx.coroutines.CancellationException) { throw c }
                       catch (t: Throwable) {
+                          // An interrupted read rarely says so: a file channel throws
+                          // ClosedByInterruptException, which is an IOException. When the
+                          // scan is being cancelled, that is the cancellation and not a
+                          // broken file — recording it as HASH_FAILED would put the abort's
+                          // own side effect in the summary as a fault in the library.
+                          currentCoroutineContext().ensureActive()
                           BridgeLog.w(TAG, "hash failed: ${file.name}", t)
                           HashOutcome.Failed(t.message ?: t.javaClass.simpleName)
                       }

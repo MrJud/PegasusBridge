@@ -13,6 +13,7 @@ import kotlin.test.AfterTest
 import kotlin.test.BeforeTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
@@ -275,6 +276,17 @@ class RomScanPipelineTest {
         assertFalse(tmp.listFiles()?.any { it.name.startsWith("bridge_") } ?: false,
                     "temp extraction files must be cleaned up")
         tmp.deleteRecursively()
+    }
+
+    // Zero workers used to be accepted, and then hung on the first library larger
+    // than a queue's buffer, because nothing ever read that queue.
+    @Test fun `a pipeline with no workers is refused`() {
+        assertFailsWith<IllegalArgumentException> {
+            RomScanPipeline(paths, ContentHasher(), MapLookup(catalogue), hashWorkers = 0)
+        }
+        assertFailsWith<IllegalArgumentException> {
+            RomScanPipeline(paths, ContentHasher(), MapLookup(catalogue), apiWorkers = 0)
+        }
     }
 
     private fun md5(text: String): String =

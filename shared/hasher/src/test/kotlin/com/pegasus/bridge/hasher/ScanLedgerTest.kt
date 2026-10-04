@@ -197,6 +197,8 @@ class ScanLedgerTest {
 
     // What makes a policy change take effect on a library already scanned. Without
     // it, every decision the old archive rule made would be preserved forever.
+    // The version just before the current one, because that is the ledger a real
+    // library carries into an upgrade.
     @Test fun `a verdict from an older algorithm version is redone`(): Unit = runBlocking {
         rom("nes", "Game.nes", "hash-unknown")
         pipeline(ContentHasher(), SaysNo()).scan(listOf(romRoot.absolutePath))
@@ -204,7 +206,9 @@ class ScanLedgerTest {
         val file = File(paths.cache, ScanLedger.FILE_NAME)
         val j = JSONObject(file.readText())
         val entries = j.getJSONObject("entries")
-        entries.keys().forEach { k -> entries.getJSONObject(k).put("algorithmVersion", 1) }
+        entries.keys().forEach { k ->
+            entries.getJSONObject(k).put("algorithmVersion", ScanLedger.ALGORITHM_VERSION - 1)
+        }
         file.writeText(j.toString())
 
         val l2 = SaysNo()

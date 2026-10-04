@@ -143,7 +143,10 @@ class ScanLedger(private val file: File) {
      * incremental skip would preserve every decision the old rule made.
      */
     fun canSkip(path: String, size: Long, modified: Long, now: Long): Entry? {
-        val e = entries[path] ?: return null
+        // Under the same lock as [record]. The producers call both at once, and an
+        // unlocked read of a HashMap another thread is resizing can come back null
+        // for an entry that is there — a spurious rehash at best.
+        val e = synchronized(entries) { entries[path] } ?: return null
         if (!e.state.cacheable) return null
         if (e.fileSize != size || e.lastModified != modified) return null
         if (e.algorithmVersion != ALGORITHM_VERSION) return null
@@ -225,7 +228,20 @@ class ScanLedger(private val file: File) {
          * named after the archive. Any archive decided under version 1 has to be
          * decided again, because the old rule could have hashed a patch or a bonus
          * disc and recorded the result as a miss.
+         *
+         * 3: the desktop extracted every archive entry to a temp file named
+         * `.bin`, and rcheevos picks its algorithm from the extension — so a `.nes`
+         * or `.nds` inside a zip was hashed as whatever a `.bin` is taken for, and
+         * the miss that came back said nothing about the game. Those verdicts must
+         * not outlive the fix. The cost is bounded: a match is skipped through its
+         * metadata before the ledger is asked, and an unsupported platform is
+         * decided before any I/O, so what gets redone is the misses and the
+         * ambiguous archives.
+         *
+         * The one counter for what a file resolves to. A second version kept
+         * elsewhere for part of the same decision would drift from this one, and
+         * bumping either would leave the other's verdicts standing.
          */
-        const val ALGORITHM_VERSION = 2
+        const val ALGORITHM_VERSION = 3
     }
 }

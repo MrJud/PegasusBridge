@@ -48,6 +48,12 @@ object RomScanner {
      * declaration when a caller can supply one. Answering with the union rather
      * than a replacement is deliberate: a collection that forgets to list `zip`
      * should not lose its archives.
+     *
+     * Each file is returned once, under the path it was first reached by, however
+     * many of [dirs] reach it. The theme does not hand over one root per
+     * collection: it hands over the folder of every game it knows, so `psx/<game>`
+     * arrives beside `psx`, and `switch` beside a folder nested inside it.
+     * Without this a tree reached twice was hashed twice and counted twice.
      */
     fun scan(
         dirs: List<String>,
@@ -58,6 +64,18 @@ object RomScanner {
         // from disk, and a library of several thousand ROMs would otherwise ask
         // for the same collection's extensions once per file.
         val perDir = HashMap<String, Set<String>>()
+        // By canonical path, so a repeated root, a root inside another (in either
+        // order) and a symlinked alias are all the same directory, entered once.
+        // It is also what stops a symlink pointing back up the tree: `walkTopDown`
+        // follows links, and went round until the path held too many of them to
+        // resolve — 41 copies of the one ROM in the test that measures it.
+        //
+        // Directories alone are not enough — a symlinked *file* is a second name
+        // for the same ROM inside a directory entered only once — hence the second
+        // set. Exact paths, never prefixes: `Final Fantasy` and `Final Fantasy IX`
+        // are two games.
+        val enteredDirs = HashSet<String>()
+        val keptFiles = HashSet<String>()
 
         for (dirPath in dirs) {
             val dir = File(dirPath)
@@ -65,19 +83,25 @@ object RomScanner {
             dir.walkTopDown()
                 // Never the root itself: a user whose game directory is literally
                 // named `media` would otherwise have their whole library skipped.
-                .onEnter { it == dir || it.name.lowercase() !in SKIPPED_DIRS }
+                // Checked before the directory is marked entered, so a skipped
+                // `media` that is later given as a root of its own is still walked.
+                .onEnter { (it == dir || it.name.lowercase() !in SKIPPED_DIRS) && enteredDirs.add(canonical(it)) }
                 .filter { it.isFile }
                 .forEach { f ->
                     val parent = f.parentFile ?: dir
                     val allowed = perDir.getOrPut(parent.path) {
                         runCatching { extensionsFor(parent) }.getOrDefault(ROM_EXTENSIONS)
                     }
-                    if (f.extension.lowercase() in allowed) results.add(f)
+                    if (f.extension.lowercase() in allowed && keptFiles.add(canonical(f))) results.add(f)
                 }
         }
         BridgeLog.d(TAG, "scanned ${dirs.size} root(s) for ${results.size} files")
         return results
     }
+
+    /** The pipeline's spelling of a path too, so the scanner and the ledger agree. */
+    private fun canonical(file: File): String =
+        runCatching { file.canonicalPath }.getOrDefault(file.absolutePath)
 
     /**
      * Directories that never hold ROMs, and cost real time to walk.

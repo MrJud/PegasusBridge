@@ -203,7 +203,7 @@ class HasherService : Service() {
         val romFiles = RomScanner.scan(roots, RomScanExtensions.forScan)
         val total    = romFiles.size
         Log.i(TAG, "Found $total ROM files")
-        if (total == 0) { writePending(jobId, "scan", "running", 1.0, "No ROMs found"); return@coroutineScope }
+        if (total == 0) { writePending(jobId, "scan", "done", 1.0, "No ROMs found"); return@coroutineScope }
 
         val apiClient   = RAApiClient(raUser, raApiKey)
         val hashChannel = Channel<HashJob>(capacity = 32)

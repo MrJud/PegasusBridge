@@ -161,6 +161,14 @@ class HasherService : Service() {
                 val cacheKey = j.optString("cacheKey")
                 val rom      = j.optJSONObject("rom") ?: continue
                 if (cacheKey.isEmpty()) continue
+                // An id with no title is not a match, and the collector no longer
+                // writes one. Files written before it stopped are still on disk —
+                // 27 of 732 on the tablet — and treating them as cached kept every
+                // one of them out of the index and away from the network for as
+                // long as the ROM stayed unchanged. Ignored here, they are looked
+                // up again; the file itself is left alone, for a real match to
+                // overwrite if one ever comes.
+                if (j.optInt("gameId") <= 0 || j.optString("title").isBlank()) continue
                 map[cacheKey] = CachedMeta(
                     gameId       = j.optInt("gameId"),
                     hash         = rom.optString("hash"),
@@ -331,7 +339,7 @@ class HasherService : Service() {
 
         // Collector: write per-game metadata/{gameId}.json
         var processed = 0; var newEntries = 0; var cachedHits = 0; var skippedPlat = 0
-        var failedLookups = 0; var unmatched = 0
+        var failedLookups = 0; var unmatched = 0; var untitled = 0
         // Aim for ~50 progress updates over the whole scan, with a sane minimum.
         val writeStep = (total / 50).coerceAtLeast(10)
         for (r in resultChannel) {
@@ -339,10 +347,21 @@ class HasherService : Service() {
                 r.skipped -> skippedPlat++
                 r.cached  -> cachedHits++
                 r.failed  -> failedLookups++
-                r.meta != null && r.meta.gameId > 0 -> {
+                // A usable match needs a title, not just an id. RetroAchievements
+                // can answer a hash with an id its Web API cannot describe — the
+                // Virtual Console Metroid gets 1100001487, and API_GetGameExtended
+                // answers `[]` for it — and RAApiClient reports that, an HTML page
+                // or a body it could not parse as a Hit with an empty title.
+                // Written, it counted as new, the index then dropped it for having
+                // no title, and the next scan skipped it as cached.
+                r.meta != null && r.meta.gameId > 0 && r.meta.title.isNotBlank() -> {
                     writeMetadata(r.job, r.meta)
                     newEntries++
                 }
+                // Not a match and not a refusal either: the source answering about
+                // a game it cannot describe. Nothing is written, so the next scan
+                // asks again rather than writing the game off.
+                r.meta != null && r.meta.gameId > 0 -> untitled++
                 // RetroAchievements answered, and the answer was no.
                 //
                 // The producer emits a `Miss` as `GameMetadata(gameId = 0)` —
@@ -375,18 +394,24 @@ class HasherService : Service() {
                 val pct = processed.toDouble() / total
                 writePending(jobId, "scan", "running", pct,
                     "[$processed/$total] ${r.job.file.name}",
-                    newEntries, cachedHits, skippedPlat, unmatched)
+                    newEntries, cachedHits, skippedPlat, unmatched, untitled)
                 updateNotification("[$processed/$total] ${r.job.file.name}", processed, total)
             }
         }
 
         writeDiscoveryIndex()
+        // Untitled answers used to be counted as new. Left out of the summary now,
+        // they would vanish from it altogether — a library of them would finish
+        // "0 new, 0 cached, 0 skipped, 0 not in the database" — so they get a
+        // clause of their own, and only when there are any.
         writePending(jobId, "scan", "done", 1.0,
             "Done — $newEntries new, $cachedHits cached, $skippedPlat skipped, " +
-            "$unmatched not in the database",
-            newEntries, cachedHits, skippedPlat, unmatched)
+            "$unmatched not in the database" +
+            (if (untitled > 0) ", $untitled RetroAchievements could not describe" else ""),
+            newEntries, cachedHits, skippedPlat, unmatched, untitled)
         Log.i(TAG, "Scan complete: $processed processed, $newEntries new, $cachedHits cached, " +
-                   "$skippedPlat skipped, $unmatched unmatched, $failedLookups lookups failed")
+                   "$skippedPlat skipped, $unmatched unmatched, $untitled with no title, " +
+                   "$failedLookups lookups failed")
     }
 
     // Enumera metadata/*.json ed emette metadata/_index.json con:
@@ -485,7 +510,9 @@ class HasherService : Service() {
         jobId: String, verb: String, status: String, progress: Double, message: String,
         newEntries: Int = 0, cachedHits: Int = 0, skippedPlatforms: Int = 0,
         /** Looked up and genuinely not in RetroAchievements — an answer, not a failure. */
-        unmatched: Int = 0
+        unmatched: Int = 0,
+        /** Known to RetroAchievements by id, with no title to show: asked again next scan. */
+        untitled: Int = 0
     ) {
         val now = System.currentTimeMillis() / 1000L
         val j = JSONObject()
@@ -499,6 +526,7 @@ class HasherService : Service() {
             .put("cachedHits",        cachedHits)
             .put("skippedPlatforms",  skippedPlatforms)
             .put("unmatched",         unmatched)
+            .put("untitled",          untitled)
             .put("startedAt", now)
             .put("updatedAt", now)
         val f = Paths.pending(jobId)

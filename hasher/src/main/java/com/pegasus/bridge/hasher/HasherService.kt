@@ -104,6 +104,10 @@ class HasherService : Service() {
             } catch (e: CancellationException) {
                 Log.i(TAG, "Scan cancelled")
                 writeError(jobId, "scan", "Cancelled")
+            } catch (e: ScanAborted) {
+                // Logged where it was decided, with the counts. The message is
+                // the advice the theme shows, so it goes out as it is.
+                writeError(jobId, "scan", e.message ?: "Scan aborted")
             } catch (e: Exception) {
                 Log.e(TAG, "Scan failed", e)
                 writeError(jobId, "scan", e.message ?: "Unknown error")
@@ -137,6 +141,17 @@ class HasherService : Service() {
         val skipped: Boolean = false,   // platform not on RA
         val failed:  Boolean = false    // lookup never got an answer — not the same as "unknown"
     )
+
+    /**
+     * Ends a scan that RetroAchievements has stopped answering.
+     *
+     * Thrown by the collector once every stage has been stopped, so the job ends
+     * the way any failed job does: the error lands in `pending/{jobId}.json` and
+     * the `finally` in [onStartCommand] releases the foreground service and the
+     * wake lock. A class of its own so that handler can tell an abort it expected
+     * from a crash it did not.
+     */
+    private class ScanAborted(message: String) : Exception(message)
 
     // Snapshot of `metadata/{gameId}.json` used for incremental scans.
     private data class CachedMeta(
@@ -256,7 +271,12 @@ class HasherService : Service() {
                     }
 
                     // Hash (uncached path)
-                    val result = try { withContext(Dispatchers.IO) { hashFile(file) } } catch (e: Exception) { null }
+                    // Cancellation is let through: caught as an Exception, a stage
+                    // told to stop reported the file it was hashing as a result
+                    // and went on to send it.
+                    val result = try { withContext(Dispatchers.IO) { hashFile(file) } }
+                                 catch (c: CancellationException) { throw c }
+                                 catch (e: Exception) { null }
                     if (result == null) {
                         resultChannel.send(ResultJob(
                             HashJob(file, cacheKey, HashResult("", 0), rawPlatform, fileKB, fileSize, lastModified),
@@ -329,7 +349,7 @@ class HasherService : Service() {
         }
 
         // Coordinator: close channels in the correct order as upstream stages finish
-        launch {
+        val coordinator = launch {
             feeder.join()
             producers.forEach { it.join() }
             hashChannel.close()
@@ -383,12 +403,31 @@ class HasherService : Service() {
             if (apiClient.consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
                 Log.e(TAG, "aborting scan: $failedLookups lookups failed, " +
                            "${apiClient.consecutiveFailures} in a row")
+                // This used to `return@coroutineScope`, which cannot leave: a scope
+                // waits for its children, and the producers and workers were still
+                // running, sending into a result queue nobody drained any more.
+                // Whenever more files were left than the queues hold (64 + 32 +
+                // 128 slots) they filled up and blocked for good. The `finally` in
+                // onStartCommand never ran, isRunning stayed true — so every later
+                // scan was turned away as a duplicate — and the wake lock held until
+                // its 60-minute timeout. The abort meant to save a doomed run hung
+                // it instead.
+                //
+                // So every stage is cancelled, and the queues with them: cancel
+                // rather than close, because closing refuses new sends but leaves
+                // one already blocked on a full buffer where it is. The join is
+                // NonCancellable so a Cancel tapped now cannot skip the index; it
+                // waits only for what cannot be interrupted — a native hash, or an
+                // HTTP call within its timeouts.
+                val stages = listOf(feeder, coordinator) + producers + workers
+                stages.forEach { it.cancel() }
+                fileQueue.cancel(); hashChannel.cancel(); resultChannel.cancel()
+                withContext(NonCancellable) { stages.joinAll() }
                 writeDiscoveryIndex()
-                writeError(jobId, "scan",
+                throw ScanAborted(
                     "RetroAchievements stopped responding after $processed of $total files " +
                     "($newEntries identified). Nothing was recorded as missing. " +
                     "Wait a few minutes and scan again — it will resume where it left off.")
-                return@coroutineScope
             }
             if (processed % writeStep == 0 || processed == total) {
                 val pct = processed.toDouble() / total

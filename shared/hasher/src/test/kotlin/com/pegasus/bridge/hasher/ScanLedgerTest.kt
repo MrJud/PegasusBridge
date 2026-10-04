@@ -90,16 +90,15 @@ class ScanLedgerTest {
 
     // ── A verdict is remembered ─────────────────────────────────────────────
 
-    @Test fun `a rom the source does not have is recorded as not found`() = runBlocking {
+    @Test fun `a rom the source does not have is recorded as not found`(): Unit = runBlocking {
         val f = rom("nes", "Homebrew.nes", "hash-unknown")
         val s = pipeline(ContentHasher(), SaysNo()).scan(listOf(romRoot.absolutePath))
 
         assertEquals(1, s.states[ScanLedger.State.NOT_FOUND])
         assertEquals("NOT_FOUND", ledgerEntry(f)!!.getString("state"))
-        Unit
     }
 
-    @Test fun `a recorded miss is not asked about again on the next scan`() = runBlocking {
+    @Test fun `a recorded miss is not asked about again on the next scan`(): Unit = runBlocking {
         rom("nes", "Homebrew.nes", "hash-unknown")
         pipeline(ContentHasher(), SaysNo()).scan(listOf(romRoot.absolutePath))
 
@@ -109,12 +108,11 @@ class ScanLedgerTest {
         assertEquals(0, l2.calls.get(), "a miss inside its TTL cost a network call")
         assertEquals(0, h2.calls.get(), "a miss inside its TTL cost a hash")
         assertEquals(1, s2.states[ScanLedger.State.NOT_FOUND])
-        Unit
     }
 
     // The exact bug this project has already paid for once: a refusal cached as
     // a verdict writes the game off, and an incremental rescan never asks again.
-    @Test fun `a source that did not answer is asked again next time`() = runBlocking {
+    @Test fun `a source that did not answer is asked again next time`(): Unit = runBlocking {
         val f = rom("nes", "Game.nes", "hash-x")
         pipeline(ContentHasher(), NeverAnswers()).scan(listOf(romRoot.absolutePath))
         assertEquals("API_RETRY", ledgerEntry(f)!!.getString("state"))
@@ -122,10 +120,9 @@ class ScanLedgerTest {
         val l2 = SaysNo()
         pipeline(ContentHasher(), l2).scan(listOf(romRoot.absolutePath))
         assertEquals(1, l2.calls.get(), "a refusal was cached as if it were an answer")
-        Unit
     }
 
-    @Test fun `an unhashable file is recorded and retried rather than written off`() = runBlocking {
+    @Test fun `an unhashable file is recorded and retried rather than written off`(): Unit = runBlocking {
         val f = rom("nes", "Broken.nes", "UNHASHABLE")
         val s = pipeline(ContentHasher(), SaysNo()).scan(listOf(romRoot.absolutePath))
 
@@ -136,10 +133,9 @@ class ScanLedgerTest {
         val h2 = ContentHasher()
         pipeline(h2, SaysNo()).scan(listOf(romRoot.absolutePath))
         assertEquals(1, h2.calls.get(), "a hash failure must be retried")
-        Unit
     }
 
-    @Test fun `an unsupported platform is recorded without any io`() = runBlocking {
+    @Test fun `an unsupported platform is recorded without any io`(): Unit = runBlocking {
         val f = rom("switch", "Something.nes", "hash-x")
         val h = ContentHasher()
         val s = pipeline(h, SaysNo()).scan(listOf(romRoot.absolutePath))
@@ -147,10 +143,9 @@ class ScanLedgerTest {
         assertEquals(1, s.states[ScanLedger.State.UNSUPPORTED])
         assertEquals(0, h.calls.get())
         assertEquals("UNSUPPORTED", ledgerEntry(f)!!.getString("state"))
-        Unit
     }
 
-    @Test fun `a match is recorded with the game it matched`() = runBlocking {
+    @Test fun `a match is recorded with the game it matched`(): Unit = runBlocking {
         val f = rom("nes", "Contra (USA).nes", "hash-ctra")
         val found = object : RaHashLookup {
             override suspend fun lookup(hash: String) =
@@ -162,12 +157,11 @@ class ScanLedgerTest {
         val e = ledgerEntry(f)!!
         assertEquals("MATCHED", e.getString("state"))
         assertEquals(1447, e.getInt("gameId"))
-        Unit
     }
 
     // ── An archive nobody can resolve ───────────────────────────────────────
 
-    @Test fun `an ambiguous archive is a diagnostic and not a miss`() = runBlocking {
+    @Test fun `an ambiguous archive is a diagnostic and not a miss`(): Unit = runBlocking {
         val dir = File(romRoot, "megadrive").apply { mkdirs() }
         val zip = File(dir, "Sonic Collection.zip")
         ZipOutputStream(zip.outputStream()).use { z ->
@@ -185,12 +179,11 @@ class ScanLedgerTest {
         assertEquals(1, s.ambiguousArchives.size)
         assertTrue(s.ambiguousArchives.first().second.contains("Sonic 1.md"),
                    "the candidates must be named, or nobody knows which file to open")
-        Unit
     }
 
     // ── Invalidation ────────────────────────────────────────────────────────
 
-    @Test fun `a replaced file is asked about again despite a stored verdict`() = runBlocking {
+    @Test fun `a replaced file is asked about again despite a stored verdict`(): Unit = runBlocking {
         val f = rom("nes", "Game.nes", "hash-unknown")
         pipeline(ContentHasher(), SaysNo()).scan(listOf(romRoot.absolutePath))
 
@@ -200,12 +193,11 @@ class ScanLedgerTest {
         val l2 = SaysNo()
         pipeline(ContentHasher(), l2).scan(listOf(romRoot.absolutePath))
         assertEquals(1, l2.calls.get(), "the replaced file kept the old verdict")
-        Unit
     }
 
     // What makes a policy change take effect on a library already scanned. Without
     // it, every decision the old archive rule made would be preserved forever.
-    @Test fun `a verdict from an older algorithm version is redone`() = runBlocking {
+    @Test fun `a verdict from an older algorithm version is redone`(): Unit = runBlocking {
         rom("nes", "Game.nes", "hash-unknown")
         pipeline(ContentHasher(), SaysNo()).scan(listOf(romRoot.absolutePath))
 
@@ -218,10 +210,9 @@ class ScanLedgerTest {
         val l2 = SaysNo()
         pipeline(ContentHasher(), l2).scan(listOf(romRoot.absolutePath))
         assertEquals(1, l2.calls.get(), "a verdict from the old rule was kept")
-        Unit
     }
 
-    @Test fun `a miss older than its ttl is asked about again`() = runBlocking {
+    @Test fun `a miss older than its ttl is asked about again`(): Unit = runBlocking {
         rom("nes", "Game.nes", "hash-unknown")
         pipeline(ContentHasher(), SaysNo()).scan(listOf(romRoot.absolutePath))
 
@@ -235,10 +226,9 @@ class ScanLedgerTest {
         val l2 = SaysNo()
         pipeline(ContentHasher(), l2).scan(listOf(romRoot.absolutePath))
         assertEquals(1, l2.calls.get(), "a thirty-day-old miss was still trusted")
-        Unit
     }
 
-    @Test fun `entries for files that are gone are dropped`() = runBlocking {
+    @Test fun `entries for files that are gone are dropped`(): Unit = runBlocking {
         val a = rom("nes", "A.nes", "hash-a")
         rom("nes", "B.nes", "hash-b")
         pipeline(ContentHasher(), SaysNo()).scan(listOf(romRoot.absolutePath))
@@ -247,10 +237,9 @@ class ScanLedgerTest {
         a.delete()
         pipeline(ContentHasher(), SaysNo()).scan(listOf(romRoot.absolutePath))
         assertEquals(1, ledgerJson().getInt("count"), "the deleted file's entry lived on")
-        Unit
     }
 
-    @Test fun `a corrupt ledger is started again rather than failing the scan`() = runBlocking {
+    @Test fun `a corrupt ledger is started again rather than failing the scan`(): Unit = runBlocking {
         rom("nes", "Game.nes", "hash-unknown")
         paths.cache.mkdirs()
         File(paths.cache, ScanLedger.FILE_NAME).writeText("{ not json at all")
@@ -258,10 +247,9 @@ class ScanLedgerTest {
         val s = pipeline(ContentHasher(), SaysNo()).scan(listOf(romRoot.absolutePath))
         assertEquals(1, s.total)
         assertEquals(1, s.states[ScanLedger.State.NOT_FOUND])
-        Unit
     }
 
-    @Test fun `a ledger from an older schema is discarded`() = runBlocking {
+    @Test fun `a ledger from an older schema is discarded`(): Unit = runBlocking {
         rom("nes", "Game.nes", "hash-unknown")
         pipeline(ContentHasher(), SaysNo()).scan(listOf(romRoot.absolutePath))
 
@@ -271,12 +259,11 @@ class ScanLedgerTest {
         val l2 = SaysNo()
         pipeline(ContentHasher(), l2).scan(listOf(romRoot.absolutePath))
         assertEquals(1, l2.calls.get(), "a ledger from an unknown schema was trusted")
-        Unit
     }
 
     // A cache hit already means the file matched; the ledger must agree rather
     // than reporting it as never having been looked at.
-    @Test fun `a cached match is still counted as matched`() = runBlocking {
+    @Test fun `a cached match is still counted as matched`(): Unit = runBlocking {
         rom("nes", "Contra (USA).nes", "hash-ctra")
         val found = object : RaHashLookup {
             override suspend fun lookup(hash: String) =
@@ -287,6 +274,5 @@ class ScanLedgerTest {
         val s2 = pipeline(ContentHasher(), found).scan(listOf(romRoot.absolutePath))
         assertEquals(1, s2.cachedHits)
         assertEquals(1, s2.states[ScanLedger.State.MATCHED])
-        Unit
     }
 }

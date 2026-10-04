@@ -105,7 +105,7 @@ class ScanAbortTest {
 
     // 400 files: far more than the 128-slot result queue, so the producers are
     // certain to be mid-send when the collector gives up.
-    @Test fun `a dead lookup aborts the scan instead of hanging it`() = runBlocking {
+    @Test fun `a dead lookup aborts the scan instead of hanging it`(): Unit = runBlocking {
         repeat(400) { rom("nes", "Game$it.nes", "hash-$it") }
 
         val summary = withTimeout(20_000) {
@@ -122,12 +122,11 @@ class ScanAbortTest {
         assertTrue(summary.failedLookups > 0, "the failures that caused the abort must be counted")
         assertTrue(paths.discoveryIndex.isFile, "the index must still be written")
         JSONObject(paths.discoveryIndex.readText())   // valid JSON, or this throws
-        Unit
     }
 
     // The point of keeping the work: an abort is not a rollback. Whatever matched
     // before the source went quiet is on disk and in the index.
-    @Test fun `matches found before the abort survive it`() = runBlocking {
+    @Test fun `matches found before the abort survive it`(): Unit = runBlocking {
         repeat(300) { rom("nes", "Game$it.nes", "hash-$it") }
 
         val summary = withTimeout(20_000) {
@@ -140,14 +139,13 @@ class ScanAbortTest {
         val written = paths.metadata.listFiles { f -> !f.name.startsWith("_") }!!.size
         assertEquals(summary.newEntries, written)
         assertEquals(written, JSONObject(paths.discoveryIndex.readText()).getInt("count"))
-        Unit
     }
 
     // The failure mode this replaced was a producer blocked forever on a full
     // queue. Returning is necessary but not sufficient: the scan must also leave
     // nothing behind still chewing through the library. A producer that outlives
     // `scan()` announces itself by hashing one more file after the flag is set.
-    @Test fun `an abort leaves no producer running`() = runBlocking {
+    @Test fun `an abort leaves no producer running`(): Unit = runBlocking {
         repeat(400) { rom("nes", "Game$it.nes", "hash-$it") }
         val hasher = ContentHasher()
 
@@ -167,11 +165,10 @@ class ScanAbortTest {
                      "a producer was still hashing after scan() returned")
         assertEquals(hashedByReturn, hasher.calls.get(),
                      "the hash count kept rising after scan() returned")
-        Unit
     }
 
     // A scan that finishes normally must not claim to have been aborted.
-    @Test fun `a healthy scan is not reported as aborted`() = runBlocking {
+    @Test fun `a healthy scan is not reported as aborted`(): Unit = runBlocking {
         repeat(30) { rom("nes", "Game$it.nes", "hash-$it") }
         val ok = object : RaHashLookup {
             override suspend fun lookup(hash: String) =
@@ -186,6 +183,5 @@ class ScanAbortTest {
         assertFalse(s.aborted)
         assertEquals("", s.reason)
         assertEquals(s.total, s.processed, "a complete scan processes everything")
-        Unit
     }
 }

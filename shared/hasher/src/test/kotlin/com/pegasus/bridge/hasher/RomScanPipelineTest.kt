@@ -75,7 +75,7 @@ class RomScanPipelineTest {
     private fun pipeline(h: RomHasher, l: RaHashLookup) =
         RomScanPipeline(paths, h, l, throttleMs = { 0L })
 
-    @Test fun `matched roms produce metadata and a discovery index`() = runBlocking {
+    @Test fun `matched roms produce metadata and a discovery index`(): Unit = runBlocking {
         rom("nes", "Super Mario Bros. (World).nes", "hash-smb")
         rom("nes", "Contra (USA).nes", "hash-ctra")
 
@@ -101,7 +101,7 @@ class RomScanPipelineTest {
     // Virtual Console Metroid dump returns 1100001487, whose GetGameExtended is
     // empty. Without a title there is no usable match, so nothing should be
     // written and the count must not include it.
-    @Test fun `an id with no title is not treated as a match`() = runBlocking {
+    @Test fun `an id with no title is not treated as a match`(): Unit = runBlocking {
         rom("nes", "Metroid (Europe) (Virtual Console).nes", "hash-phantom")
         val phantom = object : RaHashLookup {
             override suspend fun lookup(hash: String) = GameMetadata(gameId = 1100001487)
@@ -116,7 +116,7 @@ class RomScanPipelineTest {
                      "no junk metadata file should be left on disk")
     }
 
-    @Test fun `unmatched roms are counted but write no metadata`() = runBlocking {
+    @Test fun `unmatched roms are counted but write no metadata`(): Unit = runBlocking {
         rom("nes", "Homebrew Thing.nes", "hash-unknown")
         val s = pipeline(ContentHasher(), MapLookup(catalogue)).scan(listOf(romRoot.absolutePath))
         assertEquals(1, s.total)
@@ -125,7 +125,7 @@ class RomScanPipelineTest {
     }
 
     // A second scan of an unchanged library must not hash or hit the network again.
-    @Test fun `unchanged files are skipped on a rescan`() = runBlocking {
+    @Test fun `unchanged files are skipped on a rescan`(): Unit = runBlocking {
         rom("nes", "Super Mario Bros. (World).nes", "hash-smb")
 
         pipeline(ContentHasher(), MapLookup(catalogue)).scan(listOf(romRoot.absolutePath))
@@ -143,7 +143,7 @@ class RomScanPipelineTest {
     // Metadata written before the plain hashes existed carries no fileMd5. The
     // incremental skip must not preserve that gap forever, or a library already
     // scanned once would never gain the field a scraper needs.
-    @Test fun `metadata without a plain hash is rescanned once`() = runBlocking {
+    @Test fun `metadata without a plain hash is rescanned once`(): Unit = runBlocking {
         rom("nes", "Super Mario Bros. (World).nes", "hash-smb")
         pipeline(ContentHasher(), MapLookup(catalogue)).scan(listOf(romRoot.absolutePath))
 
@@ -163,7 +163,7 @@ class RomScanPipelineTest {
         assertEquals("crc-hash-smb", after.getString("fileCrc32"))
     }
 
-    @Test fun `an edited file is rescanned`() = runBlocking {
+    @Test fun `an edited file is rescanned`(): Unit = runBlocking {
         val f = rom("nes", "Game.nes", "hash-smb")
         pipeline(ContentHasher(), MapLookup(catalogue)).scan(listOf(romRoot.absolutePath))
 
@@ -176,7 +176,7 @@ class RomScanPipelineTest {
         assertEquals(1, h2.calls.get(), "changed file must be re-hashed")
     }
 
-    @Test fun `platforms retroachievements does not cover are skipped before hashing`() = runBlocking {
+    @Test fun `platforms retroachievements does not cover are skipped before hashing`(): Unit = runBlocking {
         rom("switch", "Something.nes", "hash-smb")
         rom("psvita", "Other.nes", "hash-ctra")
         rom("nes",    "Real.nes", "hash-smb")
@@ -190,7 +190,7 @@ class RomScanPipelineTest {
     }
 
     // Several files sharing a hash should cost one network call, not one each.
-    @Test fun `identical hashes are looked up once`() = runBlocking {
+    @Test fun `identical hashes are looked up once`(): Unit = runBlocking {
         rom("nes", "Copy A.nes", "hash-smb")
         rom("nes", "Copy B.nes", "hash-smb")
         rom("nes", "Copy C.nes", "hash-smb")
@@ -200,7 +200,7 @@ class RomScanPipelineTest {
         assertEquals(1, l.calls.get(), "duplicate hashes must be de-duplicated")
     }
 
-    @Test fun `a file the hasher cannot read does not abort the scan`() = runBlocking {
+    @Test fun `a file the hasher cannot read does not abort the scan`(): Unit = runBlocking {
         rom("nes", "Broken.nes", "UNHASHABLE")
         rom("nes", "Good.nes", "hash-smb")
 
@@ -209,7 +209,7 @@ class RomScanPipelineTest {
         assertEquals(1, s.newEntries, "the readable ROM must still be processed")
     }
 
-    @Test fun `progress is reported and reaches the total`() = runBlocking {
+    @Test fun `progress is reported and reaches the total`(): Unit = runBlocking {
         repeat(5) { rom("nes", "Game$it.nes", "hash-smb") }
         val seen = mutableListOf<RomScanPipeline.Progress>()
         val s = pipeline(ContentHasher(), MapLookup(catalogue))
@@ -221,21 +221,21 @@ class RomScanPipelineTest {
         assertEquals(1.0, seen.last().fraction)
     }
 
-    @Test fun `a missing root is ignored rather than failing`() = runBlocking {
+    @Test fun `a missing root is ignored rather than failing`(): Unit = runBlocking {
         rom("nes", "Game.nes", "hash-smb")
         val s = pipeline(ContentHasher(), MapLookup(catalogue))
             .scan(listOf(romRoot.absolutePath, "/does/not/exist"))
         assertEquals(1, s.total)
     }
 
-    @Test fun `an empty library still writes a valid index`() = runBlocking {
+    @Test fun `an empty library still writes a valid index`(): Unit = runBlocking {
         val s = pipeline(ContentHasher(), MapLookup(catalogue)).scan(listOf(romRoot.absolutePath))
         assertEquals(0, s.total)
         assertTrue(paths.discoveryIndex.isFile)
         assertEquals(0, JSONObject(paths.discoveryIndex.readText()).getInt("count"))
     }
 
-    @Test fun `the throttle hook is honoured`() = runBlocking {
+    @Test fun `the throttle hook is honoured`(): Unit = runBlocking {
         rom("nes", "Game.nes", "hash-smb")
         var asked = 0
         RomScanPipeline(paths, ContentHasher(), MapLookup(catalogue), throttleMs = { asked++; 0L })
@@ -243,11 +243,22 @@ class RomScanPipelineTest {
         assertTrue(asked > 0, "throttle hook was never consulted")
     }
 
-    @Test fun `zip archives are hashed via their largest entry`() = runBlocking {
+    /**
+     * The only test that takes an archive through the whole pipeline, and it had
+     * never run. Written as `= runBlocking { … }`, its last expression was a
+     * Boolean, so the method returned one — and JUnit skips a @Test that returns
+     * a value without a word. Hence the explicit `: Unit` on every test here.
+     *
+     * It was also named after the rule [ArchiveSelector] replaced, and its zip
+     * could not tell the two rules apart: the ROM was the largest entry anyway.
+     * Now the readme outweighs the ROM, so only picking the entry the platform
+     * runs produces the match.
+     */
+    @Test fun `a zip is hashed via the entry its platform runs, not the largest one`(): Unit = runBlocking {
         val dir = File(romRoot, "nes").apply { mkdirs() }
         val zip = File(dir, "Packed.zip")
         java.util.zip.ZipOutputStream(zip.outputStream()).use { z ->
-            z.putNextEntry(java.util.zip.ZipEntry("readme.txt")); z.write("x".toByteArray()); z.closeEntry()
+            z.putNextEntry(java.util.zip.ZipEntry("readme.txt")); z.write("x".repeat(4096).toByteArray()); z.closeEntry()
             z.putNextEntry(java.util.zip.ZipEntry("game.nes"));   z.write("hash-smb".toByteArray()); z.closeEntry()
         }
         val tmp = Files.createTempDirectory("hasher-tmp").toFile()
@@ -256,8 +267,17 @@ class RomScanPipelineTest {
             .scan(listOf(romRoot.absolutePath))
 
         assertEquals(1, s.newEntries, "the ROM inside the zip should have matched")
+        // The plain digests describe the entry that was hashed, not the container:
+        // a database matching by file has never heard of the zip's own MD5.
+        val rom = JSONObject(paths.metadata("1446").readText()).getJSONObject("rom")
+        assertEquals("hash-smb", rom.getString("hash"))
+        assertEquals(md5("hash-smb"), rom.getString("fileMd5"))
         assertFalse(tmp.listFiles()?.any { it.name.startsWith("bridge_") } ?: false,
                     "temp extraction files must be cleaned up")
         tmp.deleteRecursively()
     }
+
+    private fun md5(text: String): String =
+        java.security.MessageDigest.getInstance("MD5").digest(text.toByteArray())
+            .joinToString("") { "%02x".format(it) }
 }

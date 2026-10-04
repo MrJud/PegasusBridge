@@ -1,0 +1,62 @@
+# The tests of shared/, the pure-JVM half both shells are built from, on every
+# push and pull request. Until now a regression there reached the tablet and the
+# desktop with nothing in between.
+#
+# Deliberately narrow: no Android build (it needs the SDK and NDK) and no native
+# one (native/build.sh and rcheevos). Those come later.
+#
+# What it downloads: the Gradle distribution from services.gradle.org, the
+# Kotlin plugin from the Gradle plugin portal, every library from Maven Central
+# — except NewPipeExtractor and nanojson, which only JitPack serves (:video
+# needs them, and :daemon needs :video). The plugin and the libraries are pinned
+# by checksum in shared/gradle/verification-metadata.xml, so a changed download
+# fails the build rather than slipping in.
+name: shared tests
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: JDK ${{ matrix.java }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        # 21 is what the README asks for and what package.sh builds the bundle
+        # with. 17 is the bytecode level the Android app consumes: without a
+        # toolchain the Kotlin compiler sees the class library of whatever JDK
+        # runs Gradle, so only a run on 17 notices a call to a newer API.
+        java: ['17', '21']
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: ${{ matrix.java }}
+          cache: gradle
+
+      - name: Test
+        working-directory: shared
+        run: ./gradlew --no-daemon test
+
+      # A green run proves nothing about a test JUnit never ran: a Kotlin test
+      # whose body does not end in Unit is dropped without a word.
+      - name: Every declared test ran
+        working-directory: shared
+        run: ./tests/check_test_counts.py
+
+      - name: Upload test reports
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-reports-jdk${{ matrix.java }}
+          path: |
+            shared/*/build/reports/tests/test/
+            shared/*/build/test-results/test/*.xml

@@ -445,7 +445,8 @@ cd shared
 ./package.sh /tmp/bridge-bundle
 MAKE_TARBALL=1 BRIDGE_VERSION=v0.2.0 ./package.sh /tmp/bridge-bundle   # release archive
 
-./gradlew test        # 139 tests
+./gradlew test
+./tests/check_test_counts.py   # every declared @Test also ran (JUnit drops some silently)
 
 # Android
 cd ..

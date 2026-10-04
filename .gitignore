@@ -30,6 +30,12 @@ platform-tools.zip
 # Scan index copied out of a data root while debugging
 /_index.json
 
+# What a crashing JVM leaves in its working directory — a daemon started from
+# shared/, a Gradle test worker in a module. They describe one machine at one
+# moment and mean nothing to anyone else.
+hs_err_pid*.log
+replay_pid*.log
+
 # The packaged daemon: a jlink runtime plus the jars, ~150 MB, rebuilt by
 # package.sh whenever it is needed.
 shared/dist/

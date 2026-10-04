@@ -1,11 +1,15 @@
 package com.pegasus.bridge.hasher
 
+import org.apache.commons.compress.archivers.sevenz.SevenZArchiveEntry
+import org.apache.commons.compress.archivers.sevenz.SevenZOutputFile
 import java.io.File
+import java.util.concurrent.CancellationException
 import java.util.zip.ZipEntry
 import java.util.zip.ZipOutputStream
 import kotlin.test.AfterTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
@@ -28,6 +32,20 @@ class PlainRomHasherTest {
         tmp.mkdirs()
         val f = File(tmp, name)
         f.writeBytes(bytes)
+        return f
+    }
+
+    /** Unlike ZipOutputStream, this lets two entries share a name. */
+    private fun sevenZ(name: String, vararg entries: Pair<String, ByteArray>): File {
+        tmp.mkdirs()
+        val f = File(tmp, name)
+        SevenZOutputFile(f).use { out ->
+            for ((entry, bytes) in entries) {
+                out.putArchiveEntry(SevenZArchiveEntry().apply { this.name = entry })
+                out.write(bytes)
+                out.closeArchiveEntry()
+            }
+        }
         return f
     }
 
@@ -127,6 +145,70 @@ class PlainRomHasherTest {
         val h = PlainRomHasher.hash(zip.absolutePath, tmp, "megadrive")!!
         assertEquals(2, h.ambiguous.size)
         assertTrue(!h.fromArchive, "the digests describe the container, and must say so")
+    }
+
+    // The entry streams straight into the digest, so nothing is written — and a
+    // ScreenScraper lookup no longer depends on a cache directory being writable.
+    @Test fun `archive digests need no writable temporary directory`() {
+        tmp.mkdirs()
+        val zip = File(tmp, "game.zip")
+        ZipOutputStream(zip.outputStream()).use { z ->
+            z.putNextEntry(ZipEntry("game.nes")); z.write("abc".toByteArray()); z.closeEntry()
+        }
+        // A file cannot contain temporary files, even when tests run as root.
+        val unusableTempDir = write("not-a-directory", byteArrayOf(1))
+        val h = PlainRomHasher.hash(zip.absolutePath, unusableTempDir)
+        assertNotNull(h)
+        assertTrue(h.fromArchive)
+        assertEquals("900150983cd24fb0d6963f7d28e17f72", h.md5)
+        assertEquals(3L, h.size)
+        assertEquals(1L, unusableTempDir.length())
+    }
+
+    // An empty leftover ahead of the ROM, both called `game.nes`. The selector
+    // refuses the empty one, and the entry read must be the one it chose rather
+    // than the first that answers to the name.
+    @Test fun `a 7z digests the entry the selector chose, not the first with its name`() {
+        val archive = sevenZ("game.7z", "game.nes" to ByteArray(0), "game.nes" to "abc".toByteArray())
+        val h = PlainRomHasher.hash(archive.absolutePath, tmp)
+        assertNotNull(h)
+        assertTrue(h.fromArchive)
+        assertEquals("game.nes", h.archiveEntry)
+        assertEquals("900150983cd24fb0d6963f7d28e17f72", h.md5)
+        assertEquals("352441c2", h.crc32)
+        assertEquals(3L, h.size)
+    }
+
+    // An empty entry is never taken for the ROM, so an archive holding nothing
+    // else is described by its container — and says so.
+    @Test fun `an archive holding only an empty entry is digested as the container`() {
+        val archive = sevenZ("empty.7z", "empty.nes" to ByteArray(0))
+        val h = PlainRomHasher.hash(archive.absolutePath, tmp)
+        assertNotNull(h)
+        assertTrue(!h.fromArchive)
+        assertEquals("", h.archiveEntry)
+        assertEquals(archive.length(), h.size)
+    }
+
+    // A cancelled lookup must stop, not be "handled" by digesting the container. In
+    // a 7z an interrupt arrives as an IOException, which used to mean exactly that.
+    @Test fun `an interrupt is a cancellation, not an unreadable archive`() {
+        tmp.mkdirs()
+        val zip = File(tmp, "game.zip")
+        ZipOutputStream(zip.outputStream()).use { z ->
+            z.putNextEntry(ZipEntry("game.nes")); z.write(ByteArray(200_000)); z.closeEntry()
+        }
+        val sz = sevenZ("game.7z", "game.nes" to ByteArray(200_000))
+        for (archive in listOf(zip, sz)) {
+            try {
+                Thread.currentThread().interrupt()
+                assertFailsWith<CancellationException>(archive.name) {
+                    PlainRomHasher.hash(archive.absolutePath, tmp)
+                }
+            } finally {
+                Thread.interrupted()
+            }
+        }
     }
 
     @Test fun `a ROM misnamed as an archive is hashed anyway`() {

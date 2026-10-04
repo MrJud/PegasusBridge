@@ -113,48 +113,70 @@ class ArchiveAwareHasher(
 
         if (!ArchiveReader.isArchive(file)) return plain(file)
 
-        return when (val opened = ArchiveReader.list(file)) {
-            // A file that cannot be read as the archive its extension claims is
-            // hashed as it lies. An extension is a claim, not a fact, and a plain
-            // ROM renamed `.7z` is common enough that refusing it loses real games;
-            // the fallback cannot produce a wrong match, only a miss. It is marked,
-            // so a scraper lookup can decline to trust a container digest.
-            is ArchiveReader.Opened.Unreadable -> {
-                BridgeLog.w(TAG, "${file.name} is not a readable archive (${opened.reason}); " +
-                                 "hashing the file itself")
-                plain(file, containerFallback = true)
-            }
-            is ArchiveReader.Opened.Entries ->
-                when (val pick = ArchiveSelector.select(opened.entries, file.name, platform)) {
-                    is ArchiveSelector.Selection.One -> extracted(file, pick.entry)
-                    is ArchiveSelector.Selection.Ambiguous ->
-                        HashOutcome.AmbiguousArchive(pick.candidates.map { it.name })
-                    is ArchiveSelector.Selection.NoPlayableEntry ->
-                        // Nothing inside is playable on this platform. The container
-                        // itself is the last thing left to describe, and saying so is
-                        // more useful than refusing outright.
-                        plain(file, containerFallback = true)
+        return ArchiveReader.open(file) { opened ->
+            when (opened) {
+                // A file that cannot be read as the archive its extension claims is
+                // hashed as it lies. An extension is a claim, not a fact, and a plain
+                // ROM renamed `.7z` is common enough that refusing it loses real games;
+                // the fallback cannot produce a wrong match, only a miss. It is marked,
+                // so a scraper lookup can decline to trust a container digest.
+                is ArchiveReader.Opened.Unreadable -> {
+                    BridgeLog.w(TAG, "${file.name} is not a readable archive (${opened.reason}); " +
+                                     "hashing the file itself")
+                    plain(file, containerFallback = true)
                 }
+                is ArchiveReader.Opened.Entries ->
+                    when (val pick = ArchiveSelector.select(opened.entries, file.name, platform)) {
+                        is ArchiveSelector.Selection.One -> extracted(file, opened, pick.entry)
+                        is ArchiveSelector.Selection.Ambiguous ->
+                            HashOutcome.AmbiguousArchive(pick.candidates.map { it.name })
+                        is ArchiveSelector.Selection.NoPlayableEntry ->
+                            // Nothing inside is playable on this platform. The container
+                            // itself is the last thing left to describe, and saying so is
+                            // more useful than refusing outright.
+                            plain(file, containerFallback = true)
+                    }
+            }
         }
     }
 
-    private fun extracted(archive: File, entry: ArchiveSelector.Entry): HashOutcome = try {
-        tempDir.mkdirs()
-        val tmp = File.createTempFile("bridge_", ".bin", tempDir)
+    /**
+     * Copies [entry] out for rcheevos, which only reads plain files, digesting it
+     * on the way so the copy is never read back.
+     *
+     * A cancellation passes straight through — it is not a reason to hash the
+     * container instead — and the copy is deleted whichever way this ends.
+     */
+    private fun extracted(
+        archive: File,
+        opened: ArchiveReader.Opened.Entries,
+        entry: ArchiveSelector.Entry
+    ): HashOutcome {
+        var copy: File? = null
         try {
-            if (!ArchiveReader.extract(archive, entry.name, tmp))
-                HashOutcome.Failed("could not extract '${entry.name}'")
-            else when (val r = plain(tmp)) {
-                is HashOutcome.Ok -> HashOutcome.Ok(r.result.copy(archiveEntry = entry.name))
-                else -> r
+            tempDir.mkdirs()
+            // The entry's own extension, not `.bin`: rcheevos picks its algorithm by
+            // it, and an iNES ROM named `.bin` gets a whole-file Mega Drive hash.
+            val rom = File.createTempFile("bridge_", RomHashIO.tempSuffix(entry.name), tempDir)
+            copy = rom
+            val digests = try {
+                opened.read(entry) { input -> rom.outputStream().use { RomHashIO.copyAndDigest(input, it) } }
+            } catch (t: Throwable) {
+                RomHashIO.rethrowIfCancelled(t)
+                BridgeLog.w(TAG, "could not extract '${entry.name}' from ${archive.name}: ${t.message}")
+                return HashOutcome.Failed("could not extract '${entry.name}'")
             }
+            val result = delegate.hash(rom.absolutePath)
+                ?: return HashOutcome.Failed("the hasher could not read '${entry.name}'")
+            return HashOutcome.Ok(result.copy(
+                fileMd5 = digests.md5, fileCrc32 = digests.crc32, archiveEntry = entry.name))
+        } catch (t: Throwable) {
+            RomHashIO.rethrowIfCancelled(t)
+            BridgeLog.e(TAG, "archive failed: ${archive.name}", t)
+            return HashOutcome.Failed(t.message ?: t.javaClass.simpleName)
         } finally {
-            tmp.delete()
+            copy?.delete()
         }
-    } catch (t: Throwable) {
-        if (t is kotlinx.coroutines.CancellationException) throw t
-        BridgeLog.e(TAG, "archive failed: ${archive.name}", t)
-        HashOutcome.Failed(t.message ?: t.javaClass.simpleName)
     }
 
     /** [romFile] is whatever the delegate is given, so the digests describe the ROM. */
@@ -165,23 +187,10 @@ class ArchiveAwareHasher(
     }
 
     private fun withPlainHashes(result: HashResult, romFile: File): HashResult = try {
-        val md = java.security.MessageDigest.getInstance("MD5")
-        val crc = java.util.zip.CRC32()
-        romFile.inputStream().use { input ->
-            val buf = ByteArray(64 * 1024)
-            while (true) {
-                val n = input.read(buf)
-                if (n <= 0) break
-                md.update(buf, 0, n)
-                crc.update(buf, 0, n)
-            }
-        }
-        result.copy(
-            fileMd5 = md.digest().joinToString("") { "%02x".format(it) },
-            fileCrc32 = "%08x".format(crc.value)
-        )
+        val digests = RomHashIO.digest(romFile)
+        result.copy(fileMd5 = digests.md5, fileCrc32 = digests.crc32)
     } catch (t: Throwable) {
-        if (t is kotlinx.coroutines.CancellationException) throw t
+        RomHashIO.rethrowIfCancelled(t)
         // Costs a scraper lookup, never the RA match the scan exists for.
         BridgeLog.w(TAG, "plain hash failed: ${romFile.name}: ${t.message}")
         result

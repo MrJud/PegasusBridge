@@ -185,7 +185,14 @@ class HasherService : Service() {
         val apiClient   = RAApiClient(raUser, raApiKey)
         val hashChannel = Channel<HashJob>(capacity = 32)
         val resultChannel = Channel<ResultJob>(capacity = 128)
-        val hashDedup   = mutableMapOf<String, GameMetadata?>()
+        // hash -> the one lookup for it, in flight or finished.
+        //
+        // The promise and not the result, which is what makes the de-duplication
+        // real. Holding results, a worker read the map, released the lock and only
+        // then called the network, so a second worker could find the same hash
+        // absent in that gap and call as well. The lock covered the map, never the
+        // decision to ask.
+        val hashDedup   = mutableMapOf<String, CompletableDeferred<GameMetadata?>>()
 
         // Pre-load existing metadata so unchanged files can skip hash + API entirely.
         val metaCache = preloadMetadataCache()
@@ -263,25 +270,52 @@ class HasherService : Service() {
         val workers = List(NUM_API_WORKERS) {
             launch(Dispatchers.IO) {
                 for (hj in hashChannel) {
-                    val known = synchronized(hashDedup) { hashDedup[hj.hash.hash] }
-                    if (known != null) { resultChannel.send(ResultJob(hj, known)); continue }
-
-                    when (val r = apiClient.lookupHash(hj.hash.hash)) {
-                        is RAApiClient.Lookup.Hit -> {
-                            synchronized(hashDedup) { hashDedup[hj.hash.hash] = r.meta }
-                            resultChannel.send(ResultJob(hj, r.meta))
+                    // Claiming the hash and registering the promise happen under
+                    // one lock, so exactly one worker owns the call and any other
+                    // file with the same hash awaits it instead of racing it.
+                    val hash = hj.hash.hash
+                    var mine: CompletableDeferred<GameMetadata?>? = null
+                    val pending = synchronized(hashDedup) {
+                        hashDedup[hash] ?: CompletableDeferred<GameMetadata?>().also {
+                            mine = it
+                            hashDedup[hash] = it
                         }
-                        RAApiClient.Lookup.Miss -> {
-                            // A real answer, worth remembering for this run.
-                            val miss = GameMetadata(gameId = 0)
-                            synchronized(hashDedup) { hashDedup[hj.hash.hash] = miss }
-                            resultChannel.send(ResultJob(hj, miss))
-                        }
-                        RAApiClient.Lookup.Failed ->
-                            // Deliberately not cached and not counted as an
-                            // answer: the next scan must ask again.
-                            resultChannel.send(ResultJob(hj, null, failed = true))
                     }
+
+                    val owned = mine
+                    val meta: GameMetadata? = if (owned == null) {
+                        // Someone else is already asking. A file that arrives while
+                        // a failing lookup is in flight shares that failure; one that
+                        // arrives after it finished finds the entry gone and asks again.
+                        pending.await()
+                    } else {
+                        var answer: GameMetadata? = null
+                        var failure: Throwable? = null
+                        try {
+                            answer = when (val r = apiClient.lookupHash(hash)) {
+                                is RAApiClient.Lookup.Hit -> r.meta
+                                // A real answer, worth remembering for this run.
+                                RAApiClient.Lookup.Miss   -> GameMetadata(gameId = 0)
+                                // Deliberately not an answer: a later file with
+                                // this hash, and the next scan, ask again.
+                                RAApiClient.Lookup.Failed -> null
+                            }
+                        } catch (t: Throwable) {
+                            failure = t
+                            throw t
+                        } finally {
+                            // Settled on every path, cancellation included: an owner
+                            // that simply stopped would leave the files waiting on it
+                            // awaiting a promise nobody completes. The entry goes
+                            // before the promise is settled, so no file can pick up
+                            // a failure that has already finished.
+                            if (answer == null) synchronized(hashDedup) { hashDedup.remove(hash) }
+                            if (failure == null) owned.complete(answer)
+                            else owned.completeExceptionally(failure)
+                        }
+                        answer
+                    }
+                    resultChannel.send(ResultJob(hj, meta, failed = meta == null))
                 }
             }
         }

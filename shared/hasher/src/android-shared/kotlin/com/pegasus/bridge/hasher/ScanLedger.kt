@@ -112,6 +112,17 @@ class ScanLedger(private val file: File) {
     /** Counts by state for the scan just run, which is what `/jobs/{id}` reports. */
     private val tally = HashMap<State, Int>()
 
+    /**
+     * The archives the scan just run left undecided, path to candidates, kept per
+     * run beside [tally] and under its lock.
+     *
+     * Not read back out of [entries], which is what this used to do: those keep
+     * the verdicts of every root, not only the ones scanned, and a scan of one
+     * collection named the ambiguous archives of all the others — archives its
+     * own [tally] did not count.
+     */
+    private val undecided = HashMap<String, String>()
+
     init { load() }
 
     private fun load() {
@@ -178,22 +189,33 @@ class ScanLedger(private val file: File) {
         synchronized(entries) {
             entries[path] = Entry(state, now, size, modified, ALGORITHM_VERSION, gameId, detail)
         }
-        count(state)
+        count(path, state, detail)
     }
 
-    /** Counts a state for the run's summary without changing what is stored. */
-    fun count(state: State) {
-        synchronized(tally) { tally[state] = (tally[state] ?: 0) + 1 }
+    /**
+     * Counts a verdict an earlier scan reached, the one [canSkip] returned for
+     * [path], in this run's summary without changing what is stored.
+     *
+     * The path too, not only the state: an ambiguous archive skipped this way is
+     * still one this scan has to name.
+     */
+    fun count(path: String, settled: Entry) = count(path, settled.state, settled.detail)
+
+    private fun count(path: String, state: State, detail: String) {
+        synchronized(tally) {
+            tally[state] = (tally[state] ?: 0) + 1
+            if (state == State.AMBIGUOUS_ARCHIVE) undecided[path] = detail
+        }
     }
 
     fun counts(): Map<State, Int> = synchronized(tally) { HashMap(tally) }
 
-    /** Files the last scan could not decide, with the candidates that made it so. */
-    fun ambiguousArchives(): List<Pair<String, String>> = synchronized(entries) {
-        entries.entries
-            .filter { it.value.state == State.AMBIGUOUS_ARCHIVE }
-            .map { it.key to it.value.detail }
-            .sortedBy { it.first }
+    /**
+     * The archives the scan just run could not decide, with the candidates that
+     * made it so: the ones its [counts] give as [State.AMBIGUOUS_ARCHIVE], by path.
+     */
+    fun ambiguousArchives(): List<Pair<String, String>> = synchronized(tally) {
+        undecided.entries.map { it.key to it.value }.sortedBy { it.first }
     }
 
     fun save(writeAtomic: (File, String) -> Unit) {

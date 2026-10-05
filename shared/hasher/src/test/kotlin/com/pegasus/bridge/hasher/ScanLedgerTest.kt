@@ -79,6 +79,17 @@ class ScanLedgerTest {
         return File(dir, name).apply { writeText(content) }
     }
 
+    /** Two ROMs of the platform in one zip, neither named after it: nobody can pick. */
+    private fun ambiguousZip(platform: String, name: String): File {
+        val dir = File(romRoot, platform).apply { mkdirs() }
+        return File(dir, name).also { zip ->
+            ZipOutputStream(zip.outputStream()).use { z ->
+                z.putNextEntry(ZipEntry("Sonic 1.md")); z.write(ByteArray(512)); z.closeEntry()
+                z.putNextEntry(ZipEntry("Sonic 2.md")); z.write(ByteArray(1024)); z.closeEntry()
+            }
+        }
+    }
+
     private fun pipeline(h: RomHasher, l: RaHashLookup) =
         RomScanPipeline(paths, h, l, throttleMs = { 0L })
 
@@ -162,12 +173,7 @@ class ScanLedgerTest {
     // ── An archive nobody can resolve ───────────────────────────────────────
 
     @Test fun `an ambiguous archive is a diagnostic and not a miss`(): Unit = runBlocking {
-        val dir = File(romRoot, "megadrive").apply { mkdirs() }
-        val zip = File(dir, "Sonic Collection.zip")
-        ZipOutputStream(zip.outputStream()).use { z ->
-            z.putNextEntry(ZipEntry("Sonic 1.md")); z.write(ByteArray(512)); z.closeEntry()
-            z.putNextEntry(ZipEntry("Sonic 2.md")); z.write(ByteArray(1024)); z.closeEntry()
-        }
+        ambiguousZip("megadrive", "Sonic Collection.zip")
         val l = SaysNo()
         val s = pipeline(ArchiveAwareHasher(ContentHasher(), File(dataRoot, "tmp")), l)
             .scan(listOf(romRoot.absolutePath))
@@ -291,20 +297,37 @@ class ScanLedgerTest {
     // A theme can scan one collection at a time. Keeping only what the last scan
     // found threw away the other collections' misses, and the next full scan
     // hashed and asked about every one of them again.
+    //
+    // What the ledger keeps is not what the scan reports, though: the ambiguous
+    // archive under megadrive stays a verdict, but a scan of nes alone that named
+    // it would hand the theme, on every round, an archive to open from a
+    // collection it never asked about, and could push its own past the fifty
+    // that /jobs lists.
     @Test fun `a scan of one root keeps the verdicts of the others`(): Unit = runBlocking {
         rom("nes", "A.nes", "hash-a")
         val other = rom("snes", "B.sfc", "hash-b")
-        pipeline(ContentHasher(), SaysNo()).scan(listOf(romRoot.absolutePath))
+        val archive = ambiguousZip("megadrive", "Sonic Collection.zip")
+        val tmp = File(dataRoot, "tmp")
+        val s1 = pipeline(ArchiveAwareHasher(ContentHasher(), tmp), SaysNo()).scan(listOf(romRoot.absolutePath))
+        assertEquals(listOf(archive.canonicalPath), s1.ambiguousArchives.map { it.first })
 
-        val s2 = pipeline(ContentHasher(), SaysNo()).scan(listOf(File(romRoot, "nes").absolutePath))
+        val s2 = pipeline(ArchiveAwareHasher(ContentHasher(), tmp), SaysNo())
+            .scan(listOf(File(romRoot, "nes").absolutePath))
         assertEquals(1, s2.total)
         assertEquals("NOT_FOUND", ledgerEntry(other)!!.getString("state"), "the other root's miss was dropped")
+        assertEquals("AMBIGUOUS_ARCHIVE", ledgerEntry(archive)!!.getString("state"))
+        assertEquals(emptyList(), s2.ambiguousArchives, "a scan of nes reported an archive under megadrive")
 
         val h3 = ContentHasher(); val l3 = SaysNo()
-        val s3 = pipeline(h3, l3).scan(listOf(romRoot.absolutePath))
+        val s3 = pipeline(ArchiveAwareHasher(h3, tmp), l3).scan(listOf(romRoot.absolutePath))
         assertEquals(0, h3.calls.get(), "a miss inside its TTL was hashed again")
         assertEquals(0, l3.calls.get(), "a miss inside its TTL was asked about again")
         assertEquals(2, s3.states[ScanLedger.State.NOT_FOUND])
+        // Skipped inside its TTL rather than decided again, and still this scan's
+        // to report, since this scan counted it.
+        assertEquals(1, s3.states[ScanLedger.State.AMBIGUOUS_ARCHIVE])
+        assertEquals(listOf(archive.canonicalPath), s3.ambiguousArchives.map { it.first },
+                     "an archive skipped on its standing verdict was counted but not named")
     }
 
     // What the ledger still drops: a file that is gone, even outside the roots

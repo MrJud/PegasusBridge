@@ -92,7 +92,10 @@ class RomScanPipeline(
          * nobody could resolve, or a source that stopped answering.
          */
         val states: Map<ScanLedger.State, Int> = emptyMap(),
-        /** Archives holding several plausible ROMs, with the candidates. */
+        /**
+         * Archives holding several plausible ROMs, with the candidates: the ones
+         * [states] counts as AMBIGUOUS_ARCHIVE, so only files this scan looked at.
+         */
         val ambiguousArchives: List<Pair<String, String>> = emptyList()
     )
 
@@ -387,7 +390,7 @@ class RomScanPipeline(
         // ever skip an answer the source actually gave.
         val settled = ledger.canSkip(path, size, modified, now)
         if (settled != null && settled.state != ScanLedger.State.MATCHED) {
-            ledger.count(settled.state)
+            ledger.count(path, settled)
             resultQueue.send(ResultJob(
                 HashJob(file, cacheKey, HashResult("", 0), rawPlatform, size, modified),
                 null, preRecorded = true))

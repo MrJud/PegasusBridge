@@ -317,19 +317,33 @@ class RaHashLookupTest {
         assertTrue(currentTime in 7_000L..7_750L, "virtual time spent: $currentTime ms")
     }
 
+    /**
+     * The coroutine returning is not the proof: suspendCancellableCoroutine hands
+     * a cancelled caller back at once whatever happens to the socket, and with
+     * the call left running OkHttp would go on reading until the 30 s timeout.
+     * So the server streams a body that never ends, a byte every 20 ms, and
+     * watches for the moment a write fails because the client has gone. Only
+     * call.cancel() closes that socket while the body is held open.
+     */
     @Test fun `cancellation stops an in-flight body read without reporting failure`() {
         val bodyStarted = CountDownLatch(1)
         val releaseBody = CountDownLatch(1)
+        val clientGone = CountDownLatch(1)
         val returnedNormally = AtomicBoolean()
         server.removeContext("/")
         server.createContext("/") { exchange ->
             requests += exchange.requestURI.path
-            exchange.sendResponseHeaders(200, 4096)
+            exchange.sendResponseHeaders(200, 0)   // chunked: no length, no end
             try {
                 exchange.responseBody.write('{'.code)
                 exchange.responseBody.flush()
                 bodyStarted.countDown()
-                releaseBody.await(5, TimeUnit.SECONDS)
+                while (!releaseBody.await(20, TimeUnit.MILLISECONDS)) {
+                    exchange.responseBody.write(' '.code)
+                    exchange.responseBody.flush()
+                }
+            } catch (e: java.io.IOException) {
+                clientGone.countDown()
             } finally {
                 exchange.close()
             }
@@ -341,8 +355,9 @@ class RaHashLookupTest {
             }
             try {
                 assertTrue(bodyStarted.await(3, TimeUnit.SECONDS), "request did not reach the local server")
-                // A blocking execute() would sit in that read until the 30 s timeout.
                 withTimeout(2000) { job.cancelAndJoin() }
+                assertTrue(clientGone.await(2, TimeUnit.SECONDS),
+                           "the body read went on after the cancel: the socket was never closed")
                 assertFalse(returnedNormally.get(), "lookup must propagate cancellation to its caller")
                 assertEquals(0, lookup.consecutiveFailures)
                 assertEquals(1, requests.size)

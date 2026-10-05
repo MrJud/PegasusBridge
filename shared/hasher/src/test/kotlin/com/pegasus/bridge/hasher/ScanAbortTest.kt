@@ -111,6 +111,10 @@ class ScanAbortTest {
             .let { File(it, name).writeText(content) }
     }
 
+    /** The seven counts together: on a scan cut short too, they are the files the collector saw. */
+    private fun RomScanPipeline.Summary.counted(): Int =
+        newEntries + cachedHits + skippedPlatforms + unmatched + incompatible + hashFailed + failedLookups
+
     // 400 files: far more than the 128-slot result queue, so the producers are
     // certain to be mid-send when the collector gives up.
     @Test fun `a dead lookup aborts the scan instead of hanging it`(): Unit = runBlocking {
@@ -190,6 +194,7 @@ class ScanAbortTest {
 
         assertFalse(s.aborted)
         assertEquals("", s.reason)
+        assertNull(s.abortCause)
         assertEquals(s.total, s.processed, "a complete scan processes everything")
     }
 
@@ -233,6 +238,8 @@ class ScanAbortTest {
         assertTrue(s.aborted)
         assertTrue(s.processed < s.total)
         assertTrue(s.reason.startsWith("the lookup source stopped answering"), s.reason)
+        assertEquals(RomScanPipeline.AbortCause.SOURCE_DOWN, s.abortCause)
+        assertEquals(s.processed, s.counted(), "the counts of an aborted scan do not add up to what it saw")
         assertEquals(0, active.get(), "a lookup was still running after scan() returned")
         assertEquals(1, s.indexed, "the match from the earlier scan must survive the abort")
         assertEquals(s.indexed, JSONObject(paths.discoveryIndex.readText()).getInt("count"))
@@ -276,9 +283,13 @@ class ScanAbortTest {
 
             assertTrue(s.aborted, "a scan with a refused key ran to the end")
             assertTrue(s.reason.startsWith("RetroAchievements refused the API key"), s.reason)
+            assertEquals(RomScanPipeline.AbortCause.KEY_REFUSED, s.abortCause)
             assertEquals(1, metadataRequests.get(), "the scan went on asking after the key was refused")
             assertEquals(1, s.failedLookups)
             assertEquals(1, s.states[ScanLedger.State.API_RETRY])
+            // The misses answered before the refusal are the rest of what it saw.
+            assertEquals(s.processed - 1, s.unmatched)
+            assertEquals(s.processed, s.counted())
             assertTrue(s.processed < s.total)
         } finally {
             server.stop(0)

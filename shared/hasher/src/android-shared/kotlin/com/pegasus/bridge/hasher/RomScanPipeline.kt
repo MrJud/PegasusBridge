@@ -52,13 +52,21 @@ class RomScanPipeline(
         require(apiWorkers > 0) { "apiWorkers must be positive, was $apiWorkers" }
     }
 
+    /**
+     * How far a scan has got. The seven counts after [currentFile] are the ones
+     * [Summary] ends with, and in every report they add up to [processed].
+     */
     data class Progress(
         val processed: Int,
         val total: Int,
         val currentFile: String,
         val newEntries: Int,
         val cachedHits: Int,
-        val skippedPlatforms: Int
+        val skippedPlatforms: Int,
+        val unmatched: Int = 0,
+        val incompatible: Int = 0,
+        val hashFailed: Int = 0,
+        val failedLookups: Int = 0
     ) {
         val fraction: Double get() = if (total <= 0) 0.0 else processed.toDouble() / total
     }
@@ -82,8 +90,49 @@ class RomScanPipeline(
         val aborted: Boolean = false,
         /** Why, in one sentence, when [aborted]. Empty otherwise. */
         val reason: String = "",
-        /** Lookups that never got an answer — distinct from "not in the database". */
+        /**
+         * Which of the two aborts it was, when [aborted]. Null otherwise.
+         *
+         * For a caller that has to tell a person what to do next. [reason] cannot
+         * serve: it is a sentence for the log, with this run's counts in it, and
+         * the advice differs by the kind and not by the wording.
+         */
+        val abortCause: AbortCause? = null,
+        /**
+         * Lookups that brought nothing usable back — distinct from "not in the
+         * database". The ones the source never answered, and the ones it answered
+         * with a real id and no title: neither a match nor a verdict, recorded as
+         * a retry like the others, and until it was counted here counted nowhere.
+         */
         val failedLookups: Int = 0,
+        /**
+         * Asked about, and the source does not know the dump: a verdict of id 0,
+         * reached by this scan or by an earlier one and still standing.
+         *
+         * With [newEntries], [cachedHits], [skippedPlatforms], [incompatible],
+         * [hashFailed] and [failedLookups] this adds up to [processed]: every file
+         * the collector saw is in exactly one of the seven. While there were four,
+         * a miss was in none of them: a library the database had never heard of
+         * had 0 in each, and only [states] said that anything had been looked at.
+         * [skippedPlatforms] takes a verdict of UNSUPPORTED found standing as well
+         * as one decided now.
+         *
+         * The names of this one and the next are the keys the Android job record
+         * already has for the same two numbers.
+         */
+        val unmatched: Int = 0,
+        /**
+         * The source holds the dump only under a [VirtualGameId], as one it does
+         * not consider playable as it is. An answer and not a match, whether given
+         * now or still standing.
+         */
+        val incompatible: Int = 0,
+        /**
+         * Files that gave no hash to ask about: unreadable, an archive with
+         * several entries that could each be the ROM, or one the hasher knows it
+         * cannot hash. [states] keeps the three apart.
+         */
+        val hashFailed: Int = 0,
         /**
          * Every file the scan looked at, counted by what happened to it.
          *
@@ -99,6 +148,14 @@ class RomScanPipeline(
         val ambiguousArchives: List<Pair<String, String>> = emptyList()
     )
 
+    /** Why a scan stopped itself. What a person can do about it differs between the two. */
+    enum class AbortCause {
+        /** The source refused the credentials. Nothing changes until the key does. */
+        KEY_REFUSED,
+        /** [MAX_CONSECUTIVE_FAILURES] lookups in a row got no answer. Waiting may be enough. */
+        SOURCE_DOWN
+    }
+
     /**
      * Cuts a doomed scan short.
      *
@@ -112,7 +169,7 @@ class RomScanPipeline(
      * Throwing cancels every child through the ordinary structured-concurrency
      * path, so a blocked `send` is woken rather than waited on.
      */
-    private class ScanAborted(val why: String) : Exception(why)
+    private class ScanAborted(val why: String, val kind: AbortCause) : Exception(why)
 
     suspend fun scan(
         roots: List<String>,
@@ -146,9 +203,13 @@ class RomScanPipeline(
         // in that gap and call as well. The lock covered the map, never the decision.
         val hashDedup    = mutableMapOf<String, CompletableDeferred<GameMetadata?>>()
 
+        // One of the seven for every result, and no result in two: together they
+        // are `processed`, at every report and at the end.
         var processed = 0; var newEntries = 0; var cached = 0; var skipped = 0
+        var unmatched = 0; var incompatible = 0; var hashFailed = 0
         var failedLookups = 0
         var abortReason = ""
+        var abortCause: AbortCause? = null
 
         try {
             coroutineScope {
@@ -234,11 +295,29 @@ class RomScanPipeline(
                 val step = (total / 50).coerceAtLeast(1)
                 for (r in resultQueue) {
                     val job = r.job
+                    val verdict = r.preRecorded
                     when {
-                        // Already counted and recorded by the producer; nothing to add.
-                        r.skipped || r.cached || r.preRecorded -> {
-                            if (r.skipped) skipped++
-                            if (r.cached)  cached++
+                        // Already recorded by the producer; nothing to add.
+                        r.skipped -> skipped++
+                        r.cached  -> cached++
+                        // Recorded by the producer as well, or by an earlier scan and
+                        // still standing. Counted by what the verdict is, so that a
+                        // rescan puts a file where the scan that asked about it did.
+                        // These went into none of the counts, and on a second scan of
+                        // a library of misses every one of them was 0.
+                        verdict != null -> when (verdict) {
+                            ScanLedger.State.NOT_FOUND ->
+                                if (r.virtualId) incompatible++ else unmatched++
+                            ScanLedger.State.UNSUPPORTED -> skipped++
+                            ScanLedger.State.HASH_FAILED,
+                            ScanLedger.State.UNHASHABLE,
+                            ScanLedger.State.AMBIGUOUS_ARCHIVE -> hashFailed++
+                            // Neither arrives this way: a match is found through its
+                            // metadata or hashed again, and a retry is never left
+                            // standing. Listed so that a state added to the ledger does
+                            // not compile until it has been given a count here.
+                            ScanLedger.State.MATCHED   -> cached++
+                            ScanLedger.State.API_RETRY -> failedLookups++
                         }
                         // No answer at all. Recorded as a retry and never as a verdict:
                         // caching a refusal as "this game has no achievements" is the
@@ -259,6 +338,7 @@ class RomScanPipeline(
                         // requests a scan in one library, reported as a source that did
                         // not answer.
                         r.meta != null && VirtualGameId.isVirtual(r.meta.gameId) -> {
+                            incompatible++
                             ledger.record(canonical(job.file), ScanLedger.State.NOT_FOUND,
                                           job.fileSize, job.lastModified, now,
                                           gameId = r.meta.gameId,
@@ -277,8 +357,10 @@ class RomScanPipeline(
                         }
                         // A real id with no title. RaApiHashLookup answers null for one
                         // now, but the interface does not forbid it, and it is not a match
-                        // or a verdict either. Retried, not written off.
+                        // or a verdict either. Retried, not written off, and counted with
+                        // the lookups that got no answer: it is recorded as one of them.
                         r.meta != null && r.meta.gameId > 0 -> {
+                            failedLookups++
                             ledger.record(canonical(job.file), ScanLedger.State.API_RETRY,
                                           job.fileSize, job.lastModified, now,
                                           gameId = r.meta.gameId,
@@ -286,12 +368,16 @@ class RomScanPipeline(
                         }
                         // gameId 0: the source was asked and said no. A real verdict,
                         // remembered until its TTL runs out.
-                        else -> ledger.record(canonical(job.file), ScanLedger.State.NOT_FOUND,
-                                              job.fileSize, job.lastModified, now)
+                        else -> {
+                            unmatched++
+                            ledger.record(canonical(job.file), ScanLedger.State.NOT_FOUND,
+                                          job.fileSize, job.lastModified, now)
+                        }
                     }
                     processed++
                     if (processed % step == 0 || processed == total) {
-                        onProgress(Progress(processed, total, r.job.file.name, newEntries, cached, skipped))
+                        onProgress(Progress(processed, total, r.job.file.name, newEntries, cached, skipped,
+                                            unmatched, incompatible, hashFailed, failedLookups))
                     }
 
                     // A refused key fails every match from here on, and the misses in
@@ -301,7 +387,7 @@ class RomScanPipeline(
                     // answering". Stopped at the first refusal, and named.
                     if (lookup.authRejected) {
                         throw ScanAborted("RetroAchievements refused the API key " +
-                                          "($processed of $total processed)")
+                                          "($processed of $total processed)", AbortCause.KEY_REFUSED)
                     }
 
                     // Once RetroAchievements has stopped answering there is nothing to
@@ -310,12 +396,14 @@ class RomScanPipeline(
                     if (lookup.consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
                         throw ScanAborted(
                             "the lookup source stopped answering: $failedLookups of " +
-                            "$processed failed, ${lookup.consecutiveFailures} in a row")
+                            "$processed failed, ${lookup.consecutiveFailures} in a row",
+                            AbortCause.SOURCE_DOWN)
                     }
                 }
             }
         } catch (a: ScanAborted) {
             abortReason = a.why
+            abortCause = a.kind
             BridgeLog.e(TAG, "aborted after $processed/$total: $abortReason")
         } finally {
             // Cancel, not close: closing refuses new sends but leaves one already
@@ -337,8 +425,9 @@ class RomScanPipeline(
         return Summary(
             total = total, processed = processed, newEntries = newEntries,
             cachedHits = cached, skippedPlatforms = skipped, indexed = indexed,
-            aborted = abortReason.isNotEmpty(), reason = abortReason,
-            failedLookups = failedLookups, states = states,
+            aborted = abortReason.isNotEmpty(), reason = abortReason, abortCause = abortCause,
+            failedLookups = failedLookups, unmatched = unmatched,
+            incompatible = incompatible, hashFailed = hashFailed, states = states,
             ambiguousArchives = ledger.ambiguousArchives()
         )
     }
@@ -393,7 +482,8 @@ class RomScanPipeline(
             ledger.count(path, settled)
             resultQueue.send(ResultJob(
                 HashJob(file, cacheKey, HashResult("", 0), rawPlatform, size, modified),
-                null, preRecorded = true))
+                null, preRecorded = settled.state,
+                virtualId = VirtualGameId.isVirtual(settled.gameId)))
             return
         }
 
@@ -430,7 +520,7 @@ class RomScanPipeline(
                               detail = outcome.candidates.joinToString(", "))
                 resultQueue.send(ResultJob(
                     HashJob(file, cacheKey, HashResult("", 0), rawPlatform, size, modified),
-                    null, preRecorded = true))
+                    null, preRecorded = ScanLedger.State.AMBIGUOUS_ARCHIVE))
             }
             is HashOutcome.Failed -> {
                 // A file that may be fixed is retried; one the hasher knows it cannot
@@ -440,7 +530,7 @@ class RomScanPipeline(
                 ledger.record(path, state, size, modified, now, detail = outcome.reason)
                 resultQueue.send(ResultJob(
                     HashJob(file, cacheKey, HashResult("", 0), rawPlatform, size, modified),
-                    null, preRecorded = true))
+                    null, preRecorded = state))
             }
             is HashOutcome.Ok -> {
                 throttleMs().takeIf { it > 0 }?.let { delay(it) }
@@ -558,8 +648,14 @@ class RomScanPipeline(
         val job: HashJob, val meta: GameMetadata?,
         val cached: Boolean = false, val skipped: Boolean = false,
         val failed: Boolean = false,  // never got an answer — not the same as "unknown"
-        /** The producer already wrote this file's verdict; the collector only counts it. */
-        val preRecorded: Boolean = false
+        /**
+         * The verdict the producer already wrote for this file, or found standing
+         * from an earlier scan. The collector records nothing for it and only
+         * counts it, which takes knowing what the verdict was.
+         */
+        val preRecorded: ScanLedger.State? = null,
+        /** Beside a NOT_FOUND found standing: it was a virtual id, not a miss. */
+        val virtualId: Boolean = false
     )
     private data class CachedMeta(val hash: String, val fileMd5: String,
                                   val fileSize: Long, val lastModified: Long)

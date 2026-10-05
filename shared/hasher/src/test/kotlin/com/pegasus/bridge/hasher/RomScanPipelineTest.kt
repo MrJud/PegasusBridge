@@ -76,6 +76,51 @@ class RomScanPipelineTest {
     private fun pipeline(h: RomHasher, l: RaHashLookup) =
         RomScanPipeline(paths, h, l, throttleMs = { 0L })
 
+    private fun zip(platform: String, name: String, vararg entries: Pair<String, String>): File {
+        val dir = File(romRoot, platform).apply { mkdirs() }
+        return File(dir, name).also { zip ->
+            java.util.zip.ZipOutputStream(zip.outputStream()).use { z ->
+                for ((entry, content) in entries) {
+                    z.putNextEntry(java.util.zip.ZipEntry(entry)); z.write(content.toByteArray()); z.closeEntry()
+                }
+            }
+        }
+    }
+
+    /**
+     * Every way a source can answer, chosen by the hash: a game, a virtual id, a
+     * real id with no title, nothing at all, and for anything else a miss.
+     */
+    private class MixedLookup : RaHashLookup {
+        val asked: MutableList<String> = java.util.Collections.synchronizedList(mutableListOf())
+        override suspend fun lookup(hash: String): GameMetadata? {
+            asked += hash
+            return when {
+                hash.startsWith("hash-match-") -> {
+                    val n = hash.substringAfterLast('-').toInt()
+                    GameMetadata(2000 + n, "Game $n", "NES", "/Images/$n.png", 10)
+                }
+                hash == "hash-virtual"  -> GameMetadata(gameId = 1100001487)
+                hash == "hash-untitled" -> GameMetadata(gameId = 1487)
+                hash == "hash-silent"   -> null
+                else                    -> GameMetadata(gameId = 0)
+            }
+        }
+    }
+
+    // By name, so a count that fails says which one it was.
+    private fun counts(new: Int, cached: Int, skipped: Int, unmatched: Int,
+                       incompatible: Int, hashFailed: Int, failedLookups: Int) = mapOf(
+        "newEntries" to new, "cachedHits" to cached, "skippedPlatforms" to skipped,
+        "unmatched" to unmatched, "incompatible" to incompatible,
+        "hashFailed" to hashFailed, "failedLookups" to failedLookups)
+
+    private fun RomScanPipeline.Summary.counts() = counts(
+        newEntries, cachedHits, skippedPlatforms, unmatched, incompatible, hashFailed, failedLookups)
+
+    private fun RomScanPipeline.Progress.counts() = counts(
+        newEntries, cachedHits, skippedPlatforms, unmatched, incompatible, hashFailed, failedLookups)
+
     @Test fun `matched roms produce metadata and a discovery index`(): Unit = runBlocking {
         rom("nes", "Super Mario Bros. (World).nes", "hash-smb")
         rom("nes", "Contra (USA).nes", "hash-ctra")
@@ -123,6 +168,8 @@ class RomScanPipelineTest {
                      "no junk metadata file should be left on disk")
         assertEquals(mapOf(ScanLedger.State.NOT_FOUND to 1), s.states)
         assertEquals(0, s.failedLookups, "the source answered")
+        assertEquals(1, s.incompatible)
+        assertEquals(0, s.unmatched, "a dump RetroAchievements holds is not one it has never heard of")
         val entry = JSONObject(File(paths.cache, ScanLedger.FILE_NAME).readText())
             .getJSONObject("entries").getJSONObject(rom.canonicalPath)
         assertEquals(1100001487, entry.getInt("gameId"))
@@ -134,6 +181,8 @@ class RomScanPipelineTest {
         assertEquals(0, h2.calls.get(), "the file was read again inside the verdict's TTL")
         assertEquals(1, phantom.calls.get(), "the source was asked again inside the verdict's TTL")
         assertEquals(mapOf(ScanLedger.State.NOT_FOUND to 1), s2.states)
+        assertEquals(1, s2.incompatible, "the verdict found standing was counted as something else")
+        assertEquals(0, s2.unmatched)
     }
 
     // A real id with a title of only spaces, which RaApiHashLookup answers null
@@ -150,6 +199,7 @@ class RomScanPipelineTest {
         assertEquals(0, s.newEntries)
         assertEquals(0, paths.metadata.listFiles { f -> !f.name.startsWith("_") }!!.size)
         assertEquals(1, s.states[ScanLedger.State.API_RETRY], "it must be asked about again, not written off")
+        assertEquals(1, s.failedLookups, "an id with no title is a lookup that brought nothing usable back")
     }
 
     @Test fun `unmatched roms are counted but write no metadata`(): Unit = runBlocking {
@@ -157,6 +207,7 @@ class RomScanPipelineTest {
         val s = pipeline(ContentHasher(), MapLookup(catalogue)).scan(listOf(romRoot.absolutePath))
         assertEquals(1, s.total)
         assertEquals(0, s.newEntries)
+        assertEquals(1, s.unmatched)
         assertEquals(0, paths.metadata.listFiles { f -> !f.name.startsWith("_") }!!.size)
     }
 
@@ -290,6 +341,100 @@ class RomScanPipelineTest {
         val s = pipeline(ContentHasher(), MapLookup(catalogue)).scan(listOf(romRoot.absolutePath))
         assertEquals(2, s.total)
         assertEquals(1, s.newEntries, "the readable ROM must still be processed")
+        assertEquals(1, s.hashFailed)
+    }
+
+    /**
+     * One of everything a scan can meet, in numbers no two of which are alike, so
+     * that a file counted under the wrong name shows: four matches, six misses,
+     * one virtual id, three files that give no hash (one unreadable, a zip with
+     * two ROMs in it, a zip whose ROM is a disc descriptor), five under a
+     * platform RetroAchievements does not cover, and two lookups that brought
+     * nothing usable back (one unanswered, one a real id with no title).
+     *
+     * Scanned twice. The first scan asks about every hash. The second finds the
+     * matches in their metadata and the verdicts in the ledger, and has to put
+     * each file in the count the first one did without asking about it. Only
+     * what is never kept as a verdict is done again: the unreadable file is read
+     * and the two lookups are made.
+     *
+     * While the counts were four, the first scan here gave 4 new, 5 skipped and
+     * 1 failed lookup: ten of its 21 files.
+     */
+    @Test fun `every file is in exactly one of seven counts, on a first scan and on a rescan`(): Unit = runBlocking {
+        repeat(4) { rom("nes", "Match $it.nes", "hash-match-$it") }
+        repeat(6) { rom("nes", "Miss $it.nes", "hash-miss-$it") }
+        rom("nes", "Metroid (Europe) (Virtual Console).nes", "hash-virtual")
+        rom("nes", "Broken.nes", "UNHASHABLE")
+        zip("nes", "Two Games.zip", "first.nes" to "hash-first", "second.nes" to "hash-second")
+        zip("psx", "Disc.zip", "Disc.cue" to "FILE \"Disc.bin\" BINARY", "Disc.bin" to "x".repeat(4096))
+        repeat(5) { rom("switch", "Game $it.nes", "hash-switch-$it") }
+        rom("nes", "Silent.nes", "hash-silent")
+        rom("nes", "Untitled.nes", "hash-untitled")
+        val tmp = Files.createTempDirectory("hasher-tmp").toFile()
+
+        suspend fun scan(h: RomHasher, l: RaHashLookup): Pair<RomScanPipeline.Summary, List<RomScanPipeline.Progress>> {
+            val seen = mutableListOf<RomScanPipeline.Progress>()
+            val s = RomScanPipeline(paths, ArchiveAwareHasher(h, tmp), l, throttleMs = { 0L })
+                .scan(listOf(romRoot.absolutePath)) { seen += it }
+            return s to seen
+        }
+        val states = mapOf(
+            ScanLedger.State.MATCHED to 4, ScanLedger.State.NOT_FOUND to 7,
+            ScanLedger.State.HASH_FAILED to 1, ScanLedger.State.AMBIGUOUS_ARCHIVE to 1,
+            ScanLedger.State.UNHASHABLE to 1, ScanLedger.State.UNSUPPORTED to 5,
+            ScanLedger.State.API_RETRY to 2)
+
+        val l1 = MixedLookup()
+        val (s1, seen1) = scan(ContentHasher(), l1)
+
+        assertEquals(21, s1.total)
+        assertEquals(21, s1.processed)
+        assertEquals(counts(new = 4, cached = 0, skipped = 5, unmatched = 6, incompatible = 1,
+                            hashFailed = 3, failedLookups = 2), s1.counts())
+        assertEquals(states, s1.states)
+        assertEquals(13, l1.asked.size, "asked: ${l1.asked}")
+
+        val h2 = ContentHasher(); val l2 = MixedLookup()
+        val (s2, seen2) = scan(h2, l2)
+
+        assertEquals(21, s2.processed)
+        assertEquals(counts(new = 0, cached = 4, skipped = 5, unmatched = 6, incompatible = 1,
+                            hashFailed = 3, failedLookups = 2), s2.counts())
+        assertEquals(states, s2.states)
+        assertEquals(listOf("hash-silent", "hash-untitled"), l2.asked.sorted(),
+                     "a file whose verdict was standing was asked about again")
+        assertEquals(3, h2.calls.get(), "only the unreadable file and the two retries are read again")
+
+        // With 21 files there is a report for every one of them.
+        for ((s, seen) in listOf(s1 to seen1, s2 to seen2)) {
+            assertEquals((1..21).toList(), seen.map { it.processed })
+            for (p in seen) assertEquals(p.processed, p.counts().values.sum(), "at ${p.processed}: ${p.counts()}")
+            assertEquals(s.counts(), seen.last().counts(), "the last report and the summary disagree")
+        }
+        tmp.deleteRecursively()
+    }
+
+    // The platforms RetroAchievements does not cover are turned away before the
+    // ledger is asked, so a verdict of UNSUPPORTED is found standing only for a
+    // platform that has left that list since it was written. Until the verdict
+    // runs out the file is still skipped for that reason, and is counted as such.
+    @Test fun `a standing verdict that the platform is not covered counts as skipped`(): Unit = runBlocking {
+        val f = rom("nes", "Super Mario Bros. (World).nes", "hash-smb")
+        ScanLedger(File(paths.cache, ScanLedger.FILE_NAME)).apply {
+            record(f.canonicalPath, ScanLedger.State.UNSUPPORTED, f.length(), f.lastModified(),
+                   BridgePaths.epochSeconds())
+            save { file, text -> BridgePaths.writeAtomic(file, text) }
+        }
+
+        val h = ContentHasher(); val l = MapLookup(catalogue)
+        val s = pipeline(h, l).scan(listOf(romRoot.absolutePath))
+
+        assertEquals(counts(new = 0, cached = 0, skipped = 1, unmatched = 0, incompatible = 0,
+                            hashFailed = 0, failedLookups = 0), s.counts())
+        assertEquals(1, s.processed)
+        assertEquals(0, h.calls.get(), "the file was read")
+        assertEquals(0, l.calls.get(), "the source was asked")
     }
 
     @Test fun `progress is reported and reaches the total`(): Unit = runBlocking {

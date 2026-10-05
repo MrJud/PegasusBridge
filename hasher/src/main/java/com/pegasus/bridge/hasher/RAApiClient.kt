@@ -27,10 +27,18 @@ class RAApiClient(private val raUser: String, private val raApiKey: String) {
         private const val MAX_PARALLEL   = 2
         private const val MIN_INTERVAL_MS = 250L
         private const val MAX_RETRIES    = 4
+
+        /**
+         * Ids above this are not games. RAWeb's VirtualGameIdService answers a hash
+         * it holds but does not support with the game's id plus 1 000 000 000
+         * (incompatible), 1 100 000 000 (untested) or 1 200 000 000 (needs a patch),
+         * and API_GetGameExtended answers `[]` for every one of them.
+         */
+        const val VIRTUAL_ID_BASE = 1_000_000_000
     }
 
     /**
-     * The three outcomes a lookup can have.
+     * The outcomes a lookup can have.
      *
      * [Failed] exists because it used to be indistinguishable from [Miss]: a
      * refused request was recorded as "RetroAchievements does not know this
@@ -40,6 +48,12 @@ class RAApiClient(private val raUser: String, private val raApiKey: String) {
     sealed class Lookup {
         data class Hit(val meta: GameMetadata) : Lookup()
         object Miss : Lookup()
+        /**
+         * RetroAchievements holds the hash but only as a [virtualId]: a dump it
+         * marks incompatible, untested or needing a patch. As stable an answer as
+         * a [Miss], and nothing the Web API can describe, so it is not asked.
+         */
+        data class Incompatible(val virtualId: Int) : Lookup()
         object Failed : Lookup()
     }
 
@@ -68,9 +82,15 @@ class RAApiClient(private val raUser: String, private val raApiKey: String) {
     suspend fun lookupHash(hash: String): Lookup = semaphore.withPermit {
         withContext(Dispatchers.IO) {
             try {
-                when (val id = fetchGameId(hash)) {
-                    null -> Lookup.Failed
-                    0    -> Lookup.Miss.also { consecutiveFailures = 0 }
+                val id = fetchGameId(hash)
+                when {
+                    id == null -> Lookup.Failed
+                    id == 0    -> Lookup.Miss.also { consecutiveFailures = 0 }
+                    // Before the metadata call, not after it: that call can only
+                    // answer `[]` for one of these, which came back as a Hit with
+                    // no title, and asking cost a second request per ROM on every
+                    // scan.
+                    id > VIRTUAL_ID_BASE -> Lookup.Incompatible(id).also { consecutiveFailures = 0 }
                     else -> {
                         val meta = fetchMetadata(id)
                         if (meta == null) Lookup.Failed

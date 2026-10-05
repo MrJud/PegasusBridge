@@ -405,6 +405,30 @@ class RomScanPipeline(
             abortReason = a.why
             abortCause = a.kind
             BridgeLog.e(TAG, "aborted after $processed/$total: $abortReason")
+        } catch (t: Throwable) {
+            // A caller that cancelled, or something that failed on the way: a lookup
+            // that threw, a metadata file that could not be written. There is no
+            // summary to return, but what the scan found out is as true as after
+            // an abort, and it used to be dropped here: the index and the ledger
+            // were written below, on the way to the return, which this does not
+            // reach. The matches survived in their own files. The answers that
+            // were "no" are nowhere but in the ledger, so a Cancel late in a long
+            // first scan had every one of those files read and asked about again.
+            //
+            // Both calls are plain blocking code, and have to stay that: this
+            // coroutine may be cancelled already, and in a cancelled coroutine the
+            // first suspension point throws instead of going on. The scope does
+            // not return before its children have finished, so nothing else is
+            // writing the ledger by now.
+            //
+            // A write that fails must not take the place of what ended the scan.
+            // save() keeps its own failure to itself; the index does not.
+            BridgeLog.w(TAG, "stopped after $processed/$total by ${t.javaClass.simpleName}; " +
+                             "keeping the index and the ledger")
+            runCatching { writeDiscoveryIndex() }
+                .onFailure { BridgeLog.w(TAG, "could not rebuild the index: ${it.message}") }
+            ledger.save { f, text -> BridgePaths.writeAtomic(f, text) }
+            throw t
         } finally {
             // Cancel, not close: closing refuses new sends but leaves one already
             // blocked on a full buffer where it is. Cancelling wakes it. Redundant

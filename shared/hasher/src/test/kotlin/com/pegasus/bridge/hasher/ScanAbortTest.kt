@@ -5,6 +5,7 @@ import com.pegasus.bridge.core.BridgePaths
 import com.pegasus.bridge.core.NoopLog
 import com.pegasus.bridge.core.StderrLog
 import com.sun.net.httpserver.HttpServer
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.cancelAndJoin
@@ -21,6 +22,7 @@ import kotlin.test.AfterTest
 import kotlin.test.BeforeTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
@@ -114,6 +116,17 @@ class ScanAbortTest {
     /** The seven counts together: on a scan cut short too, they are the files the collector saw. */
     private fun RomScanPipeline.Summary.counted(): Int =
         newEntries + cachedHits + skippedPlatforms + unmatched + incompatible + hashFailed + failedLookups
+
+    private fun ledgerOnDisk(): JSONObject {
+        val file = File(paths.cache, ScanLedger.FILE_NAME)
+        assertTrue(file.isFile, "the scan left no ledger behind")
+        return JSONObject(file.readText()).getJSONObject("entries")
+    }
+
+    /** How many entries the ledger on disk holds in each state. */
+    private fun statesOnDisk(): Map<String, Int> = ledgerOnDisk().let { entries ->
+        entries.keys().asSequence().groupingBy { entries.getJSONObject(it).getString("state") }.eachCount()
+    }
 
     // 400 files: far more than the 128-slot result queue, so the producers are
     // certain to be mid-send when the collector gives up.
@@ -395,5 +408,172 @@ class ScanAbortTest {
         assertEquals(0, active.get(), "a lookup outlived the cancel")
         assertEquals(1, calls.get(), "the copies should have waited on the one lookup, not made their own")
         assertEquals(0, paths.metadata.listFiles { f -> !f.name.startsWith("_") }!!.size)
+    }
+
+    /**
+     * A scan cancelled from outside has no summary to return, and it used to
+     * leave nothing else either: the ledger and the index were written after the
+     * scope, on the way to the return, and a cancellation does not go that way.
+     * The matches survived, each in its own file, though the index did not list
+     * them. The answers that were "no" exist nowhere but in the ledger, so every
+     * one of those files was read and asked about again by the next scan.
+     *
+     * Here the source answers six misses and a match and then hangs on the
+     * eighth file, which is when the scan is cancelled.
+     */
+    @Test fun `a cancelled scan keeps the verdicts it reached`(): Unit = runBlocking {
+        repeat(6) { rom("nes", "Miss$it.nes", "miss-$it") }
+        rom("nes", "Known.nes", "hash-known")
+        rom("nes", "Hangs.nes", "hash-hangs")
+
+        val hanging = CompletableDeferred<Unit>()
+        val collected = CompletableDeferred<Unit>()
+        val first = object : RaHashLookup {
+            override suspend fun lookup(hash: String): GameMetadata? = when (hash) {
+                "hash-hangs" -> { hanging.complete(Unit); awaitCancellation() }
+                "hash-known" -> GameMetadata(1446, "Super Mario Bros.", "NES", "/i.png", 76)
+                else         -> GameMetadata(gameId = 0)
+            }
+        }
+
+        var ended: Throwable? = null
+        withTimeout(5_000) {
+            val scan = launch {
+                // Two lookups at a time, so the one that hangs does not hold up the
+                // seven that are answered; and with eight files there is a report
+                // for each, so the seventh says the answers have all been taken in.
+                try {
+                    RomScanPipeline(paths, ContentHasher(), first, throttleMs = { 0L })
+                        .scan(listOf(romRoot.absolutePath)) { if (it.processed == 7) collected.complete(Unit) }
+                } catch (t: Throwable) {
+                    ended = t
+                    throw t
+                }
+            }
+            collected.await()
+            hanging.await()
+            scan.cancelAndJoin()
+        }
+
+        // Keeping what it found is not finishing: the caller is still told it was
+        // cancelled, which is what it writes its own record from.
+        assertTrue(ended is CancellationException, "scan() came back from a cancel with $ended")
+        assertEquals(mapOf("NOT_FOUND" to 6, "MATCHED" to 1), statesOnDisk())
+        val index = JSONObject(paths.discoveryIndex.readText())
+        assertEquals(1, index.getInt("count"), "the match made before the cancel is not in the index")
+        assertEquals(1446, index.getJSONArray("games").getJSONObject(0).getInt("gameId"))
+
+        // The next scan reads and asks about the one file that was left.
+        val hasher = ContentHasher()
+        val asked: MutableList<String> = java.util.Collections.synchronizedList(mutableListOf())
+        val second = object : RaHashLookup {
+            override suspend fun lookup(hash: String): GameMetadata {
+                asked += hash
+                return GameMetadata(gameId = 0)
+            }
+        }
+        val s = RomScanPipeline(paths, hasher, second, throttleMs = { 0L })
+            .scan(listOf(romRoot.absolutePath))
+
+        assertEquals(listOf("hash-hangs"), asked)
+        assertEquals(1, hasher.calls.get(), "a file whose verdict was kept was read again")
+        assertEquals(1, s.cachedHits)
+        assertEquals(7, s.unmatched)
+    }
+
+    // A failure nobody planned for ends the scan the same way a cancel does, and
+    // skipped the ledger the same way. What threw still has to reach the caller,
+    // which is how the daemon comes to report the job as failed.
+    @Test fun `a lookup that throws still leaves the ledger on disk`(): Unit = runBlocking {
+        repeat(6) { rom("nes", "Miss$it.nes", "miss-$it") }
+        rom("nes", "Breaks.nes", "hash-breaks")
+
+        // It throws only once the six answers have been taken in, so what the
+        // ledger should hold does not depend on which lookup ran first.
+        val collected = CompletableDeferred<Unit>()
+        val breaks = object : RaHashLookup {
+            override suspend fun lookup(hash: String): GameMetadata {
+                if (hash != "hash-breaks") return GameMetadata(gameId = 0)
+                collected.await()
+                throw java.io.IOException("the source fell over")
+            }
+        }
+
+        // Not IllegalStateException: a timeout is one, and would pass for it.
+        val thrown = assertFailsWith<java.io.IOException> {
+            withTimeout(5_000) {
+                RomScanPipeline(paths, ContentHasher(), breaks, throttleMs = { 0L })
+                    .scan(listOf(romRoot.absolutePath)) { if (it.processed == 6) collected.complete(Unit) }
+            }
+        }
+
+        assertEquals("the source fell over", thrown.message)
+        assertEquals(mapOf("NOT_FOUND" to 6), statesOnDisk())
+        assertEquals(0, JSONObject(paths.discoveryIndex.readText()).getInt("count"))
+    }
+
+    // The index is rebuilt on the way out too, and that write can fail where the
+    // ledger's cannot: save() keeps a failure to itself. A full disk must not be
+    // what the caller hears about when it was a lookup that ended the scan, nor
+    // cost the ledger, which is written after it. Here a directory sits where
+    // the index goes, so the write fails however it is tried.
+    @Test fun `an index that cannot be written does not hide what ended the scan`(): Unit = runBlocking {
+        repeat(6) { rom("nes", "Miss$it.nes", "miss-$it") }
+        rom("nes", "Breaks.nes", "hash-breaks")
+        File(paths.discoveryIndex, "in the way").apply { parentFile.mkdirs(); writeText("x") }
+
+        val collected = CompletableDeferred<Unit>()
+        val breaks = object : RaHashLookup {
+            override suspend fun lookup(hash: String): GameMetadata {
+                if (hash != "hash-breaks") return GameMetadata(gameId = 0)
+                collected.await()
+                throw java.io.IOException("the source fell over")
+            }
+        }
+
+        val thrown = assertFailsWith<java.io.IOException> {
+            withTimeout(5_000) {
+                RomScanPipeline(paths, ContentHasher(), breaks, throttleMs = { 0L })
+                    .scan(listOf(romRoot.absolutePath)) { if (it.processed == 6) collected.complete(Unit) }
+            }
+        }
+
+        assertEquals("the source fell over", thrown.message)
+        assertTrue(paths.discoveryIndex.isDirectory, "the index was written after all")
+        assertEquals(mapOf("NOT_FOUND" to 6), statesOnDisk())
+    }
+
+    /**
+     * The ledger a cancel leaves is written while reads are being interrupted,
+     * and an interrupted read throws what a broken file throws. The pipeline
+     * tells the two apart before it records anything; this is the same question
+     * as in the abort above, asked of the file on disk, which a cancel now
+     * writes and which is all a cancel leaves to ask.
+     */
+    @Test fun `a cancel that interrupts a read does not write it down as a broken file`(): Unit = runBlocking {
+        rom("nes", "Slow.nes", "hash-slow")
+        val reading = CompletableDeferred<Unit>()
+        val slow = object : RomHasher {
+            override fun hash(path: String): HashResult? {
+                reading.complete(Unit)
+                try {
+                    Thread.sleep(15_000)
+                } catch (e: InterruptedException) {
+                    throw java.nio.channels.ClosedByInterruptException()
+                }
+                return null
+            }
+        }
+
+        withTimeout(5_000) {
+            val scan = launch {
+                RomScanPipeline(paths, slow, DeadLookup(), throttleMs = { 0L })
+                    .scan(listOf(romRoot.absolutePath))
+            }
+            reading.await()
+            scan.cancelAndJoin()
+        }
+
+        assertEquals(emptyMap<String, Int>(), statesOnDisk(), "the read the cancel interrupted is in the ledger")
     }
 }

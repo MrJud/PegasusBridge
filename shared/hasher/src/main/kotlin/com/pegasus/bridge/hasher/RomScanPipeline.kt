@@ -402,8 +402,11 @@ class RomScanPipeline(
                     null, preRecorded = true))
             }
             is HashOutcome.Failed -> {
-                ledger.record(path, ScanLedger.State.HASH_FAILED, size, modified, now,
-                              detail = outcome.reason)
+                // A file that may be fixed is retried; one the hasher knows it cannot
+                // hash is kept for a while, or every scan would ask the same question.
+                val state = if (outcome.retryable) ScanLedger.State.HASH_FAILED
+                            else ScanLedger.State.UNHASHABLE
+                ledger.record(path, state, size, modified, now, detail = outcome.reason)
                 resultQueue.send(ResultJob(
                     HashJob(file, cacheKey, HashResult("", 0), rawPlatform, size, modified),
                     null, preRecorded = true))

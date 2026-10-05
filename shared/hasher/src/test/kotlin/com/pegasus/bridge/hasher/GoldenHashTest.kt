@@ -236,10 +236,12 @@ class GoldenHashTest {
 
     // A disc is its descriptor plus the tracks the descriptor names, and rcheevos
     // reads the tracks from beside it. ArchiveSelector rightly picks the `.cue` as
-    // the entry point, but only the `.cue` is extracted, so the track is not there
-    // and every console rcheevos tries for a cue fails. Correct: what the pair
-    // gives loose, which for this Sega CD disc is the MD5 of the first 512 bytes
-    // of sector 0 with console 9 (rc_hash_sega_cd, hash_disc.c).
+    // the entry point, but only the `.cue` would be extracted, the track would not
+    // be there, and every console rcheevos tries for a cue would fail. So it is
+    // not tried: the outcome says why, and that it will not change by asking
+    // again. Correct: what the pair gives loose, which for this Sega CD disc is
+    // the MD5 of the first 512 bytes of sector 0 with console 9 (rc_hash_sega_cd,
+    // hash_disc.c).
     @Test
     fun `known gap (phase 2) - a cue and its bin inside a zip or 7z cannot be hashed`() {
         val name = "Golden Sega CD (Japan)"
@@ -254,12 +256,11 @@ class GoldenHashTest {
         val r = assertIs<HashOutcome.Ok>(hasher.hashDetailed(looseCue.absolutePath, "segacd")).result
         assertEquals("$SEGA_CD|9", "${r.hash}|${r.consoleId}")
 
-        // Today: the cue alone, and nothing for rcheevos to read through it.
+        // Today: a failure known in advance, and marked as not worth retrying.
         for (archive in listOf(zip(File(dir, "$name.zip"), "$name.cue" to cue, "$name.bin" to track),
                                sevenZ(File(dir, "$name.7z"), "$name.cue" to cue, "$name.bin" to track))) {
-            val outcome = assertIs<HashOutcome.Failed>(hasher.hashDetailed(archive.absolutePath, "segacd"),
-                                                       archive.name)
-            assertEquals("the hasher could not read '$name.cue'", outcome.reason, archive.name)
+            assertEquals(HashOutcome.Failed(ArchiveAwareHasher.DESCRIPTOR_IN_ARCHIVE, retryable = false),
+                         hasher.hashDetailed(archive.absolutePath, "segacd"), archive.name)
         }
     }
 

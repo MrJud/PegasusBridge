@@ -124,6 +124,25 @@ class PlainHashTest {
         assertEquals("Disc.img", (r as HashOutcome.Ok).result.archiveEntry)
     }
 
+    // A descriptor taken out alone leaves its tracks behind, so rcheevos cannot
+    // hash it. That is known from the listing: nothing is copied out (the
+    // temporary directory is only made for a copy) and rcheevos is not asked.
+    @Test
+    fun `a disc descriptor in an archive is not extracted or handed to rcheevos`() {
+        for ((descriptor, platform) in listOf("Disc.cue" to "psx", "Disc.gdi" to "dreamcast",
+                                              "Disc.m3u" to "", "Disc.ccd" to "segacd", "Disc.toc" to "saturn")) {
+            val rom = zip("${descriptor.substringAfter('.')}.zip",
+                          descriptor to "FILE \"Disc.bin\" BINARY".toByteArray(),
+                          "Disc.bin" to ByteArray(4096))
+            val native = FixedHasher()
+            val outcome = ArchiveAwareHasher(native, tempDir).hashDetailed(rom.absolutePath, platform)
+            assertEquals(HashOutcome.Failed(ArchiveAwareHasher.DESCRIPTOR_IN_ARCHIVE, retryable = false),
+                         outcome, descriptor)
+            assertEquals(0, native.calls, descriptor)
+            assertFalse(tempDir.exists(), "$descriptor was copied out")
+        }
+    }
+
     // Two entries called `game.nes`, an empty leftover first. The selector refuses
     // the empty one; finding its choice again by name used to land on the leftover
     // and record the digest of nothing as the ROM's.

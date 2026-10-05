@@ -44,7 +44,13 @@ class ScanLedger(private val file: File) {
         /** RetroAchievements does not cover this platform. No I/O was done. */
         UNSUPPORTED,
         /** Several entries could each be the ROM; a person has to look. */
-        AMBIGUOUS_ARCHIVE;
+        AMBIGUOUS_ARCHIVE,
+        /**
+         * The hasher knew before trying that it cannot hash this file — a disc
+         * descriptor inside an archive, whose tracks are not extracted. Not a
+         * broken file and not a miss: the same answer until the hasher changes.
+         */
+        UNHASHABLE;
 
         /**
          * Whether this outcome may be trusted on a later run at all.
@@ -74,6 +80,10 @@ class ScanLedger(private val file: File) {
          * service covers moves slowly, and re-deciding it costs nothing anyway
          * because it is decided before any I/O.
          *
+         * A file the hasher cannot hash keeps for a month. Only a new hasher can
+         * change that answer, and the change that does bumps [ALGORITHM_VERSION],
+         * which redoes it at once; the TTL is the backstop for one that did not.
+         *
          * Meaningless for anything [cacheable] is false for.
          */
         val retryAfterSeconds: Long get() = when (this) {
@@ -81,6 +91,7 @@ class ScanLedger(private val file: File) {
             NOT_FOUND         -> 14L * 24 * 60 * 60
             UNSUPPORTED       -> 90L * 24 * 60 * 60
             AMBIGUOUS_ARCHIVE -> 7L * 24 * 60 * 60
+            UNHASHABLE        -> 30L * 24 * 60 * 60
             HASH_FAILED, API_RETRY -> 0
         }
     }

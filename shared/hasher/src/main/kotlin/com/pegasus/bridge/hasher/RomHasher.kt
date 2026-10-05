@@ -49,8 +49,17 @@ sealed interface HashOutcome {
      */
     data class AmbiguousArchive(val candidates: List<String>) : HashOutcome
 
-    /** The file could not be read, or the hasher could not process it. */
-    data class Failed(val reason: String) : HashOutcome
+    /**
+     * The file could not be read, or the hasher could not process it.
+     *
+     * [retryable] false means the hasher knew before trying that it cannot hash
+     * this file, and will answer the same until the hasher itself changes — a
+     * disc descriptor inside an archive, whose tracks are not extracted. Asking
+     * again on every scan costs work and changes nothing, so the pipeline keeps
+     * that answer like a verdict instead of retrying it as a file that might be
+     * fixed.
+     */
+    data class Failed(val reason: String, val retryable: Boolean = true) : HashOutcome
 }
 
 /**
@@ -127,7 +136,10 @@ class ArchiveAwareHasher(
                 }
                 is ArchiveReader.Opened.Entries ->
                     when (val pick = ArchiveSelector.select(opened.entries, file.name, platform)) {
-                        is ArchiveSelector.Selection.One -> extracted(file, opened, pick.entry)
+                        is ArchiveSelector.Selection.One ->
+                            if (pick.entry.extension in ArchiveSelector.DESCRIPTOR_EXTENSIONS)
+                                descriptorAlone(file, pick.entry)
+                            else extracted(file, opened, pick.entry)
                         is ArchiveSelector.Selection.Ambiguous ->
                             HashOutcome.AmbiguousArchive(pick.candidates.map { it.name })
                         is ArchiveSelector.Selection.NoPlayableEntry ->
@@ -138,6 +150,25 @@ class ArchiveAwareHasher(
                     }
             }
         }
+    }
+
+    /**
+     * A disc descriptor ([ArchiveSelector.DESCRIPTOR_EXTENSIONS]) chosen out of
+     * an archive, which cannot be hashed yet and is not tried.
+     *
+     * A descriptor names its tracks and rcheevos reads them from beside it, but
+     * only the descriptor would be extracted: every console rcheevos tries for it
+     * fails, and the answer came back as a failure the next scan retried. In a
+     * solid 7z the descriptor usually comes after its tracks, so each of those
+     * attempts decompressed the disc ahead of it first — some 25 s for one PSX
+     * disc, on every scan. The outcome is known from the listing alone, so
+     * nothing is extracted and rcheevos is not called. The fix proper, Phase 2,
+     * is extracting the tracks too.
+     */
+    private fun descriptorAlone(archive: File, entry: ArchiveSelector.Entry): HashOutcome {
+        BridgeLog.w(TAG, "not hashed: '${entry.name}' in ${archive.name} is a disc descriptor, " +
+                         "and its tracks are not extracted from an archive yet")
+        return HashOutcome.Failed(DESCRIPTOR_IN_ARCHIVE, retryable = false)
     }
 
     /**
@@ -197,7 +228,10 @@ class ArchiveAwareHasher(
         result
     }
 
-    private companion object {
-        const val TAG = "ArchiveAwareHasher"
+    companion object {
+        private const val TAG = "ArchiveAwareHasher"
+
+        /** The reason a disc descriptor chosen out of an archive is not hashed. */
+        const val DESCRIPTOR_IN_ARCHIVE = "disc descriptor inside an archive: its tracks are not extracted yet"
     }
 }

@@ -181,6 +181,51 @@ class ScanLedgerTest {
                    "the candidates must be named, or nobody knows which file to open")
     }
 
+    // ── A file the hasher knows it cannot hash ──────────────────────────────
+
+    // A cue taken out of an archive without its tracks. As HASH_FAILED it was
+    // retried on every scan, and in a solid 7z each retry decompressed the disc.
+    @Test fun `a disc descriptor in an archive is kept as unhashable, not retried every scan`(): Unit = runBlocking {
+        val dir = File(romRoot, "psx").apply { mkdirs() }
+        val zip = File(dir, "Disc.zip")
+        ZipOutputStream(zip.outputStream()).use { z ->
+            z.putNextEntry(ZipEntry("Disc.cue")); z.write("FILE \"Disc.bin\" BINARY".toByteArray()); z.closeEntry()
+            z.putNextEntry(ZipEntry("Disc.bin")); z.write(ByteArray(4096)); z.closeEntry()
+        }
+        val opened = AtomicInteger()
+        val archives = object : RomHasher {
+            val real = ArchiveAwareHasher(ContentHasher(), File(dataRoot, "tmp"))
+            override fun hash(path: String) = real.hash(path)
+            override fun hashDetailed(path: String, platform: String): HashOutcome {
+                opened.incrementAndGet()
+                return real.hashDetailed(path, platform)
+            }
+        }
+
+        val s = pipeline(archives, SaysNo()).scan(listOf(romRoot.absolutePath))
+        assertEquals(1, s.states[ScanLedger.State.UNHASHABLE])
+        assertNull(s.states[ScanLedger.State.HASH_FAILED])
+        val e = ledgerEntry(zip)!!
+        assertEquals("UNHASHABLE", e.getString("state"))
+        assertEquals(ArchiveAwareHasher.DESCRIPTOR_IN_ARCHIVE, e.getString("detail"))
+
+        val l2 = SaysNo()
+        val s2 = pipeline(archives, l2).scan(listOf(romRoot.absolutePath))
+        assertEquals(1, opened.get(), "the archive was opened again inside the verdict's TTL")
+        assertEquals(0, l2.calls.get())
+        assertEquals(1, s2.states[ScanLedger.State.UNHASHABLE])
+
+        // Past its TTL it is decided again.
+        val file = File(paths.cache, ScanLedger.FILE_NAME)
+        val j = JSONObject(file.readText())
+        val entries = j.getJSONObject("entries")
+        val old = BridgePaths.epochSeconds() - ScanLedger.State.UNHASHABLE.retryAfterSeconds - 60
+        entries.keys().forEach { k -> entries.getJSONObject(k).put("checkedAt", old) }
+        file.writeText(j.toString())
+        pipeline(archives, SaysNo()).scan(listOf(romRoot.absolutePath))
+        assertEquals(2, opened.get())
+    }
+
     // ── Invalidation ────────────────────────────────────────────────────────
 
     @Test fun `a replaced file is asked about again despite a stored verdict`(): Unit = runBlocking {

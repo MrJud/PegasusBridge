@@ -24,11 +24,3 @@ object NativeHasher {
 
     private external fun hashFile(path: String): String?
 }
-
-/** Kept in sync with `shared/hasher` HashResult, which documents the two hashes. */
-data class HashResult(
-    val hash: String,
-    val consoleId: Int,
-    val fileMd5: String = "",
-    val fileCrc32: String = ""
-)

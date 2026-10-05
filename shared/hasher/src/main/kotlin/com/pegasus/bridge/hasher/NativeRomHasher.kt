@@ -42,7 +42,9 @@ class NativeRomHasher private constructor() : RomHasher {
          * Returns the hasher, or null when the native library is unavailable.
          *
          * [explicitPath] loads a specific file; otherwise the usual library
-         * search path is used, which is what the Android build relies on.
+         * search path is used. Only the desktop comes through here: the
+         * Android library exports its entry point for `NativeHasher`, the
+         * class the Android build has in this one's place.
          *
          * Failures are remembered **per path**, not globally: the daemon walks a
          * list of candidate locations, and a global "already failed" flag would

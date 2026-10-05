@@ -47,12 +47,18 @@ import kotlin.test.assertTrue
  * Android is replayed. HasherService cannot run in this build, so the files in
  * `theme-contract/android-before` are what it wrote when it was driven on a JVM
  * against stub Android classes, as it stood at 8ba0366, with every distinct body
- * of `pending/job1.json` saved as it appeared. The RetroAchievements user in its
- * credentials was called `harness`. They are kept byte for byte:
+ * of `pending/{jobId}.json` saved as it appeared. The RetroAchievements user in
+ * its credentials was called `harness`. They are kept byte for byte:
  *
  * - `pending-first`, `pending-done`, `done-marker`, `metadata-sample` and
  *   `index-sample` from ten SNES files that all match, through the real
  *   RAApiClient against a local server answering as RetroAchievements does;
+ * - `pending-running-rescan` and `pending-done-rescan` from the scan of those
+ *   ten files that came next, `job2`, which found every one of them cached;
+ * - `pending-running-mixed` and `pending-done-mixed` from a library where no two
+ *   counts are the same: five SNES files that match, three files under
+ *   `switch/`, two ROMs the server has never heard of and one it holds only
+ *   under a virtual id. `pending-done-mixed-rescan` from its second scan, `job2`;
  * - `pending-running` and `error-cancelled` from 300 files, cancelled a second
  *   and a half in;
  * - `pending-done-incompatible` from ten files RetroAchievements holds only
@@ -153,24 +159,76 @@ class ThemeContractTest {
 
     private val androidDoneSentence = "Done — 10 new, 0 cached, 0 skipped, 0 not in the database"
 
-    /** Puts a record where the service left it, for the job the theme is polling. */
-    private fun leave(record: String) = paths.pending("job1").writeText(fixture("$record.json"))
+    private val androidRescanSentence = "Done — 0 new, 10 cached, 0 skipped, 0 not in the database"
 
-    private fun leaveMarker() = paths.done("job1").writeText(fixture("done-marker.txt"))
+    private val androidMixedSentence = "Done — 5 new, 0 cached, 3 skipped, 2 not in the database, " +
+        "1 dumps RetroAchievements does not support"
 
-    private fun androidTheme() = ThemeScanReader(ThemeFiles(dataRoot)).apply { launched("job1") }
+    private val androidMixedRescanSentence = "Done — 0 new, 5 cached, 3 skipped, 2 not in the database, " +
+        "1 dumps RetroAchievements does not support"
+
+    /** Puts a record where the service left it, which is under the id it carries. */
+    private fun leave(record: String) = fixture("$record.json").let { body ->
+        paths.pending(JSONObject(body).getString("jobId")).writeText(body)
+    }
+
+    private fun leaveMarker(job: String = "job1") = paths.done(job).writeText(fixture("done-marker.txt"))
+
+    private fun androidTheme(job: String = "job1") =
+        ThemeScanReader(ThemeFiles(dataRoot)).apply { launched(job) }
 
     @Test fun `an android record of a scan under way or done has these keys and no others`() {
         val statusOf = mapOf(
             "pending-first" to "running", "pending-running" to "running",
-            "pending-done" to "done", "pending-done-incompatible" to "done", "pending-empty" to "done")
+            "pending-running-rescan" to "running", "pending-running-mixed" to "running",
+            "pending-done" to "done", "pending-done-incompatible" to "done", "pending-empty" to "done",
+            "pending-done-rescan" to "done", "pending-done-mixed" to "done",
+            "pending-done-mixed-rescan" to "done")
         for ((name, status) in statusOf) {
             val j = JSONObject(fixture("$name.json"))
             assertEquals(androidRunningKeys, j.keySet(), name)
             assertEquals(status, j.getString("status"), name)
             assertEquals(1, j.getInt("schemaVersion"), name)
             assertEquals("scan", j.getString("verb"), name)
-            assertEquals("job1", j.getString("jobId"), name)
+            // A library's second scan was asked for as job2.
+            assertEquals(if (name.endsWith("-rescan")) "job2" else "job1", j.getString("jobId"), name)
+        }
+    }
+
+    /** The five counts of a record, in the order its closing sentence gives them. */
+    private data class Counters(
+        val newEntries: Int, val cachedHits: Int, val skippedPlatforms: Int,
+        val unmatched: Int, val incompatible: Int
+    )
+
+    private fun counters(record: JSONObject) = Counters(
+        record.getInt("newEntries"), record.getInt("cachedHits"), record.getInt("skippedPlatforms"),
+        record.getInt("unmatched"), record.getInt("incompatible"))
+
+    // Which number sits under which key, and in which clause of the sentence. A
+    // first scan of ROMs that all match cannot say: one count moves and the other
+    // four are 0 under whatever name they are written. The second scan of the
+    // same ten files moves cachedHits and nothing else, and in the mixed library
+    // every count is a different number, so one written in another's place reads
+    // differently wherever it lands.
+    @Test fun `an android record has each count under its own key and in its own clause`() {
+        val records = mapOf(
+            "pending-first" to (Counters(0, 0, 0, 0, 0) to "Scanning ROM folders…"),
+            "pending-running" to (Counters(10, 0, 0, 0, 0) to "[10/300] g97c0.sfc"),
+            "pending-done" to (Counters(10, 0, 0, 0, 0) to androidDoneSentence),
+            "pending-empty" to (Counters(0, 0, 0, 0, 0) to "No ROMs found"),
+            "pending-done-incompatible" to (Counters(0, 0, 0, 0, 10) to
+                "Done — 0 new, 0 cached, 0 skipped, 0 not in the database, " +
+                "10 dumps RetroAchievements does not support"),
+            "pending-running-rescan" to (Counters(0, 10, 0, 0, 0) to "[10/10] game0.sfc"),
+            "pending-done-rescan" to (Counters(0, 10, 0, 0, 0) to androidRescanSentence),
+            "pending-running-mixed" to (Counters(5, 0, 3, 2, 1) to "[11/11] unknown1.sfc"),
+            "pending-done-mixed" to (Counters(5, 0, 3, 2, 1) to androidMixedSentence),
+            "pending-done-mixed-rescan" to (Counters(0, 5, 3, 2, 1) to androidMixedRescanSentence))
+        for ((name, expected) in records) {
+            val j = JSONObject(fixture("$name.json"))
+            assertEquals(expected.first, counters(j), name)
+            assertEquals(expected.second, j.getString("message"), name)
         }
     }
 
@@ -244,6 +302,42 @@ class ThemeContractTest {
             assertEquals(100, theme.percent, name)
             assertEquals(sentence, theme.currentFile, name)
         }
+    }
+
+    // "N cached" in the popup is cachedHits, and on a second scan of files that
+    // have not changed it is the only number that moves.
+    @Test fun `the theme shows what an android rescan found cached`() {
+        val theme = androidTheme("job2")
+
+        leave("pending-running-rescan")
+        theme.readHasherProgress()
+        assertEquals(View("running", 100, 10, 10, "game0.sfc", 0, 10), theme.view())
+        assertEquals("job2", theme.activeScanJobId())
+
+        leave("pending-done-rescan"); leaveMarker("job2")
+        theme.readHasherProgress()
+        assertEquals(View("done", 100, 10, 10, androidRescanSentence, 0, 10), theme.view())
+        assertEquals("", theme.activeJobId)
+    }
+
+    // Of the five counts the theme takes two. In the mixed library neither can be
+    // mistaken for one of the other three: 5 new and 0 cached on the first scan,
+    // 0 new and 5 cached on the second, beside 3 skipped, 2 unknown and 1 unsupported.
+    @Test fun `the theme takes new and cached from an android record and no other count`() {
+        val theme = androidTheme()
+
+        leave("pending-running-mixed")
+        theme.readHasherProgress()
+        assertEquals(View("running", 100, 11, 11, "unknown1.sfc", 5, 0), theme.view())
+
+        leave("pending-done-mixed"); leaveMarker()
+        theme.readHasherProgress()
+        assertEquals(View("done", 100, 11, 11, androidMixedSentence, 5, 0), theme.view())
+
+        val again = androidTheme("job2")
+        leave("pending-done-mixed-rescan"); leaveMarker("job2")
+        again.readHasherProgress()
+        assertEquals(View("done", 100, 0, 0, androidMixedRescanSentence, 0, 5), again.view())
     }
 
     // "After 1 of 600" and not after eight: the count is of the results collected
@@ -447,6 +541,15 @@ class ThemeContractTest {
         return job(id)
     }
 
+    /**
+     * The same when only the count can be named: which of several results that
+     * need no lookup is collected last is up to the workers.
+     */
+    private fun runningAtCount(id: String, count: String): JSONObject {
+        await("job $id to publish \"$count\"") { mirror(id)?.optString("message")?.startsWith("$count ") == true }
+        return job(id)
+    }
+
     /** The job's body once it is over. The mirror goes last of all, so that is what is waited for. */
     private fun finished(id: String): JSONObject {
         await("job $id to finish") { !paths.pending(id).exists() }
@@ -524,6 +627,75 @@ class ThemeContractTest {
 
         assertMarkedAndCleared(id)
         assertEquals("done", filesView(id).status)
+    }
+
+    // A first scan cannot say which number is which: newEntries moves and the
+    // other two stay at 0 under whatever name they are published. The second
+    // scan of a library can. Of nine files one is new, two are as the scan
+    // before left them, five sit in a folder of a platform RetroAchievements
+    // does not cover, and one is a miss the ledger remembers: every count a
+    // different number, in the running record and in the result. The popup's
+    // "cached" is cachedHits and nothing else.
+    @Test fun `a desktop rescan reports what it found cached apart from what it skipped`() {
+        rom("snes", "Alpha.sfc", "hash-alpha")
+        rom("snes", "Beta.sfc", "hash-beta")
+        rom("snes", "Homebrew.sfc", "hash-nobody-knows")
+        hasher = ContentHasher()
+        val gated = GatedLookup(::inCatalogue)
+        lookup = gated
+        val first = "scan_1791233730000_6"
+
+        desktopTheme(first)
+        var result = finished(first).getJSONObject("result")
+        assertEquals(2, result.getInt("newEntries"))
+        assertEquals(0, result.getInt("cachedHits"))
+        assertEquals(0, result.getInt("skippedPlatforms"))
+        assertEquals(mapOf<String, Any>("MATCHED" to 2, "NOT_FOUND" to 1), result.getJSONObject("states").toMap())
+
+        rom("snes", "Super Mario World (USA).sfc", "hash-smw")
+        repeat(5) { rom("switch", "Game $it.zip", "never read") }
+        val smw = gated.hold("hash-smw")
+        val id = "scan_1791233730000_7"
+
+        // Eight of the nine need no lookup, so the scan stands there until the
+        // new ROM's is answered.
+        val theme = desktopTheme(id)
+        var body = runningAtCount(id, "[8/9]")
+        assertEquals(desktopKeys + desktopCounters, body.keySet())
+        assertEquals("running", body.getString("status"))
+        assertEquals(0, body.getInt("newEntries"))
+        assertEquals(2, body.getInt("cachedHits"))
+        assertEquals(5, body.getInt("skippedPlatforms"))
+        assertEquals(body.toMap() - "updatedAt", mirror(id)!!.toMap() - "updatedAt")
+        val eighth = body.getString("message").removePrefix("[8/9] ")
+
+        theme.pollTwice()
+        assertEquals(View("running", 89, 8, 9, eighth, 0, 2), theme.view())
+        assertEquals(theme.view(), filesView(id))
+
+        smw.complete(Unit)
+        body = finished(id)
+        assertEquals(desktopKeys + desktopCounters + "result", body.keySet())
+        assertEquals("done", body.getString("status"))
+        assertEquals("[9/9] Super Mario World (USA).sfc", body.getString("message"))
+        assertEquals(1, body.getInt("newEntries"))
+        assertEquals(2, body.getInt("cachedHits"))
+        assertEquals(5, body.getInt("skippedPlatforms"))
+        result = body.getJSONObject("result")
+        assertEquals(desktopResultKeys, result.keySet())
+        assertEquals(9, result.getInt("total"))
+        assertEquals(9, result.getInt("processed"))
+        assertEquals(1, result.getInt("newEntries"))
+        assertEquals(2, result.getInt("cachedHits"))
+        assertEquals(5, result.getInt("skippedPlatforms"))
+        assertEquals(0, result.getInt("failedLookups"))
+        assertEquals(3, result.getInt("indexed"))
+        assertEquals(mapOf<String, Any>("MATCHED" to 3, "NOT_FOUND" to 1, "UNSUPPORTED" to 5),
+                     result.getJSONObject("states").toMap())
+
+        theme.pollTwice()
+        assertEquals(View("done", 100, 9, 9, "Super Mario World (USA).sfc", 1, 2), theme.view())
+        assertMarkedAndCleared(id)
     }
 
     @Test fun `a desktop scan that finds no rom ends done with nothing to show`() {

@@ -161,9 +161,9 @@ object ScreenScraperSystemMap {
                 .put("extensions", JSONArray(s.extensions)))
         }
         return JSONObject()
-            // Inlined rather than borrowed from BridgePaths: that class is the desktop
-            // daemon's, and this file is compiled by the Android shell too, where the
-            // data root is `Paths` instead. One clock reference is not worth a seam.
+            // The clock of BridgePaths.epochSeconds(), written out. It was inlined when
+            // that class was the desktop daemon's alone and this file already compiled
+            // on Android; one clock reference is not worth the import now either.
             .put("fetchedAt", System.currentTimeMillis() / 1000L)
             // Stamped so a reader can refuse a file an older shape wrote, rather than
             // parsing it into a table that is quietly missing half its fields.

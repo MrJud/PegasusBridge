@@ -6,8 +6,10 @@
 // including the Linux box this port is developed on. As a standalone build they
 // compile and test with nothing but a JDK.
 //
-// The Android app consumes them through `includeBuild("shared")`; the desktop
-// daemon will depend on them directly.
+// The Android build does not include this one. Each of its modules adds the
+// src/android-shared/kotlin directory of the module it mirrors here to its own
+// sources, so what both shells run is compiled twice from one copy. The desktop
+// daemon is the :daemon module below.
 
 pluginManagement {
     repositories {

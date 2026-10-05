@@ -79,9 +79,9 @@ object Paths {
     /**
      * Write via temp + rename so a reader never sees a half-written file.
      *
-     * The same contract as `BridgePaths.writeAtomic` on the desktop, and it has
-     * to exist separately because that one lives in the desktop-only source
-     * root. MediaExporter and LaunchPreferences take the function as a parameter
+     * The same contract as `BridgePaths.writeAtomic`, which this build compiles
+     * too; this copy stays because it is the one the Android services call.
+     * MediaExporter and LaunchPreferences take the function as a parameter
      * rather than importing either — which is what lets one copy of them serve
      * both shells.
      */

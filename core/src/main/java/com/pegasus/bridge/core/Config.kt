@@ -27,8 +27,8 @@ data class RawgCreds(val apiKey: String)
  * has a default and is stored only if it ever has to differ.
  *
  * **Kept byte-identical to the daemon's copy in shared/core.** The two Config.kt
- * are separate files, not one shared source — only FuzzyMatch.kt lives in
- * android-shared — so a change here that is not mirrored there gives the two
+ * are separate files, not one shared source — Config.kt is not among the files
+ * in android-shared — so a change here that is not mirrored there gives the two
  * platforms different credential stores, silently.
  */
 data class ScreenScraperCreds(

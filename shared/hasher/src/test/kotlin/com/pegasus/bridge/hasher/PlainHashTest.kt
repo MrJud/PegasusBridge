@@ -2,6 +2,8 @@ package com.pegasus.bridge.hasher
 
 import org.apache.commons.compress.archivers.sevenz.SevenZArchiveEntry
 import org.apache.commons.compress.archivers.sevenz.SevenZOutputFile
+import org.apache.commons.compress.archivers.zip.ZipArchiveEntry
+import org.apache.commons.compress.archivers.zip.ZipArchiveOutputStream
 import java.io.File
 import java.nio.file.Files
 import java.util.concurrent.CancellationException
@@ -155,6 +157,26 @@ class PlainHashTest {
         assertEquals("nes", File(native.lastPath!!).extension)
         assertEquals(abcMd5, r.fileMd5)
         assertEquals(abcCrc, r.fileCrc32)
+    }
+
+    // The same pair in a zip, ROM first. java.util.zip finds an entry by name and
+    // answers with the last, so the leftover went to rcheevos as the ROM, and its
+    // empty digest was recorded. The zip is refused instead, and says why.
+    @Test
+    fun `a zip whose chosen entry shares its name is refused, not read as the other`() {
+        val rom = File(dir, "game.zip").also { f ->
+            ZipArchiveOutputStream(f).use { out ->
+                for (bytes in listOf("abc".toByteArray(), ByteArray(0))) {
+                    out.putArchiveEntry(ZipArchiveEntry("game.nes")); out.write(bytes); out.closeArchiveEntry()
+                }
+            }
+        }
+        val native = FixedHasher()
+        val outcome = ArchiveAwareHasher(native, tempDir).hashDetailed(rom.absolutePath, "nes")
+        assertEquals(HashOutcome.Failed("could not extract 'game.nes': game.zip holds 2 entries named " +
+                                        "'game.nes', and a zip entry can only be read by its name"), outcome)
+        assertEquals(0, native.calls)
+        assertTrue(tempDir.listFiles().orEmpty().isEmpty())
     }
 
     @Test

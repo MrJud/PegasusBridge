@@ -2,6 +2,8 @@ package com.pegasus.bridge.hasher
 
 import org.apache.commons.compress.archivers.sevenz.SevenZArchiveEntry
 import org.apache.commons.compress.archivers.sevenz.SevenZOutputFile
+import org.apache.commons.compress.archivers.zip.ZipArchiveEntry
+import org.apache.commons.compress.archivers.zip.ZipArchiveOutputStream
 import java.io.File
 import java.util.concurrent.CancellationException
 import java.util.zip.ZipEntry
@@ -42,6 +44,20 @@ class PlainRomHasherTest {
         SevenZOutputFile(f).use { out ->
             for ((entry, bytes) in entries) {
                 out.putArchiveEntry(SevenZArchiveEntry().apply { this.name = entry })
+                out.write(bytes)
+                out.closeArchiveEntry()
+            }
+        }
+        return f
+    }
+
+    /** java.util.zip refuses a second entry of one name; commons-compress writes it. */
+    private fun zipWithRepeats(name: String, vararg entries: Pair<String, ByteArray>): File {
+        tmp.mkdirs()
+        val f = File(tmp, name)
+        ZipArchiveOutputStream(f).use { out ->
+            for ((entry, bytes) in entries) {
+                out.putArchiveEntry(ZipArchiveEntry(entry))
                 out.write(bytes)
                 out.closeArchiveEntry()
             }
@@ -177,6 +193,20 @@ class PlainRomHasherTest {
         assertEquals("900150983cd24fb0d6963f7d28e17f72", h.md5)
         assertEquals("352441c2", h.crc32)
         assertEquals(3L, h.size)
+    }
+
+    // The same pair in a zip, ROM first. java.util.zip can only find an entry by
+    // its name and answers with the last, so the empty one was digested and
+    // recorded as the ROM. Not readable as chosen, the zip is described by its
+    // container, and says so.
+    @Test fun `a zip whose chosen entry shares its name is digested as the container`() {
+        val archive = zipWithRepeats("game.zip", "game.nes" to ByteArray(40_000) { it.toByte() },
+                                                 "game.nes" to ByteArray(0))
+        val h = PlainRomHasher.hash(archive.absolutePath, tmp)
+        assertNotNull(h)
+        assertTrue(!h.fromArchive, "the digests describe the container, and must say so")
+        assertEquals("", h.archiveEntry)
+        assertEquals(archive.length(), h.size)
     }
 
     // An empty entry is never taken for the ROM, so an archive holding nothing

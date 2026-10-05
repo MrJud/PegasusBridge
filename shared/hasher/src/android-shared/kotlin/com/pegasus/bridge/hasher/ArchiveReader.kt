@@ -28,12 +28,17 @@ object ArchiveReader {
         /**
          * The listing of an archive that is still open, and the way back into it.
          *
-         * [read] wants one of [entries] itself, not an equal copy, and reads that
-         * very entry. It used to be found again by name, in an archive opened a
-         * second time — and two entries can share a name, which the 7z format does
-         * not forbid. The walk stopped at the first of them, so with an empty
-         * leftover ahead of the ROM the selector had chosen, the leftover was
-         * extracted under the ROM's name and its digest recorded as the ROM's.
+         * [read] wants one of [entries] itself, not an equal copy. From a 7z it
+         * reads that very entry. It used to be found again by name, in an archive
+         * opened a second time — and two entries can share a name, which the 7z
+         * format does not forbid. The walk stopped at the first of them, so with
+         * an empty leftover ahead of the ROM the selector had chosen, the leftover
+         * was extracted under the ROM's name and its digest recorded as the ROM's.
+         *
+         * From a zip it cannot: java.util.zip finds an entry by its name, whatever
+         * object it is handed. So an entry whose name another entry shares is not
+         * read at all — [read] throws an IOException — because what came back
+         * could be the other one.
          */
         class Entries internal constructor(
             val entries: List<ArchiveSelector.Entry>,
@@ -77,15 +82,23 @@ object ArchiveReader {
             when (file.extension.lowercase()) {
                 "zip" -> return ZipFile(file).use { zf ->
                     val native = zf.entries().toList()
+                    val sameName = native.groupingBy { it.name }.eachCount()
                     val opened = Opened.Entries(native.map {
                         ArchiveSelector.Entry(it.name, it.size.coerceAtLeast(0), it.isDirectory)
                     }) { i ->
                         // java.util.zip looks an entry up by its name whatever object it
-                        // is handed — the JDK answers with the last of two same-named
-                        // entries — so those are not told apart here. Its own writer
-                        // refuses to produce such a zip, and the library has none.
+                        // is handed, and of two that share one the JDK answers with the
+                        // last. With the ROM ahead of an empty leftover of the same name,
+                        // the leftover was read and the digest of nothing recorded as the
+                        // ROM's. Its own writer refuses such a zip, but other tools write
+                        // them; refusing to read is the one answer that cannot be wrong.
+                        val name = native[i].name
+                        val count = sameName[name] ?: 1
+                        if (count > 1)
+                            throw IOException("${file.name} holds $count entries named '$name', " +
+                                              "and a zip entry can only be read by its name")
                         zf.getInputStream(native[i])
-                            ?: throw IOException("'${native[i].name}' vanished from ${file.name}")
+                            ?: throw IOException("'$name' vanished from ${file.name}")
                     }
                     listed = true
                     use(opened)

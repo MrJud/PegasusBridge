@@ -196,7 +196,9 @@ class ArchiveAwareHasher(
             } catch (t: Throwable) {
                 RomHashIO.rethrowIfCancelled(t)
                 BridgeLog.w(TAG, "could not extract '${entry.name}' from ${archive.name}: ${t.message}")
-                return HashOutcome.Failed("could not extract '${entry.name}'")
+                // With the cause: "could not extract" alone says nothing about a zip
+                // that holds two entries of one name and is otherwise fine.
+                return HashOutcome.Failed("could not extract '${entry.name}': ${t.message ?: t.javaClass.simpleName}")
             }
             val result = delegate.hash(rom.absolutePath)
                 ?: return HashOutcome.Failed("the hasher could not read '${entry.name}'")

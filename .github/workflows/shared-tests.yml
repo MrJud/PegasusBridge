@@ -9,8 +9,10 @@
 # Kotlin plugin from the Gradle plugin portal, every library from Maven Central
 # — except NewPipeExtractor and nanojson, which only JitPack serves (:video
 # needs them, and :daemon needs :video). The plugin and the libraries are pinned
-# by checksum in shared/gradle/verification-metadata.xml, so a changed download
-# fails the build rather than slipping in.
+# by checksum in shared/gradle/verification-metadata.xml, and the distribution
+# by distributionSha256Sum in shared/gradle/wrapper/gradle-wrapper.properties,
+# so a changed download fails the build rather than slipping in. A new
+# distributionUrl needs the sum from the .sha256 file published beside its zip.
 name: shared tests
 
 on:

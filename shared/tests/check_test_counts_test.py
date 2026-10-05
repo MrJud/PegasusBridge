@@ -115,6 +115,22 @@ class After {
             ("p.After", "inAfter", 14),
         ])
 
+    def test_a_java_test_is_named_by_its_method(self):
+        # Java has no `fun`: looking for one named every Java test "?", which
+        # then never matched its testcase and failed a suite that had run.
+        self.assertEqual(declared('''\
+package p;
+
+import org.junit.jupiter.api.Test;
+
+class J {
+    @Test
+    void plain() {}
+
+    @Test public void withModifier() throws Exception {}
+}
+''', name="p/J.java"), [("p.J", "plain", 6), ("p.J", "withModifier", 9)])
+
     def test_an_aliased_import_of_test_is_a_test(self):
         src = ("package p\n\nimport kotlin.test.Test as Check\n"
                "import org.junit.jupiter.api.Test as JTest\n\n"

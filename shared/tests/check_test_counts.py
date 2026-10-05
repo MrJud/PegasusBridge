@@ -57,6 +57,8 @@ from pathlib import Path
 # The function an annotation sits on: the first `fun` after it, with its name
 # either plain or backticked (most tests here are named in prose).
 FUN_NAME = re.compile(r"\bfun\s+(?:<[^>]*>\s*)?(`[^`\n]+`|\w+)")
+# The same for a Java test, which JUnit requires to return void.
+JAVA_METHOD_NAME = re.compile(r"\bvoid\s+(\w+)\s*\(")
 FUN = re.compile(r"\bfun\b")
 # A class, interface or object, and its name; a companion object may have none.
 # `Foo::class` is not one, and neither is `object : Listener { ... }`.
@@ -371,8 +373,9 @@ def read_sources(module):
         names = ["Test"] + TEST_ALIAS.findall(skel)
         annotation = re.compile(r"@(?:[\w.]+\.)?(?:%s)(?!\w)" % "|".join(names))
         funs = [f.start() for f in FUN.finditer(skel)]
+        name_of = JAVA_METHOD_NAME if path.suffix == ".java" else FUN_NAME
         for m in annotation.finditer(skel):
-            fun = FUN_NAME.search(skel, m.end())
+            fun = name_of.search(skel, m.end())
             name = code[fun.start(1):fun.end(1)].strip("`") if fun else "?"
             line = code.count("\n", 0, m.start()) + 1
             path_in = enclosing(bodies, m.start())

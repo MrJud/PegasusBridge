@@ -127,9 +127,16 @@ class HasherService : Service() {
                 // Logged where it was decided, with the counts. The message is
                 // the advice the theme shows, so it goes out as it is.
                 writeError(jobId, "scan", e.message ?: "Scan aborted")
-            } catch (e: Exception) {
-                Log.e(TAG, "Scan failed", e)
-                writeError(jobId, "scan", e.message ?: "Unknown error")
+            } catch (t: Throwable) {
+                // Throwable, not Exception. An Error — an UnsatisfiedLinkError
+                // from the native hasher, or one a lookup's owner hands every file
+                // waiting on it — went straight past, so pending kept saying
+                // "running", the theme's popup with it, and the Error left the
+                // coroutine and killed the app. It ends the scan like any other
+                // failure; rethrown after the error is written, it would still
+                // kill the app.
+                Log.e(TAG, "Scan failed", t)
+                writeError(jobId, "scan", t.message ?: t.javaClass.simpleName)
             } finally {
                 // Under the lock a start request takes. Outside it, one arriving
                 // after isRunning went false began a scan that the rest of this
@@ -662,9 +669,13 @@ class HasherService : Service() {
         tmp.renameTo(f)
     }
 
+    // Through a temp file, as writePending does, and done is marked only once
+    // the file is whole. writeText truncates first: a theme poll landing in that
+    // gap read an empty file, took it for a finished job, and never showed the
+    // abort, the cancel or the error this is the only record of.
     private fun writeError(jobId: String, verb: String, error: String) {
         val now = System.currentTimeMillis() / 1000L
-        Paths.pending(jobId).writeText(JSONObject()
+        Paths.writeAtomic(Paths.pending(jobId), JSONObject()
             .put("schemaVersion", SchemaVersion.CURRENT)
             .put("jobId",     jobId).put("verb", verb)
             .put("status",    "error").put("error", error)

@@ -3,7 +3,10 @@
 # desktop with nothing in between.
 #
 # Deliberately narrow: no Android build (it needs the SDK and NDK) and no native
-# one (native/build.sh and rcheevos). Those come later.
+# one (native/build.sh and rcheevos). Those come later. The golden hashes in
+# :hasher do run native code, but the librahasher.so committed in native/out, not
+# a fresh build. It needs glibc 2.38; ubuntu-latest has 2.39, and on an older
+# image those tests fail and say so rather than skip.
 #
 # What it downloads: the Gradle distribution from services.gradle.org, the
 # Kotlin plugin from the Gradle plugin portal, every library from Maven Central

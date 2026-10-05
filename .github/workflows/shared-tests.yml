@@ -51,6 +51,12 @@ jobs:
         working-directory: shared
         run: ./gradlew --no-daemon test
 
+      # The check below reads Kotlin with regular expressions. Its own tests
+      # come first, so that a parser gone wrong cannot call the suite complete.
+      - name: The test count check passes its own tests
+        working-directory: shared
+        run: ./tests/check_test_counts_test.py
+
       # A green run proves nothing about a test JUnit never ran: a Kotlin test
       # whose body does not end in Unit is dropped without a word.
       - name: Every declared test ran

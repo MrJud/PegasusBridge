@@ -65,6 +65,13 @@ class HasherService : Service() {
     private var bestObservedKBperMs = 0.0
     private var hashCount = 0
 
+    // Taken by every start request and by the end of a scan, so the one cannot
+    // run between the lines of the other. Guards isRunning, scanJob, the wake lock
+    // and the foreground state as well as the id below.
+    private val lifecycle = Any()
+    // The newest start request: the only id stopSelf(int) honours.
+    private var latestStartId = 0
+
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onCreate() {
@@ -73,16 +80,28 @@ class HasherService : Service() {
         createNotificationChannel()
     }
 
-    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        if (intent?.action == "CANCEL") { scanJob?.cancel(); return START_NOT_STICKY }
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int = synchronized(lifecycle) {
+        latestStartId = startId
+        handleStart(intent, startId)
+    }
+
+    private fun handleStart(intent: Intent?, startId: Int): Int {
+        if (intent?.action == "CANCEL") {
+            // A Cancel that finds no scan — tapped as one was finishing — still has
+            // to stop the service: the finally that would have has already run,
+            // with an id that is no longer the newest.
+            if (isRunning) scanJob?.cancel() else stopSelf(startId)
+            return START_NOT_STICKY
+        }
         if (isRunning) {
             Log.i(TAG, "Scan already in progress, ignoring duplicate start request")
             // Do NOT call stopSelf(startId) here — startId is the latest, so Android
-            // would tear down the whole service, cancelling the running scan.
+            // would tear down the whole service, cancelling the running scan. The
+            // scan's finally stops it with this id instead.
             return START_NOT_STICKY
         }
 
-        val rootsCsv = intent?.getStringExtra(EXTRA_ROOTS) ?: run { stopSelf(); return START_NOT_STICKY }
+        val rootsCsv = intent?.getStringExtra(EXTRA_ROOTS) ?: run { endWithoutScan(startId); return START_NOT_STICKY }
         val jobId    = intent.getStringExtra(EXTRA_JOB_ID) ?: java.util.UUID.randomUUID().toString()
         val roots    = rootsCsv.split('|', ',').map { it.trim() }.filter { it.isNotEmpty() }
 
@@ -91,7 +110,7 @@ class HasherService : Service() {
         val raApiKey = creds.ra?.apiKey ?: ""
         if (raUser.isEmpty() || raApiKey.isEmpty()) {
             writeError(jobId, "scan", "Missing RA credentials in credentials.json")
-            stopSelf(startId); return START_NOT_STICKY
+            endWithoutScan(startId); return START_NOT_STICKY
         }
 
         isRunning = true
@@ -112,19 +131,47 @@ class HasherService : Service() {
                 Log.e(TAG, "Scan failed", e)
                 writeError(jobId, "scan", e.message ?: "Unknown error")
             } finally {
-                isRunning = false
-                releaseWakeLock()
-                Paths.markDone(jobId)
-                stopForeground(STOP_FOREGROUND_REMOVE)
-                stopSelf(startId)
+                // Under the lock a start request takes. Outside it, one arriving
+                // after isRunning went false began a scan that the rest of this
+                // block then undid: its wake lock released, its notification
+                // taken down and, with the newest id below, the service stopped
+                // under it.
+                synchronized(lifecycle) {
+                    isRunning = false
+                    releaseWakeLock()
+                    Paths.markDone(jobId)
+                    stopForeground(STOP_FOREGROUND_REMOVE)
+                    // The newest start request, not this scan's. stopSelf(int)
+                    // ignores any other id, so once a Cancel from the notification
+                    // or a duplicate start had come in, the scan's own id stopped
+                    // nothing and the service stayed up, idle, until Android
+                    // reclaimed it.
+                    stopSelf(latestStartId)
+                }
             }
         }
         return START_NOT_STICKY
     }
 
+    /**
+     * Ends a start request that will not become a scan.
+     *
+     * DataLayerRouter starts this service with startForegroundService, and from
+     * Android 9 a service started that way which stops before calling
+     * startForeground takes the app down: "Context.startForegroundService() did
+     * not then call Service.startForeground()". So the notification goes up, for
+     * as long as it takes to take it down again. The error, if there is one, is
+     * written first, so the theme sees it either way.
+     */
+    private fun endWithoutScan(startId: Int) {
+        startForeground(NOTIFICATION_ID, buildNotification("Scanning ROM folders…", 0, 0))
+        stopForeground(STOP_FOREGROUND_REMOVE)
+        stopSelf(startId)
+    }
+
     override fun onDestroy() {
         scanJob?.cancel(); scope.cancel()
-        isRunning = false; releaseWakeLock()
+        synchronized(lifecycle) { isRunning = false; releaseWakeLock() }
         super.onDestroy()
     }
 

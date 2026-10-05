@@ -132,7 +132,9 @@ class RaSyncTest {
 
     // ── refreshProfile ──────────────────────────────────────────────────────
 
-    @Test fun `profile writes both cache files`() = runBlocking {
+    // `: Unit` because JUnit skips, without a word, a test that returns a value,
+    // and an expression body returns whatever its last line does.
+    @Test fun `profile writes both cache files`(): Unit = runBlocking {
         route(mapOf(
             "API_GetUserSummary"            to """{"User":"MrJud","TotalPoints":1234}""",
             "API_GetUserCompletionProgress" to """{"Count":5}""",

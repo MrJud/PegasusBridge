@@ -285,6 +285,16 @@ class RomScanPipeline(
                         onProgress(Progress(processed, total, r.job.file.name, newEntries, cached, skipped))
                     }
 
+                    // A refused key fails every match from here on, and the misses in
+                    // between, answered without the key, kept the failure count below
+                    // the limit: with one ROM in four unknown, 24 went through with no
+                    // abort, and when one did come it blamed a source that "stopped
+                    // answering". Stopped at the first refusal, and named.
+                    if (lookup.authRejected) {
+                        throw ScanAborted("RetroAchievements refused the API key " +
+                                          "($processed of $total processed)")
+                    }
+
                     // Once RetroAchievements has stopped answering there is nothing to
                     // gain from grinding through the rest of the library: every file
                     // would be recorded as unknown. Stop, keep what was found, say so.

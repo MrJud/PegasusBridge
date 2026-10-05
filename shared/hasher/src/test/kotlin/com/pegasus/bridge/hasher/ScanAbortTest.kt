@@ -4,6 +4,7 @@ import com.pegasus.bridge.core.BridgeLog
 import com.pegasus.bridge.core.BridgePaths
 import com.pegasus.bridge.core.NoopLog
 import com.pegasus.bridge.core.StderrLog
+import com.sun.net.httpserver.HttpServer
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.cancelAndJoin
@@ -13,6 +14,7 @@ import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import org.json.JSONObject
 import java.io.File
+import java.net.InetSocketAddress
 import java.nio.file.Files
 import java.util.concurrent.atomic.AtomicInteger
 import kotlin.test.AfterTest
@@ -234,6 +236,53 @@ class ScanAbortTest {
         assertEquals(0, active.get(), "a lookup was still running after scan() returned")
         assertEquals(1, s.indexed, "the match from the earlier scan must survive the abort")
         assertEquals(s.indexed, JSONObject(paths.discoveryIndex.readText()).getInt("count"))
+    }
+
+    /**
+     * A revoked key as RetroAchievements serves it, end to end: r=gameid needs no
+     * key and answers, the metadata call answers 401. One ROM in four is unknown
+     * to RA, and each of those misses cleared the failure count, so a library
+     * like this one went through without an abort: 42 requests, 18 API_RETRY,
+     * never more than 5 failures in a row. The first refusal stops it now, and
+     * the reason names the key instead of a source that stopped answering.
+     */
+    @Test fun `a refused key stops the scan at the first refusal, whatever the misses do`(): Unit = runBlocking {
+        repeat(24) { i -> rom("nes", "Game$i.nes", if (i % 4 == 0) "miss-$i" else "known-$i") }
+        val metadataRequests = AtomicInteger()
+        val server = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0)
+        server.createContext("/") { exchange ->
+            val (status, body) = if (exchange.requestURI.path == "/dorequest.php") {
+                val hash = exchange.requestURI.query.substringAfter("m=")
+                200 to (if (hash.startsWith("miss-")) """{"Success":true,"GameID":0}"""
+                        else """{"Success":true,"GameID":${1000 + hash.substringAfter('-').toInt()}}""")
+            } else {
+                metadataRequests.incrementAndGet()
+                401 to """{"message":"Unauthenticated.","errors":[{"status":"401","code":"unauthorized","title":"Unauthenticated."}]}"""
+            }
+            val bytes = body.toByteArray()
+            exchange.sendResponseHeaders(status, bytes.size.toLong())
+            exchange.responseBody.use { it.write(bytes) }
+        }
+        server.start()
+        try {
+            val lookup = RaApiHashLookup("someuser", "revoked-key", "http://127.0.0.1:${server.address.port}")
+            // One worker per stage, so the lookups run in a line and "after the
+            // first refusal" means one thing.
+            val s = withTimeout(20_000) {
+                RomScanPipeline(paths, ContentHasher(), lookup, throttleMs = { 0L },
+                                hashWorkers = 1, apiWorkers = 1)
+                    .scan(listOf(romRoot.absolutePath))
+            }
+
+            assertTrue(s.aborted, "a scan with a refused key ran to the end")
+            assertTrue(s.reason.startsWith("RetroAchievements refused the API key"), s.reason)
+            assertEquals(1, metadataRequests.get(), "the scan went on asking after the key was refused")
+            assertEquals(1, s.failedLookups)
+            assertEquals(1, s.states[ScanLedger.State.API_RETRY])
+            assertTrue(s.processed < s.total)
+        } finally {
+            server.stop(0)
+        }
     }
 
     /**

@@ -226,11 +226,48 @@ class RaHashLookupTest {
     @Test fun `a refused key adds up even though every game id request succeeds`() = runTest {
         repeat(3) { n ->
             replies += Reply("""{"Success":true,"GameID":1446}""")
-            replies += Reply("""{"message":"Unauthenticated."}""", 401)
+            replies += Reply(UNAUTHENTICATED, 401)
             assertNull(lookup.lookup(HASH))
             assertEquals(n + 1, lookup.consecutiveFailures)
         }
         assertEquals(6, requests.size)
+    }
+
+    // What RAWeb's api-token guard answers whenever `y` matches no account's web
+    // API key: a wrong, revoked or empty key, and a banned account's, which the
+    // ban clears. Every match after it fails the same way, whatever the misses
+    // in between do to the failure count.
+    @Test fun `a 401 from the metadata endpoint is the key refused, and stays refused`() = runTest {
+        assertFalse(lookup.authRejected)
+        replies += Reply("""{"Success":true,"GameID":1446}""")
+        replies += Reply(UNAUTHENTICATED, 401)
+
+        assertNull(lookup.lookup(HASH))
+        assertTrue(lookup.authRejected)
+        assertEquals(2, requests.size, "a refusal is not retried")
+
+        // A miss is answered without the key: it clears the count, not the refusal.
+        replies += Reply("""{"Success":true,"GameID":0}""")
+        assertEquals(0, assertNotNull(lookup.lookup(HASH)).gameId)
+        assertEquals(0, lookup.consecutiveFailures)
+        assertTrue(lookup.authRejected)
+    }
+
+    // Failures, but none of them the key: a 404, an explicit Success:false (not
+    // something RAWeb sends for a bad key), and a 401 on r=gameid, which carries
+    // no key to refuse.
+    @Test fun `other refusals do not say the key was refused`() = runTest {
+        replies += Reply("""{"Success":true,"GameID":1446}""")
+        replies += Reply("not found", 404)
+        assertNull(lookup.lookup(HASH))
+        replies += Reply("""{"Success":true,"GameID":1446}""")
+        replies += Reply("""{"Success":false,"Error":"Invalid credentials"}""")
+        assertNull(lookup.lookup(HASH))
+        replies += Reply(UNAUTHENTICATED, 401)
+        assertNull(lookup.lookup(HASH))
+
+        assertEquals(3, lookup.consecutiveFailures)
+        assertFalse(lookup.authRejected)
     }
 
     @Test fun `temporary server failures are retried`() = runTest {
@@ -346,5 +383,7 @@ class RaHashLookupTest {
         const val USER = "test-private-user"
         const val API_KEY = "test-private-api-key"
         const val VALID_METADATA = """{"ID":1446,"Title":"Super Mario Bros.","ConsoleName":"NES","ImageIcon":"/Images/1.png","NumAchievements":76}"""
+        /** RAWeb's body for an AuthenticationException on the legacy API (app/Exceptions/Handler.php). */
+        const val UNAUTHENTICATED = """{"message":"Unauthenticated.","errors":[{"status":"401","code":"unauthorized","title":"Unauthenticated."}]}"""
     }
 }

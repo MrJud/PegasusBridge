@@ -51,6 +51,15 @@ interface RaHashLookup {
      * still come back.
      */
     val consecutiveFailures: Int get() = 0
+
+    /**
+     * True once the source has refused the credentials. Nothing after that can be
+     * a match, since describing a game needs the key, so a caller should stop at
+     * once. Waiting for [consecutiveFailures] does not work here: the hashes the
+     * source does not know are answered without the key, and each of them clears
+     * the count.
+     */
+    val authRejected: Boolean get() = false
 }
 
 /**
@@ -113,6 +122,11 @@ class RaApiHashLookup(
     private val failures = AtomicInteger()
     override val consecutiveFailures: Int get() = failures.get()
 
+    // Never cleared: the key is fixed for the life of this object, and the daemon
+    // builds a new one for every scan.
+    @Volatile private var rejected = false
+    override val authRejected: Boolean get() = rejected
+
     /** Spaces requests out, whatever the parallelism, so RA sees a steady trickle. */
     private suspend fun pace() = paceMutex.withLock {
         val wait = MIN_INTERVAL_NS - (System.nanoTime() - lastRequestAt)
@@ -164,7 +178,8 @@ class RaApiHashLookup(
      * the library at once.
      */
     private suspend fun fetchGameId(hash: String): Int? {
-        val body = getWithRetry("$base/dorequest.php?r=gameid&m=$hash") ?: return null
+        val reply = getWithRetry("$base/dorequest.php?r=gameid&m=$hash")?.takeIf { it.ok } ?: return null
+        val body = reply.body.orEmpty()
         val obj = try { JSONObject(body) } catch (e: JSONException) { null }
         val id = obj?.takeIf { it.opt("Success") == true }?.let { wholeNumber(it, "GameID") }
         if (id == null) BridgeLog.w(TAG, "no usable game id for hash $hash: ${excerpt(body)}")
@@ -186,10 +201,20 @@ class RaApiHashLookup(
      * the id alone, which cleared the failure count: a metadata endpoint serving
      * a maintenance page with 200 went unnoticed through a whole library, every
      * match retried and none of it counted as failing.
+     *
+     * A 401 is the key refused, and sets [authRejected]. It is what RAWeb's
+     * api-token guard answers, `{"message":"Unauthenticated.",…}`, whenever `y`
+     * matches no account's web API key: a wrong key, a revoked one, an empty one,
+     * and a banned account's, since a ban clears the key. The user name is not
+     * checked at all. The 404 RAWeb gives for a banned user is about the user a
+     * request names in `u`, which this one does not carry.
      */
     private suspend fun fetchMetadata(gameId: Int): GameMetadata? {
         val url = "$base/API/API_GetGameExtended.php?z=$raUser&y=$raApiKey&i=$gameId"
-        val body = getWithRetry(url) ?: return null
+        val reply = getWithRetry(url) ?: return null
+        if (reply.code == 401) rejected = true
+        if (!reply.ok) return null
+        val body = reply.body.orEmpty()
         val obj = try { firstObject(body) } catch (e: JSONException) { null }
         if (obj != null && obj.has("Success") && obj.opt("Success") != true) {
             BridgeLog.w(TAG, "metadata for game $gameId refused: ${excerpt(body)}")
@@ -249,7 +274,12 @@ class RaApiHashLookup(
     private fun describe(e: Exception): String =
         e.message?.let { "${e.javaClass.simpleName}: ${excerpt(it)}" } ?: e.javaClass.simpleName
 
-    private suspend fun getWithRetry(url: String): String? {
+    /**
+     * A success, or the first refusal that asking again would not change, or null
+     * once every attempt has failed. The refusal is handed back rather than
+     * reduced to null because one of them, a 401, says the key is no good.
+     */
+    private suspend fun getWithRetry(url: String): HttpReply? {
         var lastFailure = "no attempt made"
         for (attempt in 0 until MAX_RETRIES) {
             try {
@@ -257,7 +287,7 @@ class RaApiHashLookup(
                 val req = Request.Builder().url(url).header("User-Agent", USER_AGENT).build()
                 val reply = execute(req)
                 when {
-                    reply.code in 200..299 -> return reply.body.orEmpty()
+                    reply.ok -> return reply
                     // 403 belongs here: it is what being refused for too many
                     // requests looks like, and treating it as fatal made the
                     // client give up on the first one.
@@ -265,7 +295,7 @@ class RaApiHashLookup(
                         lastFailure = "HTTP ${reply.code}"
                     else -> {
                         BridgeLog.e(TAG, "HTTP ${reply.code} for ${SafeUrl.redact(url)}")
-                        return null
+                        return reply
                     }
                 }
             } catch (c: CancellationException) {
@@ -285,7 +315,9 @@ class RaApiHashLookup(
         return null
     }
 
-    private class HttpReply(val code: Int, val body: String?)
+    private class HttpReply(val code: Int, val body: String?) {
+        val ok: Boolean get() = code in 200..299
+    }
 
     /**
      * One request that a cancelled coroutine actually stops.

@@ -288,6 +288,43 @@ class ScanLedgerTest {
         assertEquals(1, ledgerJson().getInt("count"), "the deleted file's entry lived on")
     }
 
+    // A theme can scan one collection at a time. Keeping only what the last scan
+    // found threw away the other collections' misses, and the next full scan
+    // hashed and asked about every one of them again.
+    @Test fun `a scan of one root keeps the verdicts of the others`(): Unit = runBlocking {
+        rom("nes", "A.nes", "hash-a")
+        val other = rom("snes", "B.sfc", "hash-b")
+        pipeline(ContentHasher(), SaysNo()).scan(listOf(romRoot.absolutePath))
+
+        val s2 = pipeline(ContentHasher(), SaysNo()).scan(listOf(File(romRoot, "nes").absolutePath))
+        assertEquals(1, s2.total)
+        assertEquals("NOT_FOUND", ledgerEntry(other)!!.getString("state"), "the other root's miss was dropped")
+
+        val h3 = ContentHasher(); val l3 = SaysNo()
+        val s3 = pipeline(h3, l3).scan(listOf(romRoot.absolutePath))
+        assertEquals(0, h3.calls.get(), "a miss inside its TTL was hashed again")
+        assertEquals(0, l3.calls.get(), "a miss inside its TTL was asked about again")
+        assertEquals(2, s3.states[ScanLedger.State.NOT_FOUND])
+    }
+
+    // What the ledger still drops: a file that is gone, even outside the roots
+    // scanned, and one under them that the scan no longer counts as a ROM.
+    @Test fun `a scan of one root still drops what is gone or no longer a rom`(): Unit = runBlocking {
+        rom("nes", "A.nes", "hash-a")
+        val notRom = rom("nes", "Notes.bin", "hash-n")
+        val gone = rom("snes", "B.sfc", "hash-b")
+        pipeline(ContentHasher(), SaysNo()).scan(listOf(romRoot.absolutePath))
+        assertEquals(3, ledgerJson().getInt("count"))
+
+        gone.delete()
+        RomScanPipeline(paths, ContentHasher(), SaysNo(), throttleMs = { 0L }, extensionsFor = { setOf("nes") })
+            .scan(listOf(File(romRoot, "nes").absolutePath))
+
+        assertNull(ledgerEntry(gone), "a deleted file outside the scanned root kept its entry")
+        assertNull(ledgerEntry(notRom), "a file the scan no longer counts kept its entry")
+        assertEquals(1, ledgerJson().getInt("count"))
+    }
+
     @Test fun `a corrupt ledger is started again rather than failing the scan`(): Unit = runBlocking {
         rom("nes", "Game.nes", "hash-unknown")
         paths.cache.mkdirs()

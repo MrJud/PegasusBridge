@@ -220,9 +220,24 @@ class ScanLedger(private val file: File) {
             .onFailure { BridgeLog.w(TAG, "could not write the ledger: ${it.message}") }
     }
 
-    /** Drops entries for files that are no longer on disk, so it cannot grow forever. */
-    fun forget(paths: Set<String>) {
-        synchronized(entries) { entries.keys.retainAll(paths) }
+    /**
+     * Drops the entries a scan of [roots] has shown to be stale, so the ledger
+     * cannot grow for ever: those under one of [roots] that the scan did not
+     * find, and those whose file is gone, wherever it was. Paths are canonical,
+     * as the pipeline records them.
+     *
+     * Everything else stays. Keeping only what [found] holds threw away the
+     * verdicts of every root the scan was not given, its misses with them, so a
+     * theme that scans one collection at a time asked about the misses of all
+     * the others again on every round.
+     */
+    fun forget(found: Set<String>, roots: List<String>) {
+        val under = roots.map { it.trimEnd('/', '\\') + File.separator }
+        synchronized(entries) {
+            entries.keys.removeIf { path ->
+                path !in found && (under.any { path.startsWith(it) } || !File(path).exists())
+            }
+        }
     }
 
     companion object {

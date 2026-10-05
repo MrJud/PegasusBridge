@@ -129,7 +129,7 @@ class RomScanPipeline(
         // Without it a library of mostly-unknown ROMs asked the source about every
         // one of them on every run, and could never say why any of them was missing.
         val ledger = ScanLedger(File(paths.cache, ScanLedger.FILE_NAME))
-        ledger.forget(files.map { canonical(it) }.toSet())
+        ledger.forget(files.map { canonical(it) }.toSet(), roots.map { canonical(File(it)) })
         val now = BridgePaths.epochSeconds()
 
         val fileQueue    = Channel<File>(capacity = 64)

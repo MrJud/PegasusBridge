@@ -1,10 +1,12 @@
 package com.pegasus.bridge.hasher
 
+import com.pegasus.bridge.core.BridgeLog
 import org.apache.commons.compress.archivers.sevenz.SevenZArchiveEntry
 import org.apache.commons.compress.archivers.sevenz.SevenZOutputFile
 import org.apache.commons.compress.archivers.zip.ZipArchiveEntry
 import org.apache.commons.compress.archivers.zip.ZipArchiveOutputStream
 import java.io.File
+import java.util.Collections
 import java.util.concurrent.CancellationException
 import java.util.zip.ZipEntry
 import java.util.zip.ZipOutputStream
@@ -220,25 +222,48 @@ class PlainRomHasherTest {
         assertEquals(archive.length(), h.size)
     }
 
-    // A cancelled lookup must stop, not be "handled" by digesting the container. In
-    // a 7z an interrupt arrives as an IOException, which used to mean exactly that.
-    @Test fun `an interrupt is a cancellation, not an unreadable archive`() {
+    // A cancelled lookup must stop, not be "handled" as an extraction that failed
+    // and answered with the container's digest. That answer would throw as well,
+    // since the digest looks for the interrupt before it reads, so the outcome
+    // alone cannot tell the two apart: the failed extraction it logs on the way can.
+    @Test fun `an interrupt while reading a zip entry is a cancellation, not a failed extraction`() {
         tmp.mkdirs()
         val zip = File(tmp, "game.zip")
         ZipOutputStream(zip.outputStream()).use { z ->
             z.putNextEntry(ZipEntry("game.nes")); z.write(ByteArray(200_000)); z.closeEntry()
         }
-        val sz = sevenZ("game.7z", "game.nes" to ByteArray(200_000))
-        for (archive in listOf(zip, sz)) {
-            try {
-                Thread.currentThread().interrupt()
-                assertFailsWith<CancellationException>(archive.name) {
-                    PlainRomHasher.hash(archive.absolutePath, tmp)
-                }
-            } finally {
-                Thread.interrupted()
-            }
+        val logs = Collections.synchronizedList(mutableListOf<String>())
+        val previous = BridgeLog.current
+        BridgeLog.current = object : BridgeLog {
+            override fun d(tag: String, msg: String) { logs += msg }
+            override fun i(tag: String, msg: String) { logs += msg }
+            override fun w(tag: String, msg: String, t: Throwable?) { logs += msg }
+            override fun e(tag: String, msg: String, t: Throwable?) { logs += msg }
         }
+        try {
+            Thread.currentThread().interrupt()
+            assertFailsWith<CancellationException> { PlainRomHasher.hash(zip.absolutePath, tmp) }
+        } finally {
+            Thread.interrupted()
+            BridgeLog.current = previous
+        }
+        assertTrue(logs.none { it.contains("archive failed") }, "the interrupt was taken for a failed extraction: $logs")
+    }
+
+    // In a 7z the interrupt arrives while listing, as the ClosedByInterruptException
+    // a FileChannel throws: an IOException, which used to mean "not an archive" and
+    // was answered by hashing the whole container. The archive must not be handed
+    // on at all, as unreadable or otherwise.
+    @Test fun `an interrupt while opening a 7z is a cancellation, not an unreadable archive`() {
+        val sz = sevenZ("game.7z", "game.nes" to ByteArray(200_000))
+        var handed: ArchiveReader.Opened? = null
+        try {
+            Thread.currentThread().interrupt()
+            assertFailsWith<CancellationException> { ArchiveReader.open(sz) { handed = it } }
+        } finally {
+            Thread.interrupted()
+        }
+        assertNull(handed, "the 7z was handed on as $handed")
     }
 
     @Test fun `a ROM misnamed as an archive is hashed anyway`() {

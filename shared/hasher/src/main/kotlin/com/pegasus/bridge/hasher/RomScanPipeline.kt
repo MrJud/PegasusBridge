@@ -185,10 +185,16 @@ class RomScanPipeline(
                             val meta: GameMetadata?
                             val owned = mine
                             if (owned != null) {
-                                // The owner must settle its promise on every path.
-                                // Cancelled mid-lookup it used to just stop, leaving
-                                // followers awaiting a promise nobody would ever
-                                // complete — a second way for an abort to hang.
+                                // The owner settles its promise on every path. Not for an
+                                // abort or a cancelled caller, nor for any other exception,
+                                // which fails the scope: the followers are children of the
+                                // same scope and are cancelled with it either way. It is
+                                // for a lookup that throws a cancellation of its own, a
+                                // timeout inside it say, while the scan goes on. This
+                                // worker then ends without the scope noticing, and a
+                                // follower awaiting a promise nobody completes waits for
+                                // ever; tried with such a lookup, scan() never returned.
+                                // No lookup here throws one, so no test reaches this.
                                 meta = try {
                                     lookup.lookup(hash)
                                 } catch (t: Throwable) {

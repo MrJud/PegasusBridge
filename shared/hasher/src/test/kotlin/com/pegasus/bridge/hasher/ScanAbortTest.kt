@@ -344,10 +344,15 @@ class ScanAbortTest {
     /**
      * Cancelled from outside — the daemon shutting down, the Android service
      * being stopped — while one worker owns a lookup that will never answer and
-     * another is waiting on it for a copy of the same ROM. Both must stop, and
-     * the cancel must complete instead of waiting on the lookup.
+     * another is waiting on it for a copy of the same ROM. The cancel must
+     * complete instead of waiting on the lookup, the lookup must be cancelled,
+     * and the copies must have shared it rather than made their own.
+     *
+     * The waiting copy stops because it is a child of the same scope, so this
+     * does not depend on the owner settling its promise: it passes without that
+     * line, which RomScanPipeline explains.
      */
-    @Test fun `cancelling the caller stops a lookup owner and the copies waiting on it`(): Unit = runBlocking {
+    @Test fun `cancelling the caller cancels the one lookup the copies of a ROM share`(): Unit = runBlocking {
         repeat(20) { rom("nes", "Copy$it.nes", "hash-same") }
         val started = CompletableDeferred<Unit>()
         val calls = AtomicInteger()

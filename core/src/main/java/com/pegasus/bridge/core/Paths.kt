@@ -5,6 +5,13 @@ import java.io.File
 object Paths {
     private val ROOT = File("/sdcard/PegasusData")
 
+    /**
+     * The same root as a [BridgePaths], which is what the code both shells
+     * compile takes in place of this object. Built from [ROOT], so the Android
+     * data root stays that one literal.
+     */
+    val bridge = BridgePaths(ROOT)
+
     val CONFIG        = File(ROOT, "config")
     val METADATA      = File(ROOT, "metadata")
     val MEDIA         = File(ROOT, "media")

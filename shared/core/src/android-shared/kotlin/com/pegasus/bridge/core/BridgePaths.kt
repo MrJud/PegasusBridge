@@ -7,8 +7,10 @@ import java.io.File
  * the desktop daemon passes an XDG location. Nothing below this class should ever
  * name a directory itself.
  *
- * Replaces the old `object Paths`, which hardcoded the Android path and so could
- * not exist on desktop at all.
+ * Android keeps its `object Paths`, which hardcodes that path and so could not
+ * exist on desktop at all, and its services go on naming directories through it.
+ * The code both shells compile takes one of these instead; on Android that is
+ * `Paths.bridge`, built over the same root.
  */
 class BridgePaths(val root: File) {
 

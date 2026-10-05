@@ -1,6 +1,7 @@
 # The tests of shared/, the pure-JVM half both shells are built from, on every
 # push and pull request. Until now a regression there reached the tablet and the
-# desktop with nothing in between.
+# desktop with nothing in between. Beside them, once and with no JDK, the test of
+# install.sh, which points the Pegasus themes at the data root.
 #
 # Deliberately narrow: no Android build (it needs the SDK and NDK) and no native
 # one (native/build.sh and rcheevos). Those come later. The golden hashes in
@@ -71,3 +72,19 @@ jobs:
           path: |
             shared/*/build/reports/tests/test/
             shared/*/build/test-results/test/*.xml
+
+  install:
+    # Bash and coreutils are all it needs: it runs install.sh with a throwaway
+    # HOME and prefix, a stub systemctl first on PATH and --no-service, so
+    # nothing outside its temporary directory is written or started. Nothing in
+    # it depends on the JDK, hence one job rather than a step in each entry of
+    # the matrix.
+    name: install.sh
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Themes are pointed at the data root in every layout
+        working-directory: shared
+        run: ./tests/install_pointers_test.sh

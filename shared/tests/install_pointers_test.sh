@@ -71,7 +71,9 @@ run_installer() {
         bash "$sandbox/bundle/install.sh" --prefix "$prefix" --no-service "$@" \
         > "$sandbox/out.txt" 2>&1
     local rc=$?
-    [[ $rc -eq 0 ]] || { echo "--- installer failed (rc=$rc) ---"; cat "$sandbox/out.txt"; }
+    # Counted here, not only reported: every caller skips its assertions when
+    # this fails, so a broken install would otherwise end in "all checks passed".
+    [[ $rc -eq 0 ]] || { fail "install.sh $* exited with $rc"; cat "$sandbox/out.txt"; }
     return $rc
 }
 

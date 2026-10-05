@@ -143,7 +143,8 @@ class HasherService : Service() {
     )
 
     /**
-     * Ends a scan that RetroAchievements has stopped answering.
+     * Ends a scan that RetroAchievements has stopped answering, or whose key it
+     * has refused.
      *
      * Thrown by the collector once every stage has been stopped, so the job ends
      * the way any failed job does: the error lands in `pending/{jobId}.json` and
@@ -354,7 +355,8 @@ class HasherService : Service() {
                             // a failure that has already finished. Only an answer is
                             // worth remembering for this run; a failure deliberately
                             // is not, so a later file with this hash asks again.
-                            if (answer == RAApiClient.Lookup.Failed) synchronized(hashDedup) { hashDedup.remove(hash) }
+                            if (answer == RAApiClient.Lookup.Failed || answer == RAApiClient.Lookup.KeyRefused)
+                                synchronized(hashDedup) { hashDedup.remove(hash) }
                             if (failure == null) owned.complete(answer)
                             else owned.completeExceptionally(failure)
                         }
@@ -376,7 +378,7 @@ class HasherService : Service() {
 
         // Collector: write per-game metadata/{gameId}.json
         var processed = 0; var newEntries = 0; var cachedHits = 0; var skippedPlat = 0
-        var failedLookups = 0; var unmatched = 0; var untitled = 0; var incompatible = 0
+        var failedLookups = 0; var unmatched = 0; var incompatible = 0
         // Aim for ~50 progress updates over the whole scan, with a sane minimum.
         val writeStep = (total / 50).coerceAtLeast(10)
         for (r in resultChannel) {
@@ -384,20 +386,16 @@ class HasherService : Service() {
             when {
                 r.skipped -> skippedPlat++
                 r.cached  -> cachedHits++
-                answer == RAApiClient.Lookup.Failed -> failedLookups++
-                // A usable match needs a title, not just an id. RAApiClient
-                // reports an HTML page or a body it could not parse as a Hit with
-                // an empty title. Written, it counted as new, the index then
-                // dropped it for having no title, and the next scan skipped it as
-                // cached.
-                answer is RAApiClient.Lookup.Hit && answer.meta.title.isNotBlank() -> {
+                answer == RAApiClient.Lookup.Failed || answer == RAApiClient.Lookup.KeyRefused -> failedLookups++
+                // Always titled now. An id with no title — an HTML page, a body cut
+                // short or `[]` from API_GetGameExtended for a real id — is a
+                // failed lookup, not a Hit: as a Hit it was counted `untitled`,
+                // blamed on RetroAchievements, and cleared the count the abort
+                // watches.
+                answer is RAApiClient.Lookup.Hit -> {
                     writeMetadata(r.job, answer.meta)
                     newEntries++
                 }
-                // Not a match and not a refusal either: the source answering about
-                // a game it cannot describe. Nothing is written, so the next scan
-                // asks again rather than writing the game off.
-                answer is RAApiClient.Lookup.Hit -> untitled++
                 // A dump RetroAchievements knows and does not support — the
                 // Virtual Console Metroid gets 1100001487, game 1487 untested.
                 // Counted as untitled it was asked about on every scan, twice,
@@ -426,10 +424,14 @@ class HasherService : Service() {
 
             // Once RetroAchievements has stopped answering there is nothing to
             // gain from grinding through the rest of the library: every file
-            // would be recorded as unknown. Stop and say so.
-            if (apiClient.consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
-                Log.e(TAG, "aborting scan: $failedLookups lookups failed, " +
-                           "${apiClient.consecutiveFailures} in a row")
+            // would be recorded as unknown. Stop and say so. A refused key stops
+            // it at once: every lookup that finds a game will be refused the same
+            // way, and the scan used to go through the whole library like that,
+            // since the r=gameid call between two refusals cleared the count.
+            val keyRefused = answer == RAApiClient.Lookup.KeyRefused
+            if (keyRefused || apiClient.consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
+                Log.e(TAG, "aborting scan: ${if (keyRefused) "API key refused, " else ""}" +
+                           "$failedLookups lookups failed, ${apiClient.consecutiveFailures} in a row")
                 // This used to `return@coroutineScope`, which cannot leave: a scope
                 // waits for its children, and the producers and workers were still
                 // running, sending into a result queue nobody drained any more.
@@ -444,8 +446,8 @@ class HasherService : Service() {
                 // rather than close, because closing refuses new sends but leaves
                 // one already blocked on a full buffer where it is. The join is
                 // NonCancellable so a Cancel tapped now cannot skip the index; it
-                // waits only for what cannot be interrupted — a native hash, or an
-                // HTTP call within its timeouts.
+                // waits only for what cannot be interrupted, a hash being taken.
+                // A request in flight is cancelled with the worker that made it.
                 val stages = listOf(feeder, coordinator) + producers + workers
                 stages.forEach { it.cancel() }
                 fileQueue.cancel(); hashChannel.cancel(); resultChannel.cancel()
@@ -453,35 +455,39 @@ class HasherService : Service() {
                 writeDiscoveryIndex()
                 ledger.save(Paths::writeAtomic)
                 throw ScanAborted(
-                    "RetroAchievements stopped responding after $processed of $total files " +
-                    "($newEntries identified). Nothing was recorded as missing. " +
-                    "Wait a few minutes and scan again — it will resume where it left off.")
+                    if (keyRefused)
+                        "RetroAchievements refused the API key for $raUser after $processed of $total files " +
+                        "($newEntries identified). Nothing was recorded as missing. " +
+                        "Copy the Web API key from your RetroAchievements settings into credentials.json " +
+                        "and scan again."
+                    else
+                        "RetroAchievements stopped responding after $processed of $total files " +
+                        "($newEntries identified). Nothing was recorded as missing. " +
+                        "Wait a few minutes and scan again — it will resume where it left off.")
             }
             if (processed % writeStep == 0 || processed == total) {
                 val pct = processed.toDouble() / total
                 writePending(jobId, "scan", "running", pct,
                     "[$processed/$total] ${r.job.file.name}",
-                    newEntries, cachedHits, skippedPlat, unmatched, untitled, incompatible)
+                    newEntries, cachedHits, skippedPlat, unmatched, incompatible)
                 updateNotification("[$processed/$total] ${r.job.file.name}", processed, total)
             }
         }
 
         writeDiscoveryIndex()
         ledger.save(Paths::writeAtomic)
-        // Untitled answers used to be counted as new. Left out of the summary now,
-        // they would vanish from it altogether — a library of them would finish
-        // "0 new, 0 cached, 0 skipped, 0 not in the database" — so they get a
-        // clause of their own, and only when there are any. So do the dumps RA
-        // does not support.
+        // The dumps RA does not support get a clause of their own, and only when
+        // there are any. Left out, they would vanish from the summary altogether —
+        // a library of them would finish "0 new, 0 cached, 0 skipped, 0 not in the
+        // database".
         writePending(jobId, "scan", "done", 1.0,
             "Done — $newEntries new, $cachedHits cached, $skippedPlat skipped, " +
             "$unmatched not in the database" +
-            (if (incompatible > 0) ", $incompatible dumps RetroAchievements does not support" else "") +
-            (if (untitled > 0) ", $untitled RetroAchievements could not describe" else ""),
-            newEntries, cachedHits, skippedPlat, unmatched, untitled, incompatible)
+            (if (incompatible > 0) ", $incompatible dumps RetroAchievements does not support" else ""),
+            newEntries, cachedHits, skippedPlat, unmatched, incompatible)
         Log.i(TAG, "Scan complete: $processed processed, $newEntries new, $cachedHits cached, " +
-                   "$skippedPlat skipped, $unmatched unmatched, $untitled with no title, " +
-                   "$incompatible incompatible, $failedLookups lookups failed")
+                   "$skippedPlat skipped, $unmatched unmatched, $incompatible incompatible, " +
+                   "$failedLookups lookups failed")
     }
 
     // Enumera metadata/*.json ed emette metadata/_index.json con:
@@ -585,8 +591,6 @@ class HasherService : Service() {
         newEntries: Int = 0, cachedHits: Int = 0, skippedPlatforms: Int = 0,
         /** Looked up and genuinely not in RetroAchievements — an answer, not a failure. */
         unmatched: Int = 0,
-        /** Known to RetroAchievements by id, with no title to show: asked again next scan. */
-        untitled: Int = 0,
         /** Held by RetroAchievements only as a virtual id — incompatible, untested, needs a patch. */
         incompatible: Int = 0
     ) {
@@ -602,7 +606,6 @@ class HasherService : Service() {
             .put("cachedHits",        cachedHits)
             .put("skippedPlatforms",  skippedPlatforms)
             .put("unmatched",         unmatched)
-            .put("untitled",          untitled)
             .put("incompatible",      incompatible)
             .put("startedAt", now)
             .put("updatedAt", now)

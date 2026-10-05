@@ -98,14 +98,20 @@ class RomScanPipelineTest {
                    "reverse lookup key missing: ${index.getJSONObject("byKey").keys().asSequence().toList()}")
     }
 
-    // RA's dorequest can answer Success with an id the Web API does not know: a
-    // Virtual Console Metroid dump returns 1100001487, whose GetGameExtended is
-    // empty. Without a title there is no usable match, so nothing should be
-    // written and the count must not include it.
-    @Test fun `an id with no title is not treated as a match`(): Unit = runBlocking {
-        rom("nes", "Metroid (Europe) (Virtual Console).nes", "hash-phantom")
+    // RA's dorequest answers a dump it does not consider playable as is with a
+    // virtual id: a Virtual Console Metroid returns 1100001487, game 1487
+    // untested, and the Web API has no game under that number. Not a match, so
+    // nothing is written and the count does not include it — but an answer, kept
+    // like a miss. Recorded as API_RETRY, which is never cached, the file was
+    // hashed and asked about again on every scan.
+    @Test fun `a virtual id is kept like a miss, not written and not asked about again`(): Unit = runBlocking {
+        val rom = rom("nes", "Metroid (Europe) (Virtual Console).nes", "hash-phantom")
         val phantom = object : RaHashLookup {
-            override suspend fun lookup(hash: String) = GameMetadata(gameId = 1100001487)
+            val calls = AtomicInteger()
+            override suspend fun lookup(hash: String): GameMetadata {
+                calls.incrementAndGet()
+                return GameMetadata(gameId = 1100001487)
+            }
         }
 
         val s = pipeline(ContentHasher(), phantom).scan(listOf(romRoot.absolutePath))
@@ -115,14 +121,28 @@ class RomScanPipelineTest {
         assertEquals(0, s.indexed)
         assertEquals(0, paths.metadata.listFiles { f -> !f.name.startsWith("_") }!!.size,
                      "no junk metadata file should be left on disk")
+        assertEquals(mapOf(ScanLedger.State.NOT_FOUND to 1), s.states)
+        assertEquals(0, s.failedLookups, "the source answered")
+        val entry = JSONObject(File(paths.cache, ScanLedger.FILE_NAME).readText())
+            .getJSONObject("entries").getJSONObject(rom.canonicalPath)
+        assertEquals(1100001487, entry.getInt("gameId"))
+        assertEquals("RetroAchievements knows this dump only by virtual id 1100001487: game 1487, untested",
+                     entry.getString("detail"))
+
+        val h2 = ContentHasher()
+        val s2 = pipeline(h2, phantom).scan(listOf(romRoot.absolutePath))
+        assertEquals(0, h2.calls.get(), "the file was read again inside the verdict's TTL")
+        assertEquals(1, phantom.calls.get(), "the source was asked again inside the verdict's TTL")
+        assertEquals(mapOf(ScanLedger.State.NOT_FOUND to 1), s2.states)
     }
 
-    // The same answer spelled with spaces. Written, it would be distrusted by the
+    // A real id with a title of only spaces, which RaApiHashLookup answers null
+    // for but another lookup could return. Written, it would be distrusted by the
     // next scan's cache, asked about again and counted new on every run.
     @Test fun `a title of only spaces is not treated as a match either`(): Unit = runBlocking {
-        rom("nes", "Metroid (Europe) (Virtual Console).nes", "hash-phantom")
+        rom("nes", "Metroid (Europe).nes", "hash-spaces")
         val spaces = object : RaHashLookup {
-            override suspend fun lookup(hash: String) = GameMetadata(gameId = 1100001487, title = "   ")
+            override suspend fun lookup(hash: String) = GameMetadata(gameId = 1487, title = "   ")
         }
 
         val s = pipeline(ContentHasher(), spaces).scan(listOf(romRoot.absolutePath))

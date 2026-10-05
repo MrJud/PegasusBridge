@@ -240,23 +240,35 @@ class RomScanPipeline(
                                           job.fileSize, job.lastModified, now,
                                           detail = "the source did not answer")
                         }
-                        // A usable match needs a title, not just an id. RA's dorequest can
-                        // answer Success with an id the Web API does not know — a Virtual
-                        // Console dump of Metroid returns 1100001487, for which
-                        // API_GetGameExtended returns []. Writing that produced a junk
-                        // metadata file the index then discarded, and inflated the count.
-                        // Blank rather than empty, as on Android: a title of spaces would
-                        // be written here and then distrusted by preloadMetadataCache,
-                        // so the same ROM would be asked about and counted new every scan.
+                        // RA knows the dump, but only as one it does not consider playable
+                        // as it is: a Virtual Console Metroid comes back as 1100001487,
+                        // game 1487 untested. Not a match — the Web API has no game under
+                        // that number, and writing one produced a junk metadata file the
+                        // index discarded — but an answer all the same, and kept like a
+                        // miss. As API_RETRY, which is never cached, the file was read in
+                        // full and asked about again on every scan: 65 files and 130
+                        // requests a scan in one library, reported as a source that did
+                        // not answer.
+                        r.meta != null && VirtualGameId.isVirtual(r.meta.gameId) -> {
+                            ledger.record(canonical(job.file), ScanLedger.State.NOT_FOUND,
+                                          job.fileSize, job.lastModified, now,
+                                          gameId = r.meta.gameId,
+                                          detail = "RetroAchievements knows this dump only by virtual id " +
+                                                   "${r.meta.gameId}: ${VirtualGameId.describe(r.meta.gameId)}")
+                        }
+                        // A usable match needs a title, not just an id. Blank rather than
+                        // empty, as on Android: a title of spaces would be written here and
+                        // then distrusted by preloadMetadataCache, so the same ROM would be
+                        // asked about and counted new every scan.
                         r.meta != null && r.meta.gameId > 0 && r.meta.title.isNotBlank() -> {
                             writeMetadata(job, r.meta); newEntries++
                             ledger.record(canonical(job.file), ScanLedger.State.MATCHED,
                                           job.fileSize, job.lastModified, now,
                                           gameId = r.meta.gameId)
                         }
-                        // An id with no title is not a match, and it is not a refusal
-                        // either — it is the source answering about a game it cannot
-                        // describe. Retried, not written off.
+                        // A real id with no title. RaApiHashLookup answers null for one
+                        // now, but the interface does not forbid it, and it is not a match
+                        // or a verdict either. Retried, not written off.
                         r.meta != null && r.meta.gameId > 0 -> {
                             ledger.record(canonical(job.file), ScanLedger.State.API_RETRY,
                                           job.fileSize, job.lastModified, now,

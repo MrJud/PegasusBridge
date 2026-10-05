@@ -31,11 +31,12 @@ import kotlin.test.assertTrue
  * What the live lookup makes of each kind of answer, against a local server that
  * serves exactly the bodies under test.
  *
- * The pipeline reads three shapes from it and they must not bleed into each
+ * The pipeline reads four shapes from it and they must not bleed into each
  * other: null is "no answer" and is asked again next scan, gameId 0 is RA saying
- * no and is kept for fourteen days, and an id without a title is retried without
- * counting against the source. An HTML page served with 200 used to come out as
- * gameId 0.
+ * no and is kept for fourteen days, a virtual id is RA knowing the dump only as
+ * unplayable as it is, kept like a miss and counted neither way, and a real id
+ * comes with its title or not at all. An HTML page served with 200 used to come
+ * out as gameId 0.
  */
 class RaHashLookupTest {
     private data class Reply(val body: String, val status: Int = 200)
@@ -141,10 +142,12 @@ class RaHashLookupTest {
         assertEquals(1446, assertNotNull(lookup.lookup(HASH)).gameId)
     }
 
-    // None of these may become a match, and none may count against the source
-    // either: the id came back from a valid r=gameid answer, so the pipeline
-    // retries the file without counting it toward the abort.
-    @Test fun `metadata that does not describe the game is the id alone`() = runTest {
+    // None of these may become a match, and every one counts against the source:
+    // RA hands out a real id only for a game it has, so a body that does not
+    // describe it is the metadata endpoint failing. As the id alone they cleared
+    // the count, and a metadata endpoint serving HTML with 200 went unnoticed
+    // through a whole library: 16 of 16 known ROMs retried, 0 lookups failed.
+    @Test fun `metadata that does not describe a real game is a failure, not the id alone`() = runTest {
         val unusable = listOf(
             "<html>Temporarily unavailable</html>", "[]", "{}", "",
             """{"ID":1446,"Title":"","NumAchievements":0}""",
@@ -155,29 +158,47 @@ class RaHashLookupTest {
             """{"ID":1446,"Title":"Super Mario Bros."}""",
             """{"ID":1446,"Title":"Super Mario Bros.","NumAchievements":-1}"""
         )
-        unusable.forEach { body ->
+        unusable.forEachIndexed { index, body ->
             replies += Reply("""{"Success":true,"GameID":1446}""")
             replies += Reply(body)
-            assertEquals(GameMetadata(gameId = 1446), lookup.lookup(HASH), body)
-            assertEquals(0, lookup.consecutiveFailures, body)
+            assertNull(lookup.lookup(HASH), body)
+            assertEquals(index + 1, lookup.consecutiveFailures, body)
         }
     }
 
-    // RA answers an untested dump with 1 100 000 000 plus the real id, and the
-    // Web API knows nothing under that number; a Virtual Console Metroid does
-    // exactly this. Of 143 ROMs in one library that RA's hash list did not know,
-    // 65 came back from r=gameid as such ids, and as failures they could stop a
-    // scan whose source was answering fine.
-    @Test fun `a virtual id with no metadata is the id alone, not a failure`() = runTest {
-        replies += Reply("""{"Success":true,"GameID":1100000123}""")
-        replies += Reply("[]")
+    // RA answers a dump it does not consider playable as is with the real id plus
+    // a base (RAWeb VirtualGameIdService: 1e9 incompatible, 1.1e9 untested, 1.2e9
+    // patch required), and the Web API knows nothing under that number; a Virtual
+    // Console Metroid does exactly this. Of 143 ROMs in one library that RA's hash
+    // list did not know, 65 came back as such ids. Nothing is asked about them,
+    // and they leave the count where it was: cleared by them, a broken metadata
+    // endpoint could hide behind them; raised, a run of them would stop a scan.
+    @Test fun `a virtual id is the id alone, asks for no metadata and counts neither way`() = runTest {
+        replies += Reply("<html>not an answer</html>")
+        assertNull(lookup.lookup(HASH))
+        assertEquals(1, lookup.consecutiveFailures)
 
-        val result = assertNotNull(lookup.lookup(HASH))
+        for (virtual in listOf(1_000_000_001, 1_100_000_123, 1_200_000_005)) {
+            replies += Reply("""{"Success":true,"GameID":$virtual}""")
+            assertEquals(GameMetadata(gameId = virtual), lookup.lookup(HASH), "$virtual")
+            assertEquals(1, lookup.consecutiveFailures, "$virtual moved the count")
+        }
+        assertEquals(List(4) { "/dorequest.php" }, requests.toList(), "a virtual id must not be asked about")
 
-        assertEquals(1100000123, result.gameId)
-        assertTrue(result.title.isEmpty(), "an id without a title must not read as a match")
-        assertEquals(0, lookup.consecutiveFailures)
-        assertEquals(listOf("/dorequest.php", "/API/API_GetGameExtended.php"), requests.toList())
+        replies += Reply("<html>not an answer</html>")
+        assertNull(lookup.lookup(HASH))
+        assertEquals(2, lookup.consecutiveFailures)
+    }
+
+    // RAWeb compares strictly: the base itself is not virtual.
+    @Test fun `the virtual id bases and what they mean are RAWeb's`() {
+        assertFalse(VirtualGameId.isVirtual(1_000_000_000))
+        assertTrue(VirtualGameId.isVirtual(1_000_000_001))
+        assertEquals("game 1, incompatible", VirtualGameId.describe(1_000_000_001))
+        assertEquals("game 1487, untested", VirtualGameId.describe(1_100_001_487))
+        assertEquals("game 5, patch required", VirtualGameId.describe(1_200_000_005))
+        // The second base too: RAWeb decodes 1 100 000 000 itself as incompatible.
+        assertEquals("game 100000000, incompatible", VirtualGameId.describe(1_100_000_000))
     }
 
     // An error object is RA refusing the request, not describing a game: if the
@@ -241,7 +262,7 @@ class RaHashLookupTest {
         replies += Reply("""{"Success":true,"GameID":1446}""")
         replies += Reply("<html>Bad request: /API/API_GetGameExtended.php?z=$USER&y=$API_KEY&i=1446</html>")
 
-        assertEquals(GameMetadata(gameId = 1446), lookup.lookup(HASH))
+        assertNull(lookup.lookup(HASH))
         assertTrue(logs.any { it.contains("Bad request") }, "$logs")
         assertTrue(logs.none { it.contains(API_KEY) }, "the API key reached the log:\n$logs")
     }

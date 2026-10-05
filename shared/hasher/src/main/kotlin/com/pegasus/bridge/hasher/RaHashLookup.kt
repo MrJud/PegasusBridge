@@ -25,22 +25,57 @@ import kotlin.coroutines.resumeWithException
 /** Resolves a ROM hash to a RetroAchievements game. */
 interface RaHashLookup {
     /**
-     * null means the request never got a usable answer — not "RetroAchievements
-     * does not know this hash", which is [GameMetadata] with gameId 0. Callers must
-     * keep the two apart: recording a failure as an answer writes a game off,
-     * and an incremental rescan will never ask about it again.
+     * One of four answers, which callers must keep apart:
      *
-     * A gameId above 0 with a blank title is a third answer: the source knows the
-     * hash but could not describe the game. It is neither a match nor a failure.
+     * - null: the request never got a usable answer. Not "RetroAchievements does
+     *   not know this hash" — recording a failure as an answer writes a game off,
+     *   and an incremental rescan will never ask about it again.
+     * - gameId 0: RetroAchievements does not know the hash. A verdict.
+     * - a [VirtualGameId] with a blank title: it knows the hash, but only as a
+     *   dump it does not consider playable as it is — incompatible, untested, or
+     *   needing a patch. A verdict too, and not a match: there is no game to
+     *   describe under that number.
+     * - any other gameId, with its title: a match.
+     *
+     * A real id whose game could not be described is null, not the id alone: the
+     * title is what makes a match, and an answer that cannot give one is a
+     * failure of the source.
      */
     suspend fun lookup(hash: String): GameMetadata?
 
     /**
      * Lookups in a row that ended in null, so a caller can stop a doomed scan.
      * Counted once per lookup, however many requests it took, and cleared by any
-     * answer.
+     * answer except a virtual id, which leaves it as it was: no description is
+     * asked for one, so it says nothing either way about whether descriptions
+     * still come back.
      */
     val consecutiveFailures: Int get() = 0
+}
+
+/**
+ * The ids RetroAchievements gives a hash it knows but does not consider playable
+ * as it is: the real game id plus a base for why. Mirrors RAWeb's
+ * VirtualGameIdService, where `r=gameid` gets its answer, down to the strict
+ * comparisons: an id is virtual when it is *above* 1 000 000 000.
+ *
+ * The Web API has no game under such a number — API_GetGameExtended answers `[]`
+ * — so asking it for one costs a request and learns nothing.
+ */
+object VirtualGameId {
+    const val INCOMPATIBLE_BASE = 1_000_000_000
+    const val UNTESTED_BASE = 1_100_000_000
+    const val PATCH_REQUIRED_BASE = 1_200_000_000
+
+    fun isVirtual(gameId: Int): Boolean = gameId > INCOMPATIBLE_BASE
+
+    /** "game 1487, untested" for 1100001487: the real id and the reason, for a person to read. */
+    fun describe(gameId: Int): String = when {
+        gameId > PATCH_REQUIRED_BASE -> "game ${gameId - PATCH_REQUIRED_BASE}, patch required"
+        gameId > UNTESTED_BASE       -> "game ${gameId - UNTESTED_BASE}, untested"
+        gameId > INCOMPATIBLE_BASE   -> "game ${gameId - INCOMPATIBLE_BASE}, incompatible"
+        else                         -> "game $gameId"
+    }
 }
 
 /**
@@ -90,7 +125,11 @@ class RaApiHashLookup(
             when (val gameId = fetchGameId(hash)) {
                 null -> null
                 0    -> GameMetadata(gameId = 0)
-                else -> fetchMetadata(gameId)
+                // The id alone: the Web API has no game under it to describe. Of 143
+                // ROMs one library had that RA's hash list did not match, 65 came
+                // back as such ids, each costing a metadata request that answered [].
+                else -> if (VirtualGameId.isVirtual(gameId)) GameMetadata(gameId = gameId)
+                        else fetchMetadata(gameId)
             }
         } catch (c: CancellationException) {
             // CancellationException is an Exception, so the broad catch below used
@@ -102,7 +141,14 @@ class RaApiHashLookup(
             BridgeLog.e(TAG, "lookup failed for hash $hash: ${describe(e)}")
             null
         }
-        if (result == null) failures.incrementAndGet() else failures.set(0)
+        when {
+            result == null -> failures.incrementAndGet()
+            // Neither way. Clearing the count here let a broken metadata endpoint
+            // hide behind a library's virtual ids, and counting it would let a run
+            // of them stop a scan whose source is answering perfectly well.
+            VirtualGameId.isVirtual(result.gameId) -> Unit
+            else -> failures.set(0)
+        }
         result
     }
 
@@ -133,14 +179,13 @@ class RaApiHashLookup(
      * Released — so reading the field there always yielded 0 and every scanned
      * game was recorded with zero achievements.
      *
-     * A body that does not describe the game asked about — `[]`, a page that is not
-     * JSON, another game's ID, no title, no achievement count — comes back as the
-     * id alone, which the pipeline retries rather than writes. That is what RA
-     * sends for its virtual ids: an untested or incompatible dump gets the real id
-     * plus 1 100 000 000 or 1 000 000 000 from `r=gameid`, and `[]` from here.
-     * Making those failures would let a run of them stop a scan whose source is
-     * answering perfectly well. An explicit `Success: false` is RA refusing the
-     * request rather than describing a game, so that one does count.
+     * Only a real id is asked about, and RA hands one out only for a game it has,
+     * so a body that does not describe that game — `[]`, a page that is not
+     * JSON, another game's ID, no title, no achievement count, `Success: false` —
+     * is the endpoint failing, and comes back as null. It used to come back as
+     * the id alone, which cleared the failure count: a metadata endpoint serving
+     * a maintenance page with 200 went unnoticed through a whole library, every
+     * match retried and none of it counted as failing.
      */
     private suspend fun fetchMetadata(gameId: Int): GameMetadata? {
         val url = "$base/API/API_GetGameExtended.php?z=$raUser&y=$raApiKey&i=$gameId"
@@ -154,7 +199,7 @@ class RaApiHashLookup(
         val achievements = obj?.let { wholeNumber(it, "NumAchievements") }
         if (obj == null || wholeNumber(obj, "ID") != gameId || title == null || achievements == null) {
             BridgeLog.w(TAG, "no usable metadata for game $gameId: ${excerpt(body)}")
-            return GameMetadata(gameId = gameId)
+            return null
         }
         return GameMetadata(
             gameId          = gameId,

@@ -1,0 +1,1 @@
+{"jobId":"job1","schemaVersion":1,"verb":"scan","startedAt":1791233743,"error":"RetroAchievements refused the API key for harness after 1 of 30 files (0 identified). Nothing was recorded as missing. Copy the Web API key from your RetroAchievements settings into credentials.json and scan again.","status":"error","updatedAt":1791233743}

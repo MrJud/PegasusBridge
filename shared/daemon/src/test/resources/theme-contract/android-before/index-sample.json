@@ -1,0 +1,149 @@
+{
+  "schemaVersion": 1,
+  "byKey": {
+    "game1|snes": {
+      "gameId": 1009,
+      "total": 12,
+      "imageIcon": "/Images/000001.png",
+      "title": "Game 1009",
+      "platform": "snes"
+    },
+    "game7|snes": {
+      "gameId": 1001,
+      "total": 12,
+      "imageIcon": "/Images/000001.png",
+      "title": "Game 1001",
+      "platform": "snes"
+    },
+    "game9|snes": {
+      "gameId": 1000,
+      "total": 12,
+      "imageIcon": "/Images/000001.png",
+      "title": "Game 1000",
+      "platform": "snes"
+    },
+    "game3|snes": {
+      "gameId": 1004,
+      "total": 12,
+      "imageIcon": "/Images/000001.png",
+      "title": "Game 1004",
+      "platform": "snes"
+    },
+    "game0|snes": {
+      "gameId": 1008,
+      "total": 12,
+      "imageIcon": "/Images/000001.png",
+      "title": "Game 1008",
+      "platform": "snes"
+    },
+    "game4|snes": {
+      "gameId": 1005,
+      "total": 12,
+      "imageIcon": "/Images/000001.png",
+      "title": "Game 1005",
+      "platform": "snes"
+    },
+    "game8|snes": {
+      "gameId": 1002,
+      "total": 12,
+      "imageIcon": "/Images/000001.png",
+      "title": "Game 1002",
+      "platform": "snes"
+    },
+    "game5|snes": {
+      "gameId": 1006,
+      "total": 12,
+      "imageIcon": "/Images/000001.png",
+      "title": "Game 1006",
+      "platform": "snes"
+    },
+    "game2|snes": {
+      "gameId": 1007,
+      "total": 12,
+      "imageIcon": "/Images/000001.png",
+      "title": "Game 1007",
+      "platform": "snes"
+    },
+    "game6|snes": {
+      "gameId": 1003,
+      "total": 12,
+      "imageIcon": "/Images/000001.png",
+      "title": "Game 1003",
+      "platform": "snes"
+    }
+  },
+  "count": 10,
+  "games": [
+    {
+      "gameId": 1009,
+      "total": 12,
+      "imageIcon": "/Images/000001.png",
+      "title": "Game 1009",
+      "platform": "snes"
+    },
+    {
+      "gameId": 1008,
+      "total": 12,
+      "imageIcon": "/Images/000001.png",
+      "title": "Game 1008",
+      "platform": "snes"
+    },
+    {
+      "gameId": 1007,
+      "total": 12,
+      "imageIcon": "/Images/000001.png",
+      "title": "Game 1007",
+      "platform": "snes"
+    },
+    {
+      "gameId": 1006,
+      "total": 12,
+      "imageIcon": "/Images/000001.png",
+      "title": "Game 1006",
+      "platform": "snes"
+    },
+    {
+      "gameId": 1005,
+      "total": 12,
+      "imageIcon": "/Images/000001.png",
+      "title": "Game 1005",
+      "platform": "snes"
+    },
+    {
+      "gameId": 1004,
+      "total": 12,
+      "imageIcon": "/Images/000001.png",
+      "title": "Game 1004",
+      "platform": "snes"
+    },
+    {
+      "gameId": 1003,
+      "total": 12,
+      "imageIcon": "/Images/000001.png",
+      "title": "Game 1003",
+      "platform": "snes"
+    },
+    {
+      "gameId": 1002,
+      "total": 12,
+      "imageIcon": "/Images/000001.png",
+      "title": "Game 1002",
+      "platform": "snes"
+    },
+    {
+      "gameId": 1001,
+      "total": 12,
+      "imageIcon": "/Images/000001.png",
+      "title": "Game 1001",
+      "platform": "snes"
+    },
+    {
+      "gameId": 1000,
+      "total": 12,
+      "imageIcon": "/Images/000001.png",
+      "title": "Game 1000",
+      "platform": "snes"
+    }
+  ],
+  "fetchedAt": 1791233742
+}

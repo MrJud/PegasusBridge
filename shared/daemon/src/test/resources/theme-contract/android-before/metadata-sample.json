@@ -1,0 +1,23 @@
+{
+  "gameId": 1000,
+  "rom": {
+    "fileSize": 4101,
+    "fileCrc32": "7ac8cbaa",
+    "fileMd5": "ff664aed9fe892fa1369c25af82f34f3",
+    "lastModified": 1791233737467,
+    "hash": "ff664aed9fe892fa1369c25af82f34f3"
+  },
+  "schemaVersion": 1,
+  "cacheKey": "game9|snes",
+  "fetchedAt": 1791233738,
+  "title": "Game 1000",
+  "platform": "snes",
+  "ra": {
+    "total": 12,
+    "imageIcon": "/Images/000001.png",
+    "progress": 0,
+    "fetchedAt": 1791233738,
+    "unlocked": 0,
+    "points": 0
+  }
+}

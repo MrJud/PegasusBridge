@@ -1,0 +1,1 @@
+{"jobId":"job1","schemaVersion":1,"verb":"scan","startedAt":1791233730,"error":"RetroAchievements stopped responding after 1 of 600 files (0 identified). Nothing was recorded as missing. Wait a few minutes and scan again \u2014 it will resume where it left off.","status":"error","updatedAt":1791233730}

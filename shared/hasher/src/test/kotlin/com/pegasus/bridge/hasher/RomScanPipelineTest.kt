@@ -117,6 +117,21 @@ class RomScanPipelineTest {
                      "no junk metadata file should be left on disk")
     }
 
+    // The same answer spelled with spaces. Written, it would be distrusted by the
+    // next scan's cache, asked about again and counted new on every run.
+    @Test fun `a title of only spaces is not treated as a match either`(): Unit = runBlocking {
+        rom("nes", "Metroid (Europe) (Virtual Console).nes", "hash-phantom")
+        val spaces = object : RaHashLookup {
+            override suspend fun lookup(hash: String) = GameMetadata(gameId = 1100001487, title = "   ")
+        }
+
+        val s = pipeline(ContentHasher(), spaces).scan(listOf(romRoot.absolutePath))
+
+        assertEquals(0, s.newEntries)
+        assertEquals(0, paths.metadata.listFiles { f -> !f.name.startsWith("_") }!!.size)
+        assertEquals(1, s.states[ScanLedger.State.API_RETRY], "it must be asked about again, not written off")
+    }
+
     @Test fun `unmatched roms are counted but write no metadata`(): Unit = runBlocking {
         rom("nes", "Homebrew Thing.nes", "hash-unknown")
         val s = pipeline(ContentHasher(), MapLookup(catalogue)).scan(listOf(romRoot.absolutePath))
@@ -162,6 +177,53 @@ class RomScanPipelineTest {
         val after = JSONObject(meta.readText()).getJSONObject("rom")
         assertEquals("md5-hash-smb", after.getString("fileMd5"))
         assertEquals("crc-hash-smb", after.getString("fileCrc32"))
+    }
+
+    // Metadata files written before the collector refused a blank title are still
+    // on disk: 27 of 732 on the tablet. The index drops them for having no title,
+    // and trusted as a cache they kept their ROM away from the hasher and the
+    // network for as long as it stayed unchanged — out of the index for good.
+    @Test fun `metadata with a blank title is looked up again`(): Unit = runBlocking {
+        rom("nes", "Super Mario Bros. (World).nes", "hash-smb")
+        rom("nes", "Contra (USA).nes", "hash-ctra")
+        pipeline(ContentHasher(), MapLookup(catalogue)).scan(listOf(romRoot.absolutePath))
+
+        // Blank both titles, imitating files written before the guard: one empty,
+        // as RetroAchievements' `[]` used to leave it, and one only whitespace.
+        for ((id, blank) in listOf("1446" to "", "1447" to "   ")) {
+            val f = paths.metadata(id)
+            f.writeText(JSONObject(f.readText()).put("title", blank).toString(2))
+        }
+
+        // RetroAchievements still cannot describe them: asked again, listed
+        // nowhere, and the files left where they are.
+        val untitled = object : RaHashLookup {
+            val calls = AtomicInteger()
+            override suspend fun lookup(hash: String): GameMetadata {
+                calls.incrementAndGet()
+                return GameMetadata(gameId = catalogue.getValue(hash).gameId)
+            }
+        }
+        val h2 = ContentHasher()
+        val s2 = pipeline(h2, untitled).scan(listOf(romRoot.absolutePath))
+
+        assertEquals(0, s2.cachedHits, "a file with no title must not count as a cache hit")
+        assertEquals(2, h2.calls.get(), "both ROMs must be hashed again")
+        assertEquals(2, untitled.calls.get(), "both hashes must be asked about again")
+        assertEquals(0, s2.newEntries)
+        assertEquals(0, s2.indexed, "a game with no title, empty or spaces, must not be listed")
+        assertTrue(paths.metadata("1446").isFile && paths.metadata("1447").isFile,
+                   "the files are left for a real match to overwrite")
+
+        // Once it can, the answer replaces them and reaches the index.
+        val l3 = MapLookup(catalogue)
+        val s3 = pipeline(ContentHasher(), l3).scan(listOf(romRoot.absolutePath))
+
+        assertEquals(2, l3.calls.get())
+        assertEquals(2, s3.newEntries)
+        assertEquals(2, s3.indexed)
+        assertEquals("Super Mario Bros.", JSONObject(paths.metadata("1446").readText()).getString("title"))
+        assertEquals("Contra", JSONObject(paths.metadata("1447").readText()).getString("title"))
     }
 
     @Test fun `an edited file is rescanned`(): Unit = runBlocking {

@@ -245,7 +245,10 @@ class RomScanPipeline(
                         // Console dump of Metroid returns 1100001487, for which
                         // API_GetGameExtended returns []. Writing that produced a junk
                         // metadata file the index then discarded, and inflated the count.
-                        r.meta != null && r.meta.gameId > 0 && r.meta.title.isNotEmpty() -> {
+                        // Blank rather than empty, as on Android: a title of spaces would
+                        // be written here and then distrusted by preloadMetadataCache,
+                        // so the same ROM would be asked about and counted new every scan.
+                        r.meta != null && r.meta.gameId > 0 && r.meta.title.isNotBlank() -> {
                             writeMetadata(job, r.meta); newEntries++
                             ledger.record(canonical(job.file), ScanLedger.State.MATCHED,
                                           job.fileSize, job.lastModified, now,
@@ -459,7 +462,9 @@ class RomScanPipeline(
                 val ra       = j.optJSONObject("ra") ?: continue
                 val gameId   = j.optInt("gameId")
                 val title    = j.optString("title")
-                if (gameId <= 0 || title.isEmpty()) continue
+                // Blank, like the collector and the cache: a legacy title of spaces
+                // listed here would be a game with no name in the list.
+                if (gameId <= 0 || title.isBlank()) continue
 
                 val entry = JSONObject()
                     .put("gameId", gameId)
@@ -496,6 +501,14 @@ class RomScanPipeline(
                 val rom = j.optJSONObject("rom") ?: continue
                 val key = j.optString("cacheKey")
                 if (key.isEmpty()) continue
+                // An id with no title is not a match, and the collector does not
+                // write one. Files written before it stopped are still on disk —
+                // 27 of 732 on the tablet — and the index drops every one of them,
+                // so trusting them as cached kept their ROMs out of it, and away
+                // from the network, for as long as the ROM stayed unchanged.
+                // Ignored here, they are looked up again; the file itself is left
+                // alone, for a real match to overwrite if one ever comes.
+                if (j.optInt("gameId") <= 0 || j.optString("title").isBlank()) continue
                 map[key] = CachedMeta(rom.optString("hash"), rom.optString("fileMd5"),
                                       rom.optLong("fileSize"), rom.optLong("lastModified"))
             } catch (_: Exception) {}

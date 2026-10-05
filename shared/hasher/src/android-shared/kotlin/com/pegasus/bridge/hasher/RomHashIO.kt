@@ -59,21 +59,48 @@ object RomHashIO {
     }
 
     /**
-     * The suffix for the temporary copy of [entryName]: its own extension.
+     * The suffix for the temporary copy of [entryName]: its own extension when
+     * rcheevos has a handler for it, `.bin` when it has none.
      *
      * rcheevos chooses how to hash a file from its extension. Handed `.bin`, an
      * iNES ROM is hashed whole, header included, as a Mega Drive cartridge would
-     * be — a confident hash that matches nothing. Only the last path segment
-     * counts, and only a plain alphanumeric extension is kept: `Game.v1/rom`
-     * would otherwise put a directory separator into the temporary file's name.
+     * be — a confident hash that matches nothing. But an extension it has no
+     * handler for is worse than `.bin`, not better: rcheevos then hashes the
+     * whole file, while a `.bin` over 32 MiB is first tried as a CD track. So a
+     * raw disc image named `.img` or `.mdf` that kept its extension got the MD5
+     * of the whole file, and as `.bin` it gets the disc's hash. Under 32 MiB both
+     * are the same whole-file MD5, so `.bin` is never the worse of the two.
+     *
+     * Only the last path segment counts: `Game.v1/rom` has no extension, and a
+     * directory separator never reaches the temporary file's name.
      */
     fun tempSuffix(entryName: String): String {
         val name = entryName.substringAfterLast('/').substringAfterLast('\\')
-        val extension = name.substringAfterLast('.', "")
-        return if (extension.length in 1..16 && extension.all { it in 'a'..'z' || it in 'A'..'Z' || it in '0'..'9' }) {
-            ".${extension.lowercase(Locale.ROOT)}"
-        } else ".bin"
+        val extension = name.substringAfterLast('.', "").lowercase(Locale.ROOT)
+        return if (extension in RCHEEVOS_EXTENSIONS) ".$extension" else ".bin"
     }
+
+    /**
+     * The extensions rcheevos has a handler for, copied entry by entry from
+     * `rc_hash_iterator_ext_handlers` in the vendored rcheevos v12.3.0
+     * (hasher/src/main/cpp/rcheevos/src/rhash/hash.c). Moving to another
+     * rcheevos means comparing this with its table again.
+     *
+     * Less two: rcheevos hashes a `zip` or a `7z` by its file name, as an arcade
+     * set (rc_hash_arcade), and the temporary copy is called `bridge_<random>`.
+     * An entry with either extension is never selected anyway, but if one were,
+     * `.bin` at least gives the same answer twice.
+     */
+    internal val RCHEEVOS_EXTENSIONS = setOf(
+        "2d", "3ds", "3dsx", "83g", "83p", "a26", "a78", "app", "arduboy", "axf",
+        "bin", "bs", "cart", "cas", "cci", "chd", "chf", "cia", "col", "csw",
+        "cue", "cxi", "d64", "d88", "dosz", "dsk", "elf", "fd", "fds", "fig",
+        "gb", "gba", "gbc", "gdi", "gg", "hex", "iso", "jag", "k7", "lnx",
+        "m3u", "m5", "m7", "md", "min", "mx1", "mx2", "n64", "ndd", "nds",
+        "nes", "ngc", "nib", "pbp", "pce", "pgm", "pzx", "ri", "rom", "sap",
+        "scl", "sfc", "sg", "sgx", "smc", "sv", "swc", "tap", "tic", "trd",
+        "tvc", "tzx", "uze", "v64", "vb", "wad", "wasm", "woz", "wsc", "z64"
+    )
 
     /**
      * Rethrows [t] when it is a cancellation, or what an interrupt looks like from

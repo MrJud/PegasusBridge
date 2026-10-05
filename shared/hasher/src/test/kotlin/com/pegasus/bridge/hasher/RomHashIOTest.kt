@@ -88,6 +88,38 @@ class RomHashIOTest {
         assertEquals(".bin", RomHashIO.tempSuffix("game.abcdefghijklmnopq"))
     }
 
+    // rcheevos has no handler for these, and hashes the whole file of an extension
+    // it does not know. As `.bin`, a raw disc image over 32 MiB is tried as a CD
+    // track first; ArchiveSelector accepts `img` and `mdf` for four disc systems.
+    @Test fun `an extension rcheevos has no handler for is handed over as bin`() {
+        for (name in listOf("Disc.img", "Disc.IMG", "Disc.mdf", "Disc.ecm", "Game.unknownext", "weird.ñes"))
+            assertEquals(".bin", RomHashIO.tempSuffix(name), name)
+        for ((name, suffix) in listOf("Disc.iso" to ".iso", "Disc.CUE" to ".cue", "Disc.chd" to ".chd",
+                                      "Game.pbp" to ".pbp", "Game.md" to ".md", "Game.z64" to ".z64"))
+            assertEquals(suffix, RomHashIO.tempSuffix(name), name)
+    }
+
+    // An arcade set is hashed by its file name, and the copy's is random.
+    @Test fun `a nested zip or 7z is handed over as bin, not as an arcade set`() {
+        assertEquals(".bin", RomHashIO.tempSuffix("mslug.zip"))
+        assertEquals(".bin", RomHashIO.tempSuffix("mslug.7z"))
+    }
+
+    /**
+     * The kept extensions are rcheevos's own table, read from the vendored
+     * hash.c, so moving to another rcheevos cannot leave the copy behind
+     * unnoticed. Gradle runs tests from the module directory, shared/hasher.
+     */
+    @Test fun `the extensions kept are exactly those rcheevos has a handler for`() {
+        val hashC = File("../../hasher/src/main/cpp/rcheevos/src/rhash/hash.c")
+        assertTrue(hashC.isFile, "the vendored rcheevos is not at ${hashC.absolutePath}")
+        val source = hashC.readText()
+        val table = source.substringAfter("rc_hash_iterator_ext_handlers[] = {").substringBefore("};")
+        val handled = Regex("""\{\s*"([^"]+)"""").findAll(table).map { it.groupValues[1] }.toSet()
+        assertTrue(handled.size > 50, "the table was not found in ${hashC.absolutePath}: $handled")
+        assertEquals(handled - setOf("zip", "7z"), RomHashIO.RCHEEVOS_EXTENSIONS)
+    }
+
     @Test fun `a suffix it produces is one the JDK will create`() {
         val dir = Files.createTempDirectory("romhashio").toFile()
         try {

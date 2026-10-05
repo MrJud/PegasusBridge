@@ -155,8 +155,9 @@ class ArchiveAwareHasher(
         var copy: File? = null
         try {
             tempDir.mkdirs()
-            // The entry's own extension, not `.bin`: rcheevos picks its algorithm by
-            // it, and an iNES ROM named `.bin` gets a whole-file Mega Drive hash.
+            // The entry's own extension when rcheevos has a handler for it: it picks
+            // its algorithm by it, and an iNES ROM named `.bin` gets a whole-file
+            // Mega Drive hash. `.bin` for the rest, which tempSuffix explains.
             val rom = File.createTempFile("bridge_", RomHashIO.tempSuffix(entry.name), tempDir)
             copy = rom
             val digests = try {

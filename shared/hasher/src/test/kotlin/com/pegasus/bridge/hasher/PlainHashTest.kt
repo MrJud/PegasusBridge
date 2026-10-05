@@ -111,6 +111,19 @@ class PlainHashTest {
         assertFalse(handed.exists(), "temporary ROM is removed after hashing")
     }
 
+    // The other side of the same rule: rcheevos has no handler for `.img`, and
+    // would hash the whole image. Named `.bin`, a raw disc image over 32 MiB is
+    // tried as a CD track first; GoldenHashTest shows the hash that gives.
+    @Test
+    fun `a raw disc image named img is handed to rcheevos as a bin`() {
+        val rom = zip("Disc.zip", "Disc.img" to "abc".toByteArray())
+        val native = FixedHasher()
+        val r = ArchiveAwareHasher(native, tempDir).hashDetailed(rom.absolutePath, "psx")
+        assertEquals("bin", File(native.lastPath!!).extension)
+        assertContentEquals("abc".toByteArray(), native.lastBytes)
+        assertEquals("Disc.img", (r as HashOutcome.Ok).result.archiveEntry)
+    }
+
     // Two entries called `game.nes`, an empty leftover first. The selector refuses
     // the empty one; finding its choice again by name used to land on the leftover
     // and record the digest of nothing as the ROM's.

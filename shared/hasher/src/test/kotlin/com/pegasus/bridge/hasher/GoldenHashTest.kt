@@ -135,6 +135,26 @@ class GoldenHashTest {
         }
     }
 
+    // A raw disc image and nothing else. rcheevos has no handler for `.img`, and
+    // an entry that kept that name came back as the MD5 of the whole image with
+    // console 4, its fallback for an extension it does not know. Handed over as
+    // `.bin`, an image past 32 MiB is tried as a CD track, and it is the disc.
+    @Test
+    fun `a raw disc image named img inside a zip hashes as the disc it holds`() {
+        val name = "Golden Sega CD (Japan)"
+        val image = segaCdTrack(sectors = 32 * 1024 * 1024 / 2352 + 1)
+
+        // rcheevos itself, given the image loose as a .bin, says what the disc is.
+        val loose = File(dir, "$name.bin").apply { writeBytes(image) }
+        assertEquals(HashResult(SEGA_CD, 9), native.hash(loose.absolutePath))
+
+        val archive = zip(File(dir, "$name.zip"), "$name.img" to image)
+        val r = assertIs<HashOutcome.Ok>(hasher.hashDetailed(archive.absolutePath, "segacd")).result
+        assertEquals("$SEGA_CD|9", "${r.hash}|${r.consoleId}")
+        assertEquals("$name.img", r.archiveEntry)
+        assertEquals(md5(image), r.fileMd5)
+    }
+
     /**
      * Hashes every ROM, packed by [pack], and reports every row that is wrong at
      * once: which consoles fail says more than the first one that does.
@@ -312,6 +332,9 @@ class GoldenHashTest {
      * A Sega CD data track as a real dump holds it: raw MODE1/2352 sectors, each
      * with its sync pattern, its address after the two-second lead-in, and mode 1.
      * Sector 0 opens with the disc and ROM headers rcheevos identifies it by.
+     *
+     * Only the first 32 sectors carry filler. Nothing rcheevos reads lies past
+     * them, and zeros keep a disc-sized track quick to build and to zip.
      */
     private fun segaCdTrack(sectors: Int = 32): ByteArray {
         fun bcd(n: Int) = ((n / 10) shl 4 or (n % 10)).toByte()
@@ -321,7 +344,7 @@ class GoldenHashTest {
             track.fill(0xFF.toByte(), at + 1, at + 11)
             val lba = s + 150
             track.put(at + 12, byteArrayOf(bcd(lba / 4500), bcd(lba / 75 % 60), bcd(lba % 75), 1))
-            noise(2048, seed = 300 + s).copyInto(track, at + 16)
+            if (s < 32) noise(2048, seed = 300 + s).copyInto(track, at + 16)
         }
         track.put(16, "SEGADISCSYSTEM  GOLDENTEST ")
         track.put(16 + 0x100, "SEGA MEGA DRIVE ")

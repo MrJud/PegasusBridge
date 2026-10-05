@@ -130,8 +130,14 @@ class RAApiClient(private val raUser: String, private val raApiKey: String) {
             Log.e(TAG, "lookupHash failed for $hash: ${describe(e)}")
             Lookup.Failed
         }
-        if (result == Lookup.Failed || result == Lookup.KeyRefused) failures.incrementAndGet()
-        else failures.set(0)
+        // A virtual id leaves the count where it was, as on the desktop
+        // (RaHashLookup): it is a stable answer, but it says nothing about the
+        // metadata endpoint, so it must not clear failures that endpoint caused.
+        when (result) {
+            Lookup.Failed, Lookup.KeyRefused -> failures.incrementAndGet()
+            is Lookup.Incompatible -> Unit
+            else -> failures.set(0)
+        }
         result
     }
 

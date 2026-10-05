@@ -35,6 +35,11 @@ platform-tools.zip
 # moment and mean nothing to anyone else.
 hs_err_pid*.log
 replay_pid*.log
+# The same kind of leftover: the heap dump a JVM run out of memory writes
+# (java_pid*.hprof, often hundreds of MB), and the .kotlin/ directory the
+# Kotlin Gradle plugin keeps beside a build for its session and error files.
+*.hprof
+.kotlin/
 
 # The packaged daemon: a jlink runtime plus the jars, ~150 MB, rebuilt by
 # package.sh whenever it is needed.

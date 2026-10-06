@@ -7,6 +7,7 @@ import android.app.PendingIntent
 import android.app.Service
 import android.content.Context
 import android.content.Intent
+import android.os.Build
 import android.os.IBinder
 import android.os.PowerManager
 import android.util.Log
@@ -259,20 +260,27 @@ class HasherService : Service() {
     // ── Throttle ─────────────────────────────────────────────────────────
 
     private fun thermalDelayMs(): Long {
-        // Throwable, not Exception. currentThermalStatus came with Android 10 and
-        // this installs from Android 8, where the call is a NoSuchMethodError: an
-        // Error. And the pipeline calls its throttle after the hash, outside the
-        // try that makes a file's failure that file's alone, so what gets out of
-        // here ends the scan.
-        val status = try { powerManager.currentThermalStatus } catch (_: Throwable) { PowerManager.THERMAL_STATUS_NONE }
-        return when (status) {
-            PowerManager.THERMAL_STATUS_NONE     -> 0L
-            PowerManager.THERMAL_STATUS_LIGHT    -> 0L      // softened
-            PowerManager.THERMAL_STATUS_MODERATE -> 200L    // softened (was 600)
-            PowerManager.THERMAL_STATUS_SEVERE   -> 800L    // softened (was 2000)
-            PowerManager.THERMAL_STATUS_CRITICAL -> 3000L   // softened (was 5000)
-            else                                  -> 5000L
+        // currentThermalStatus came with Android 10 and this installs from
+        // Android 8, so the version is asked first. Before 10 a device does not
+        // say how warm it is, and a scan there is not slowed. The call used to
+        // be made on every version, and what kept Android 8 and 9 from it was
+        // the catch alone: there it is a NoSuchMethodError.
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            // Throwable, not Exception, as it had to be for that Error and as
+            // it stays. The pipeline calls its throttle after the hash, outside
+            // the try that makes a file's failure that file's alone, so what
+            // gets out of here ends the scan.
+            val status = try { powerManager.currentThermalStatus } catch (_: Throwable) { PowerManager.THERMAL_STATUS_NONE }
+            return when (status) {
+                PowerManager.THERMAL_STATUS_NONE     -> 0L
+                PowerManager.THERMAL_STATUS_LIGHT    -> 0L      // softened
+                PowerManager.THERMAL_STATUS_MODERATE -> 200L    // softened (was 600)
+                PowerManager.THERMAL_STATUS_SEVERE   -> 800L    // softened (was 2000)
+                PowerManager.THERMAL_STATUS_CRITICAL -> 3000L   // softened (was 5000)
+                else                                  -> 5000L
+            }
         }
+        return 0L
     }
 
     // ── Notification ──────────────────────────────────────────────────────

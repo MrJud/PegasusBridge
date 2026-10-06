@@ -486,8 +486,19 @@ cd .. && ./gradlew :app:assembleDebug                          # compiles the sa
 ```
 
 The second needs the SDK: copy `local.properties.template` to
-`local.properties` and set `sdk.dir`, or export `ANDROID_HOME`. It is the only
-thing that notices a call the Android class library does not have.
+`local.properties` and set `sdk.dir`, or export `ANDROID_HOME`. It compiles
+against API 35, so it notices a call the Android class library does not have at
+all. It says nothing of one that came after Android 8, which the app installs
+from (`minSdk` 26): `PowerManager.currentThermalStatus`, of Android 10, compiled
+for as long as only a `catch` stood around it. Lint is the check for `minSdk`,
+and CI does not run it either:
+
+```bash
+./gradlew :hasher:lintDebug   # NewApi: a call newer than minSdk with no version asked first
+```
+
+It looks at one module, the `android-shared` directory that module adds
+included.
 
 ---
 

@@ -583,6 +583,47 @@ class ScanAbortTest {
         assertEquals(mapOf("NOT_FOUND" to 6), statesOnDisk())
     }
 
+    // The same index, met by a scan that nothing ended: it reaches its last
+    // result and goes on to its summary. That write is not caught, because a
+    // scan whose index is not on disk must not come back as one that finished,
+    // and the ledger was saved after it, which is to say not at all. The six
+    // answers here were then asked for again by the next scan.
+    @Test fun `a scan that ends on an index it cannot write still leaves the ledger on disk`(): Unit = runBlocking {
+        repeat(6) { rom("nes", "Miss$it.nes", "miss-$it") }
+        val inTheWay = File(paths.discoveryIndex, "in the way").apply { parentFile.mkdirs(); writeText("x") }
+
+        // Not IllegalStateException here either: what is asked for is the write
+        // that failed, and a timeout would pass for the other.
+        assertFailsWith<java.io.IOException> {
+            withTimeout(5_000) {
+                RomScanPipeline(paths, ContentHasher(), SaysNo(), throttleMs = { 0L })
+                    .scan(listOf(romRoot.absolutePath))
+            }
+        }
+
+        assertTrue(paths.discoveryIndex.isDirectory, "the index was written after all")
+        assertEquals(mapOf("NOT_FOUND" to 6), statesOnDisk())
+
+        // With nothing in the way any more, the next scan reads no file and
+        // asks about none, and writes the index the first could not.
+        assertTrue(inTheWay.delete() && paths.discoveryIndex.delete())
+        val hasher = ContentHasher()
+        val asked: MutableList<String> = java.util.Collections.synchronizedList(mutableListOf())
+        val second = object : RaHashLookup {
+            override suspend fun lookup(hash: String): GameMetadata {
+                asked += hash
+                return GameMetadata(gameId = 0)
+            }
+        }
+        val s = RomScanPipeline(paths, hasher, second, throttleMs = { 0L })
+            .scan(listOf(romRoot.absolutePath))
+
+        assertEquals(emptyList<String>(), asked, "a miss the first scan settled was asked about again")
+        assertEquals(0, hasher.calls.get(), "a file whose verdict was kept was read again")
+        assertEquals(6, s.unmatched)
+        assertTrue(paths.discoveryIndex.isFile)
+    }
+
     /**
      * The ledger a cancel leaves is written while reads are being interrupted,
      * and an interrupted read throws what a broken file throws. The pipeline

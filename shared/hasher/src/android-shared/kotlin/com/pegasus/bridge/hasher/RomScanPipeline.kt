@@ -454,7 +454,6 @@ class RomScanPipeline(
             fileQueue.cancel(); hashQueue.cancel(); resultQueue.cancel()
         }
 
-        val indexed = writeDiscoveryIndex()
         // Pruned here, on the way to the summary, and not where the ledger is
         // opened, which came to the same while this was the only save. The catch
         // above saves too. A scan cancelled or broken off, with a root that was
@@ -465,6 +464,13 @@ class RomScanPipeline(
         // never the ones dropped, and the counts are of this run.
         ledger.forget(files.map { canonical(it) }.toSet(), roots.map { canonical(File(it)) })
         ledger.save { f, text -> BridgePaths.writeAtomic(f, text) }
+        // The index after the ledger, and not before it as it was. A write of
+        // the index that fails is thrown from here, so that a scan whose index
+        // is not on disk does not end as done, and nothing under it is reached.
+        // The ledger was under it. A scan that got to its end and could not
+        // write the index then left no ledger either, and the next one read and
+        // asked about every file again, the misses with the rest.
+        val indexed = writeDiscoveryIndex()
         val states = ledger.counts()
         BridgeLog.i(TAG, "scan ${if (abortReason.isEmpty()) "complete" else "aborted"}: " +
                          "$processed/$total processed, $newEntries new, " +

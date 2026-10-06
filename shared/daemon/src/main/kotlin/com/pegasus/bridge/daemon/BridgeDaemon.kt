@@ -7,6 +7,7 @@ import com.pegasus.bridge.core.SchemaVersion
 import com.pegasus.bridge.hasher.ArchiveAwareHasher
 import com.pegasus.bridge.hasher.NativeRomHasher
 import com.pegasus.bridge.hasher.RaApiHashLookup
+import com.pegasus.bridge.hasher.RomHasher
 import com.pegasus.bridge.hasher.RomScanPipeline
 import com.pegasus.bridge.hasher.RomScanner
 import com.pegasus.bridge.pegasus.MetadataFile
@@ -36,7 +37,18 @@ class BridgeDaemon(
      * the connection that would start the daemon again.
      */
     private val advertisePort: Int = 0,
-    hashWorkers: Int = RomScanPipeline.DEFAULT_HASH_WORKERS
+    hashWorkers: Int = RomScanPipeline.DEFAULT_HASH_WORKERS,
+    /**
+     * Where the ROM hasher comes from: the native library, or null when it is
+     * not to be found.
+     *
+     * A parameter so that a test can hand [start] a hasher of its own. The
+     * daemon's tests find no library, and with no hasher no pipeline is built,
+     * so nothing a scan is given here could be seen from one: with
+     * [hashWorkers] left out where the pipeline is built, every test there was
+     * still passed.
+     */
+    private val loadHasher: () -> RomHasher? = { nativeHasher() }
 ) {
 
     /**
@@ -177,11 +189,6 @@ class BridgeDaemon(
                else RomScanner.ROM_EXTENSIONS + declared
     }
 
-    private fun loadHasher() =
-        DaemonPaths.nativeLibraryCandidates()
-            .firstNotNullOfOrNull { NativeRomHasher.tryLoad(it) }
-            ?: NativeRomHasher.tryLoad()
-
     /**
      * Publishes the port so a client can find the daemon.
      *
@@ -209,17 +216,20 @@ class BridgeDaemon(
         private const val TAG = "BridgeDaemon"
         const val MAX_HASH_WORKERS = 16
 
-        /**
-         * `--hash-workers=N` as [main] reads it. Without the flag, or with an N
-         * that is not a number, the count the pipeline has by default.
-         */
-        internal fun hashWorkersArg(args: Array<String>): Int =
-            args.firstOrNull { it.startsWith("--hash-workers=") }
-                ?.removePrefix("--hash-workers=")?.toIntOrNull()
-                ?: RomScanPipeline.DEFAULT_HASH_WORKERS
+        private fun nativeHasher(): RomHasher? =
+            DaemonPaths.nativeLibraryCandidates()
+                .firstNotNullOfOrNull { NativeRomHasher.tryLoad(it) }
+                ?: NativeRomHasher.tryLoad()
 
-        @JvmStatic
-        fun main(args: Array<String>) {
+        /**
+         * The daemon the command line asks for, not yet started.
+         *
+         * Apart from [main], which never returns, so that a test can ask what
+         * a flag came to. While the flags were read in main itself, one could
+         * be read and then left out of the constructor's arguments with
+         * nothing to notice.
+         */
+        internal fun fromArgs(args: Array<String>): BridgeDaemon {
             val dataRoot = args.firstOrNull { it.startsWith("--data-root=") }
                 ?.removePrefix("--data-root=")?.let(::File)
                 ?: DaemonPaths.defaultDataRoot()
@@ -227,11 +237,20 @@ class BridgeDaemon(
                 ?.removePrefix("--port=")?.toIntOrNull() ?: 0
             val advertise = args.firstOrNull { it.startsWith("--advertise-port=") }
                 ?.removePrefix("--advertise-port=")?.toIntOrNull() ?: 0
+            // Without the flag, or with an N that is not a number, the count the
+            // pipeline has by default.
+            val hashWorkers = args.firstOrNull { it.startsWith("--hash-workers=") }
+                ?.removePrefix("--hash-workers=")?.toIntOrNull()
+                ?: RomScanPipeline.DEFAULT_HASH_WORKERS
+            return BridgeDaemon(dataRoot, port, advertise, hashWorkers)
+        }
 
-            val daemon = BridgeDaemon(dataRoot, port, advertise, hashWorkersArg(args))
+        @JvmStatic
+        fun main(args: Array<String>) {
+            val daemon = fromArgs(args)
             val bound = daemon.start()
             println("PegasusBridge daemon listening on http://127.0.0.1:$bound")
-            if (advertise > 0) println("advertised to clients as port $advertise")
+            if (daemon.managed) println("advertised to clients as port ${daemon.advertisePort}")
             println("data root: ${daemon.dataRoot}")
             println("endpoint file: ${DaemonPaths.endpointFile(daemon.dataRoot)}")
             // The count in use, not the one asked for: the two differ when the

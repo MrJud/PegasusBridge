@@ -3,12 +3,15 @@ package com.pegasus.bridge.daemon
 import com.pegasus.bridge.core.BridgeLog
 import com.pegasus.bridge.core.NoopLog
 import com.pegasus.bridge.core.StderrLog
+import com.pegasus.bridge.hasher.HashResult
+import com.pegasus.bridge.hasher.RomHasher
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import org.json.JSONObject
 import java.io.File
 import java.nio.file.Files
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicInteger
 import kotlin.test.AfterTest
 import kotlin.test.BeforeTest
 import kotlin.test.Test
@@ -152,9 +155,10 @@ class BridgeDaemonTest {
         }
     }
 
-    // From the command line to the count a scan is given, as main() takes it.
+    // The count of the daemon main() would start on these arguments: fromArgs is
+    // all there is of main() before start().
     private fun hashWorkersWith(vararg args: String): Int =
-        BridgeDaemon(dataRoot, hashWorkers = BridgeDaemon.hashWorkersArg(arrayOf(*args))).hashWorkers
+        BridgeDaemon.fromArgs(arrayOf(*args)).hashWorkers
 
     // Four is what a scan had before there was a flag. A daemon started the way
     // every installed unit starts it has to go on scanning as it did.
@@ -175,6 +179,88 @@ class BridgeDaemonTest {
         assertEquals(16, hashWorkersWith("--hash-workers=99"))
         assertEquals(16, hashWorkersWith("--hash-workers=16"))
         assertEquals(1, hashWorkersWith("--hash-workers=1"))
+    }
+
+    // Four flags are read one after the other and handed over by position.
+    // Each has a number of its own here, so that one landing in another's
+    // place shows. Nothing is started, so the two ports, which only a daemon
+    // that is up shows, are not asked.
+    @Test fun `a data root and a count of hash workers on one command line are both the daemon's`() {
+        val d = BridgeDaemon.fromArgs(arrayOf(
+            "--data-root=${dataRoot.absolutePath}", "--port=3", "--advertise-port=5", "--hash-workers=2"))
+        assertEquals(dataRoot.absoluteFile, d.dataRoot.absoluteFile)
+        assertEquals(2, d.hashWorkers)
+    }
+
+    /**
+     * In place of the native library, which the daemon does not find under
+     * test. It gives no hash, so nothing is looked up and no request leaves
+     * the machine. Each file is held long enough for the hashes under way
+     * side by side to overlap, and [peak] is the most there were at one
+     * time: how many producers the scan ran.
+     */
+    private class HeldHasher : RomHasher {
+        val calls = AtomicInteger()
+        private val underWay = AtomicInteger()
+        val peak = AtomicInteger()
+
+        override fun hash(path: String): HashResult? {
+            calls.incrementAndGet()
+            peak.accumulateAndGet(underWay.incrementAndGet(), ::maxOf)
+            try { Thread.sleep(25) } finally { underWay.decrementAndGet() }
+            return null
+        }
+    }
+
+    /** The most files a daemon built with [workers] hashed at once, in one scan over HTTP. */
+    private fun hashedAtOnce(workers: Int): Int {
+        val root = Files.createTempDirectory("daemon-test-workers").toFile()
+        val roms = File(root, "roms/snes").apply { mkdirs() }
+        val files = 24
+        repeat(files) { File(roms, "Game $it.sfc").writeText("rom $it") }
+
+        val held = HeldHasher()
+        val scanning = BridgeDaemon(File(root, "data"), hashWorkers = workers, loadHasher = { held })
+        try {
+            scanning.start()
+            fun at(p: String) = client.newCall(
+                Request.Builder().url("http://127.0.0.1:${scanning.boundPort}$p").build()).execute()
+
+            val started = at("/scan?roots=" + File(root, "roms").absolutePath)
+                .use { JSONObject(it.body!!.string()) }
+            assertEquals("started", started.optString("status"), "the daemon started no scan: $started")
+            val jobId = started.getString("jobId")
+            var job = JSONObject()
+            for (attempt in 0 until 400) {
+                Thread.sleep(50)
+                job = at("/jobs/$jobId").use { JSONObject(it.body!!.string()) }
+                if (job.getString("status") != "running") break
+            }
+
+            assertEquals("done", job.getString("status"), "the scan did not finish: $job")
+            // Every file went through the hasher: a peak read off a scan that
+            // hashed nothing would be no count at all.
+            assertEquals(files, held.calls.get())
+            assertEquals(files, job.getJSONObject("result").getJSONObject("states").getInt("HASH_FAILED"))
+            return held.peak.get()
+        } finally {
+            scanning.stop(); root.deleteRecursively()
+        }
+    }
+
+    // What the tests above read is a property of the daemon. What a scan is
+    // given is the pipeline start() builds, and it builds one only around a
+    // hasher: with none under test the count went nowhere a test could follow,
+    // and a daemon that printed "hash workers: 2" and scanned with four passed.
+    @Test fun `a scan hashes as many files at once as the daemon was told to`() {
+        // The pipeline starts no more producers than there are cores.
+        val cores = Runtime.getRuntime().availableProcessors()
+        assertEquals(minOf(3, cores), hashedAtOnce(3))
+        assertEquals(minOf(6, cores), hashedAtOnce(6))
+        // 0 is the count the pipeline refuses: brought to 1, the scan runs. It
+        // is also what tells the count from the default where the cores are
+        // few, and three and six both come to as many as there are.
+        assertEquals(1, hashedAtOnce(0))
     }
 
     // Scanning is the only feature that needs the native library; everything else

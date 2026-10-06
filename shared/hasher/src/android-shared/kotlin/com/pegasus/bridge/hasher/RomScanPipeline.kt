@@ -189,7 +189,6 @@ class RomScanPipeline(
         // Without it a library of mostly-unknown ROMs asked the source about every
         // one of them on every run, and could never say why any of them was missing.
         val ledger = ScanLedger(File(paths.cache, ScanLedger.FILE_NAME))
-        ledger.forget(files.map { canonical(it) }.toSet(), roots.map { canonical(File(it)) })
         val now = BridgePaths.epochSeconds()
 
         val fileQueue    = Channel<File>(capacity = 64)
@@ -423,6 +422,9 @@ class RomScanPipeline(
             //
             // A write that fails must not take the place of what ended the scan.
             // save() keeps its own failure to itself; the index does not.
+            //
+            // The ledger is saved as it stands. Nothing is dropped from it here:
+            // forget() is below, for a scan that gets as far as its summary.
             BridgeLog.w(TAG, "stopped after $processed/$total by ${t.javaClass.simpleName}; " +
                              "keeping the index and the ledger")
             runCatching { writeDiscoveryIndex() }
@@ -438,6 +440,15 @@ class RomScanPipeline(
         }
 
         val indexed = writeDiscoveryIndex()
+        // Pruned here, on the way to the summary, and not where the ledger is
+        // opened, which came to the same while this was the only save. The catch
+        // above saves too. A scan cancelled or broken off, with a root that was
+        // not there when it started, then wrote down the loss of every verdict
+        // that root had; and Cancel is what a person does on seeing the card is
+        // out. Such a scan only adds now. Nothing in between depends on the
+        // order: the ledger is asked only about files the walk found, which are
+        // never the ones dropped, and the counts are of this run.
+        ledger.forget(files.map { canonical(it) }.toSet(), roots.map { canonical(File(it)) })
         ledger.save { f, text -> BridgePaths.writeAtomic(f, text) }
         val states = ledger.counts()
         BridgeLog.i(TAG, "scan ${if (abortReason.isEmpty()) "complete" else "aborted"}: " +

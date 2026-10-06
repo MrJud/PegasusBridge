@@ -576,4 +576,127 @@ class ScanAbortTest {
 
         assertEquals(emptyMap<String, Int>(), statesOnDisk(), "the read the cancel interrupted is in the ledger")
     }
+
+    /** Says no to everything: an answer each time, which is what fills a ledger. */
+    private class SaysNo : RaHashLookup {
+        override suspend fun lookup(hash: String) = GameMetadata(gameId = 0)
+    }
+
+    private val storage get() = File(romRoot, "storage")
+    private val card get() = File(romRoot, "card")
+    private val cardTakenOut get() = File(romRoot, "card taken out")
+
+    /**
+     * Three misses on one volume and five on another, scanned once so that all
+     * eight stand in the ledger. Then the second volume goes, the way a card
+     * that is taken out does, and one file is added to the first for the next
+     * scan to stop on.
+     */
+    private suspend fun aLibraryWhoseCardWentAfterItsScan() {
+        repeat(3) { rom("storage/nes", "Miss$it.nes", "miss-nes-$it") }
+        repeat(5) { rom("card/snes", "Miss$it.sfc", "miss-snes-$it") }
+        RomScanPipeline(paths, ContentHasher(), SaysNo(), throttleMs = { 0L })
+            .scan(listOf(storage.absolutePath, card.absolutePath))
+        assertEquals(mapOf("NOT_FOUND" to 8), statesOnDisk())
+
+        assertTrue(card.renameTo(cardTakenOut))
+        rom("storage/nes", "New.nes", "hash-new")
+    }
+
+    /** How many entries of the ledger on disk are for files under [dir]. */
+    private fun onDiskUnder(dir: File): Int = ledgerOnDisk().keys().asSequence()
+        .count { it.startsWith(dir.canonicalPath + File.separator) }
+
+    /**
+     * The ledger is pruned of what a scan's walk did not find: every entry under
+     * a root it was given, and any whose file is gone, wherever it was. That was
+     * done as the ledger was opened, which cost nothing while a scan had to
+     * reach its end to save it. Saved on a cancel as well, the pruning went to
+     * disk with it. So a scan started with a card out and cancelled, which is
+     * what a person does on seeing the card is out, wrote off every verdict the
+     * card's files had: of the eight here, three were left. A cancelled scan
+     * only adds now, and the pruning waits for one that gets to its summary.
+     */
+    @Test fun `a cancelled scan does not drop the verdicts of a root that was not there`(): Unit = runBlocking {
+        aLibraryWhoseCardWentAfterItsScan()
+        val roots = listOf(storage.absolutePath, card.absolutePath)
+
+        val hanging = CompletableDeferred<Unit>()
+        val hangs = object : RaHashLookup {
+            override suspend fun lookup(hash: String): GameMetadata? {
+                hanging.complete(Unit); awaitCancellation()
+            }
+        }
+        withTimeout(5_000) {
+            val scan = launch {
+                RomScanPipeline(paths, ContentHasher(), hangs, throttleMs = { 0L }).scan(roots)
+            }
+            hanging.await()
+            scan.cancelAndJoin()
+        }
+
+        assertEquals(5, onDiskUnder(card), "the cancel dropped the verdicts of the root that was not there")
+        assertEquals(mapOf("NOT_FOUND" to 8), statesOnDisk())
+
+        // The card is back. What the cancel kept is what the next scan does not
+        // do again: it reads one file and asks about one, the new one.
+        assertTrue(cardTakenOut.renameTo(card))
+        val hasher = ContentHasher()
+        val asked: MutableList<String> = java.util.Collections.synchronizedList(mutableListOf())
+        val second = object : RaHashLookup {
+            override suspend fun lookup(hash: String): GameMetadata {
+                asked += hash
+                return GameMetadata(gameId = 0)
+            }
+        }
+        val s = RomScanPipeline(paths, hasher, second, throttleMs = { 0L }).scan(roots)
+
+        assertEquals(listOf("hash-new"), asked)
+        assertEquals(1, hasher.calls.get(), "a file whose verdict stood before the cancel was read again")
+        assertEquals(9, s.unmatched)
+    }
+
+    // The other way out and the other rule. A scan of one collection, on the
+    // volume that is there, ended by a lookup that throws: the card's files are
+    // under no root it was given, and were dropped for not being there.
+    @Test fun `a scan that fails does not drop the verdicts of files that were not there`(): Unit = runBlocking {
+        aLibraryWhoseCardWentAfterItsScan()
+
+        val breaks = object : RaHashLookup {
+            override suspend fun lookup(hash: String): GameMetadata =
+                throw java.io.IOException("the source fell over")
+        }
+        assertFailsWith<java.io.IOException> {
+            withTimeout(5_000) {
+                RomScanPipeline(paths, ContentHasher(), breaks, throttleMs = { 0L })
+                    .scan(listOf(storage.absolutePath))
+            }
+        }
+
+        assertEquals(5, onDiskUnder(card), "the failed scan dropped the verdicts of files that were not there")
+        assertEquals(mapOf("NOT_FOUND" to 8), statesOnDisk())
+    }
+
+    // A scan the pipeline stops itself is not one of those. It has walked every
+    // root by then and goes on to its summary, so it drops what the walk did not
+    // find as a scan that finished does, and as it did before the pruning moved.
+    @Test fun `a scan the pipeline aborts still drops the verdict of a file that is gone`(): Unit = runBlocking {
+        rom("nes", "Gone.nes", "miss-gone")
+        rom("nes", "Stays.nes", "miss-stays")
+        val gone = File(romRoot, "nes/Gone.nes"); val stays = File(romRoot, "nes/Stays.nes")
+        RomScanPipeline(paths, ContentHasher(), SaysNo(), throttleMs = { 0L })
+            .scan(listOf(romRoot.absolutePath))
+        assertTrue(ledgerOnDisk().has(gone.canonicalPath))
+
+        assertTrue(gone.delete())
+        repeat(40) { rom("nes", "New$it.nes", "hash-$it") }
+        val s = withTimeout(20_000) {
+            RomScanPipeline(paths, ContentHasher(), DeadLookup(), throttleMs = { 0L })
+                .scan(listOf(romRoot.absolutePath))
+        }
+
+        assertTrue(s.aborted)
+        assertFalse(ledgerOnDisk().has(gone.canonicalPath), "the aborted scan kept the entry of a file that is gone")
+        assertEquals("NOT_FOUND", ledgerOnDisk().getJSONObject(stays.canonicalPath).getString("state"))
+    }
 }

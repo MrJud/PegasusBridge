@@ -39,7 +39,12 @@ import kotlin.test.assertTrue
  * out as gameId 0.
  */
 class RaHashLookupTest {
-    private data class Reply(val body: String, val status: Int = 200)
+    /**
+     * [cutShort] promises more bytes than it sends and then closes: headers
+     * that arrive and a body that does not, which the client meets as an
+     * exception and not as an answer.
+     */
+    private data class Reply(val body: String, val status: Int = 200, val cutShort: Boolean = false)
 
     private lateinit var server: HttpServer
     private lateinit var lookup: RaApiHashLookup
@@ -65,7 +70,10 @@ class RaHashLookupTest {
             requests += exchange.requestURI.path
             val reply = replies.poll() ?: Reply("unexpected request", 400)
             val bytes = reply.body.toByteArray()
-            exchange.sendResponseHeaders(reply.status, bytes.size.toLong())
+            exchange.sendResponseHeaders(reply.status, bytes.size.toLong() + if (reply.cutShort) 64 else 0)
+            // Closing a body that is short of its length throws, and what a
+            // handler throws makes the server drop the connection: the client
+            // has the headers by then and finds the body ended early.
             exchange.responseBody.use { it.write(bytes) }
             exchange.close()
         }
@@ -77,6 +85,7 @@ class RaHashLookupTest {
         server.stop(0)
         executor.shutdownNow()
         BridgeLog.current = previousLog
+        heldPorts.forEach { it.close() }
     }
 
     @Test fun `only an explicit successful zero is a confirmed hash miss`() = runTest {
@@ -315,6 +324,254 @@ class RaHashLookupTest {
 
         assertEquals(4, requests.size)
         assertTrue(currentTime in 7_000L..7_750L, "virtual time spent: $currentTime ms")
+    }
+
+    private val heldPorts = ArrayList<java.net.Socket>()
+
+    /**
+     * A port with nothing behind it: every request to it is refused at once,
+     * and for real. Bound and never listened on, and held until the test is
+     * over. A port taken and given back is the next one the system hands out
+     * now and then, to anything on the machine, and the request would be
+     * answered.
+     */
+    private fun deadPort(): Int =
+        java.net.Socket().also { it.bind(InetSocketAddress("127.0.0.1", 0)); heldPorts += it }.localPort
+
+    private fun unreachable(deviceOffline: () -> Boolean) =
+        RaApiHashLookup(USER, API_KEY, "http://127.0.0.1:${deadPort()}", DeviceConnection(deviceOffline))
+
+    // A tablet in airplane mode. Each lookup used to go through its four
+    // attempts and the seven seconds of back-off between them, two lookups at
+    // a time, until eight had failed: 31 seconds to stop a scan of 13 files.
+    // The device is asked once, about the one request made, and nothing is
+    // waited for. No clock moves here because nothing sleeps: the first
+    // request of a lookup is not paced.
+    @OptIn(ExperimentalCoroutinesApi::class)
+    @Test fun `a request that fails on a device with no connection is not tried again`() = runTest {
+        var asked = 0
+        val lookup = unreachable { asked++; true }
+        assertFalse(lookup.offline, "offline before any request had failed")
+        assertEquals(0, asked, "the device was asked before any request had failed")
+
+        assertNull(lookup.lookup(HASH))
+
+        assertEquals(1, asked, "one request fails once: the device is asked once")
+        assertEquals(0L, currentTime, "a back-off was waited through")
+        assertTrue(lookup.offline)
+        assertEquals(1, lookup.consecutiveFailures)
+        assertTrue(logs.any { it.contains("no internet connection") && it.contains("/dorequest.php") }, "$logs")
+        assertTrue(logs.none { it.contains("retries exhausted") }, "$logs")
+    }
+
+    // What the device says explains a failure and prevents nothing. Here it
+    // would say there is no connection, and is wrong: the requests are made
+    // all the same, both are answered, and it is never asked.
+    @Test fun `a device that would say it is offline is not asked while requests are answered`() = runTest {
+        var asked = 0
+        val lookup = RaApiHashLookup(USER, API_KEY, "http://127.0.0.1:${server.address.port}") { asked++; true }
+        replies += Reply("""{"Success":true,"GameID":1446}""")
+        replies += Reply(VALID_METADATA)
+
+        assertEquals(1446, assertNotNull(lookup.lookup(HASH)).gameId)
+
+        assertEquals(2, requests.size)
+        assertEquals(0, asked, "the device was asked about a request that had not failed")
+        assertFalse(lookup.offline)
+    }
+
+    // The device is asked about a request that brought back nothing, and a
+    // refusal is something. Too many requests, and then a server in trouble
+    // four times over: each is waited out and asked again as it always was,
+    // by a lookup whose device would have said there is no connection. Asked
+    // after a status as well, the first 429 on a network Android has its
+    // doubts about would end the scan with the advice to connect.
+    @OptIn(ExperimentalCoroutinesApi::class)
+    @Test fun `a request that is answered with a refusal is not put to the device`() = runTest {
+        var asked = 0
+        val lookup = RaApiHashLookup(USER, API_KEY, "http://127.0.0.1:${server.address.port}") { asked++; true }
+        replies += Reply("slow down", 429)
+        replies += Reply("""{"Success":true,"GameID":1446}""")
+        replies += Reply(VALID_METADATA)
+
+        assertEquals(1446, assertNotNull(lookup.lookup(HASH)).gameId)
+
+        assertEquals(3, requests.size, "the request that was refused was not made again")
+        assertEquals(0, asked, "the device was asked about a request that was answered")
+        assertFalse(lookup.offline)
+
+        repeat(4) { replies += Reply("unavailable", 503) }
+        val before = currentTime
+        assertNull(lookup.lookup(HASH))
+
+        assertEquals(7, requests.size, "a request answered 503 was not made four times")
+        // The seven seconds of back-off, and the quarter of a second each of
+        // the four requests is held behind the one before it.
+        assertTrue(currentTime - before in 7_000L..8_000L, "virtual time spent: ${currentTime - before} ms")
+        assertEquals(0, asked, "the device was asked about a request that was answered")
+        assertFalse(lookup.offline, "four answers were put down to the connection")
+    }
+
+    // The same dead port on a device that has a connection, or that was given
+    // nobody to ask: four attempts and the back-off between them, as before,
+    // and nothing put down to the connection.
+    @OptIn(ExperimentalCoroutinesApi::class)
+    @Test fun `a request that fails on a device with a connection is tried four times, as it was`() = runTest {
+        var asked = 0
+        val lookup = unreachable { asked++; false }
+
+        assertNull(lookup.lookup(HASH))
+
+        assertEquals(4, asked, "asked after each attempt that failed")
+        assertTrue(currentTime in 7_000L..7_750L, "virtual time spent: $currentTime ms")
+        assertFalse(lookup.offline)
+        assertTrue(logs.any { it.contains("retries exhausted") }, "$logs")
+
+        val nobodyToAsk = RaApiHashLookup(USER, API_KEY, "http://127.0.0.1:${deadPort()}")
+        val before = currentTime
+        assertNull(nobodyToAsk.lookup(HASH))
+        assertTrue(currentTime - before in 7_000L..7_750L, "virtual time spent: ${currentTime - before} ms")
+        assertFalse(nobodyToAsk.offline)
+    }
+
+    // What the platform throws when asked must not be what ends a scan, nor
+    // what calls it offline. An Error as well as an exception: a call the
+    // device's Android does not have is a NoSuchMethodError, and the lookup's
+    // own catch lets an Error through to fail the whole scan.
+    @OptIn(ExperimentalCoroutinesApi::class)
+    @Test fun `a device that cannot say whether it is connected is taken to be`() = runTest {
+        for (thrown in listOf(SecurityException("Package android does not belong to 10234"),
+                              NoSuchMethodError("getActiveNetwork"))) {
+            var asked = 0
+            val lookup = unreachable { asked++; throw thrown }
+            val before = currentTime
+
+            assertNull(lookup.lookup(HASH), "$thrown")
+
+            assertEquals(4, asked, "$thrown")
+            assertTrue(currentTime - before in 7_000L..7_750L, "$thrown: ${currentTime - before} ms")
+            assertFalse(lookup.offline, "$thrown")
+        }
+    }
+
+    // The request that carries the key is the second of a lookup. Here the
+    // first is answered and the second is cut off in its body, on a device
+    // that then says it has no connection: the line written for it names the
+    // endpoint and the game, and not the key.
+    @Test fun `a request given up for want of a connection is logged without the key`() = runTest {
+        val lookup = RaApiHashLookup(USER, API_KEY, "http://127.0.0.1:${server.address.port}") { true }
+        replies += Reply("""{"Success":true,"GameID":1446}""")
+        replies += Reply(VALID_METADATA, cutShort = true)
+
+        assertNull(lookup.lookup(HASH))
+
+        assertEquals(2, requests.size, "the request that failed was made again")
+        assertTrue(lookup.offline)
+        assertTrue(logs.any { it.contains("no internet connection") && it.contains("i=1446") }, "$logs")
+        assertTrue(logs.none { it.contains(API_KEY) }, "the API key reached the log:\n$logs")
+    }
+
+    // Offline is not kept as a refused key is. A request that is answered was
+    // carried by a connection, whatever the answer: a 404 here, which is a
+    // failed lookup and still proof that the source was reached.
+    @Test fun `any answer takes back what a failed request said about the connection`() = runTest {
+        val lookup = RaApiHashLookup(USER, API_KEY, "http://127.0.0.1:${server.address.port}") { true }
+        replies += Reply("""{"Success":true,"GameID":0}""", cutShort = true)
+        assertNull(lookup.lookup(HASH))
+        assertTrue(lookup.offline)
+
+        replies += Reply("not found", 404)
+        assertNull(lookup.lookup(HASH))
+        assertFalse(lookup.offline, "an answer arrived and the lookup still says there is no connection")
+        assertEquals(2, lookup.consecutiveFailures)
+    }
+
+    // Nor is it kept when the next request fails on a device that says it is
+    // connected again. That one is retried, and the scan is not stopped for a
+    // connection the device now has.
+    @Test fun `a request that fails once the device is connected again takes it back too`() = runTest {
+        var connected = false
+        val lookup = unreachable { !connected }
+        assertNull(lookup.lookup(HASH))
+        assertTrue(lookup.offline)
+
+        connected = true
+        assertNull(lookup.lookup(HASH))
+        assertFalse(lookup.offline)
+        assertTrue(logs.any { it.contains("retries exhausted") }, "$logs")
+    }
+
+    // The lookup as the Android service builds it: the device is asked through
+    // an OfflineVerdict, here on the clock of the test's own delays, and says
+    // each time that its network has not been found to work. A router with no
+    // line out. The first three attempts are within the time a network takes
+    // to be tried and go on as ever; at the fourth, seven seconds in, it has
+    // lasted, and the lookup says so.
+    @OptIn(ExperimentalCoroutinesApi::class)
+    @Test fun `a network not found to work settles it at the last attempt of the first lookup`() = runTest {
+        val verdict = OfflineVerdict { TimeUnit.MILLISECONDS.toNanos(currentTime) }
+        var asked = 0
+        val lookup = unreachable { asked++; verdict.offline(LinkState.UNVALIDATED) }
+
+        assertNull(lookup.lookup(HASH))
+
+        assertEquals(4, asked)
+        assertTrue(currentTime in 7_000L..7_750L, "virtual time spent: $currentTime ms")
+        assertTrue(lookup.offline)
+    }
+
+    // A network Android never passes and that carries every request, which is
+    // what a Wi-Fi is when Android's own test is kept from getting out. Two
+    // requests fail on it ten minutes apart, each made again and answered,
+    // with two hundred lookups answered in between. Counted from the first
+    // failure of the scan to whichever comes next, the wait would be over at
+    // the second, which would not be made again, and the scan would stop for
+    // want of a connection. An answer is what starts the wait over.
+    @OptIn(ExperimentalCoroutinesApi::class)
+    @Test fun `answers between two failed requests keep a doubted network from being called offline`() = runTest {
+        var nowMs = 0L
+        val verdict = OfflineVerdict { TimeUnit.MILLISECONDS.toNanos(nowMs) }
+        var asked = 0
+        val lookup = RaApiHashLookup(USER, API_KEY, "http://127.0.0.1:${server.address.port}", object : DeviceConnection {
+            override fun offline(): Boolean { asked++; return verdict.offline(LinkState.UNVALIDATED) }
+            override fun answered() = verdict.answered()
+        })
+        val miss = """{"Success":true,"GameID":0}"""
+
+        replies += Reply(miss, cutShort = true)
+        replies += Reply(miss)
+        assertEquals(GameMetadata(gameId = 0), lookup.lookup(HASH))
+        repeat(200) {
+            nowMs += 3_000
+            replies += Reply(miss)
+            assertEquals(GameMetadata(gameId = 0), lookup.lookup(HASH))
+        }
+
+        replies += Reply(miss, cutShort = true)
+        replies += Reply(miss)
+        assertEquals(GameMetadata(gameId = 0), lookup.lookup(HASH),
+                     "a request that failed once on a network that had answered 201 was not made again")
+
+        assertEquals(2, asked)
+        assertFalse(lookup.offline)
+        assertEquals(204, requests.size)
+        assertTrue(logs.none { it.contains("no internet connection") }, "$logs")
+    }
+
+    // Whoever is told of an answer is not let undo it. What the platform's
+    // side throws there would otherwise be caught as the request failing, and
+    // an answer that had arrived would be asked for again and then given up.
+    @Test fun `an answer stays an answer when telling of it throws`() = runTest {
+        val lookup = RaApiHashLookup(USER, API_KEY, "http://127.0.0.1:${server.address.port}", object : DeviceConnection {
+            override fun offline() = true
+            override fun answered() { throw IllegalStateException("no verdict to tell") }
+        })
+        replies += Reply("""{"Success":true,"GameID":0}""")
+
+        assertEquals(GameMetadata(gameId = 0), lookup.lookup(HASH))
+
+        assertEquals(1, requests.size)
+        assertFalse(lookup.offline)
     }
 
     /**

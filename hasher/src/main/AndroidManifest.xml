@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!--
+      Asking Android whether the device has a connection.
+
+      DeviceNetwork asks ConnectivityManager when a lookup's request has failed,
+      so that a scan started in airplane mode ends at once as one with no
+      internet, and not half a minute later as one RetroAchievements stopped
+      answering. Both calls it makes need this permission.
+
+      The app's own manifest has declared it all along, and the merged manifest
+      is no different for this line. It is here because this module is the one
+      that makes the calls: lint checks a library against its own manifest, and
+      the module had none.
+    -->
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+
+</manifest>

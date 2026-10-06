@@ -78,8 +78,8 @@ import kotlin.test.assertTrue
  * The job record is ScanJobRecord's, which HasherService writes through. It is
  * set against every replayed record, and then put in front of the theme with
  * the real pipeline behind it: a scan run to its end, a library with nothing
- * in it, an outage and a refused key, each kept the way a caller of the
- * pipeline is to keep it.
+ * in it, an outage, a refused key and a device with no connection, each kept
+ * the way a caller of the pipeline is to keep it.
  *
  * Everything is compared as parsed values and never as text. Android's org.json
  * escapes `/` and orders keys differently from the library these tests run on,
@@ -943,6 +943,50 @@ class ThemeContractTest {
         assertMarkedAndCleared(id)
     }
 
+    // The third abort, and on the desktop the quickest of the three: a request
+    // that fails for want of a connection fails at once. Held here until the
+    // theme has seen the job running; one that is over by the theme's first
+    // poll goes through "job unknown to the bridge" first, as any error does.
+    // The sentence is the one Android writes, and the job is a failed one with
+    // its result beside it.
+    @Test fun `a desktop scan with no connection reads as an error that says so`() {
+        repeat(13) { rom("snes", "Game $it.sfc", "hash-$it") }
+        hasher = ContentHasher()
+        val gate = CompletableDeferred<Unit>().also { held += it }
+        lookup = object : RaHashLookup {
+            @Volatile var down = false
+            override suspend fun lookup(hash: String): GameMetadata? { gate.await(); down = true; return null }
+            override val offline: Boolean get() = down
+        }
+        val id = "scan_1791233730000_10"
+
+        val theme = desktopTheme(id)
+        theme.pollTwice()
+        assertEquals(View("running", 0, 0, 0, "", 0, 0), theme.view())
+
+        gate.complete(Unit)
+        val body = finished(id)
+        assertEquals("error", body.getString("status"))
+        val result = body.getJSONObject("result")
+        assertEquals(desktopResultKeys, result.keySet())
+        assertTrue(result.getBoolean("aborted"))
+        assertTrue(result.getString("reason").startsWith("no internet connection"), result.getString("reason"))
+        val processed = result.getInt("processed")
+        assertTrue(processed in 1 until 13, "an abort must not have gone through the library: $processed")
+        assertEquals(processed, result.getInt("failedLookups"))
+        assertEquals(mapOf<String, Any>("API_RETRY" to processed), result.getJSONObject("states").toMap())
+        assertEquals("No internet connection: stopped after $processed of 13 files (0 identified). " +
+                     "Nothing was recorded as missing. " +
+                     "Connect and scan again — it will resume where it left off.",
+                     body.getString("error"))
+
+        theme.pollTwice()
+        assertEquals("error", theme.status)
+        assertEquals(body.getString("error"), theme.currentFile)
+        assertEquals("", theme.activeJobId)
+        assertMarkedAndCleared(id)
+    }
+
     // ── The files a scan writes ─────────────────────────────────────────────
 
     private fun pipeline(h: RomHasher, l: RaHashLookup) =
@@ -1375,8 +1419,57 @@ class ThemeContractTest {
         assertEquals(sentence, theme.currentFile)
     }
 
+    /** Finds the device without a connection at its first lookup, as the real one does when a request fails. */
+    private class NoConnection : RaHashLookup {
+        @Volatile private var down = false
+        override suspend fun lookup(hash: String): GameMetadata? { down = true; return null }
+        override val offline: Boolean get() = down
+    }
+
+    private fun offlineSentence(processed: Int, total: Int) =
+        "No internet connection: stopped after $processed of $total files (0 identified). " +
+        "Nothing was recorded as missing. " +
+        "Connect and scan again — it will resume where it left off."
+
+    // Thirteen files on a tablet in airplane mode. There is no replay of the
+    // old service for this one: it had no such ending, and wrote the outage
+    // sentence 31 seconds in. The record is the error every stopped scan
+    // leaves, with no progress and no counts, and the theme takes the
+    // sentence whole and never reads a scan that completed. Taken whole, and
+    // shown on one line that is cut in the middle when it is too long for the
+    // popup, as this one is: the cause at the start and "it will resume where
+    // it left off" at the end are what a person is left with.
+    @Test fun `a scan with no connection is recorded as an error that says so`(): Unit = runBlocking {
+        repeat(13) { rom("snes", "g$it.sfc", "hash-$it") }
+        val theme = androidTheme()
+        val statuses = ArrayList<String>()
+
+        val scan = withTimeout(5_000) {
+            recordedScan("job1", ContentHasher(), NoConnection()) { theme.readHasherProgress(); statuses += theme.status }
+        }
+
+        assertEquals(RomScanPipeline.AbortCause.OFFLINE, scan.summary.abortCause)
+        assertTrue(scan.summary.processed in 1 until 13, "processed ${scan.summary.processed} of 13")
+        val last = scan.records.last()
+        assertEquals(androidErrorKeys, last.keySet())
+        assertEquals("error", last.getString("status"))
+        val sentence = last.getString("error")
+        assertEquals(offlineSentence(scan.summary.processed, 13), sentence)
+
+        leaveMarker()
+        theme.readHasherProgress()
+        statuses += theme.status
+        assertFalse("done" in statuses, "read as $statuses")
+        assertEquals("error", statuses.last())
+        assertEquals(sentence, theme.currentFile)
+        assertEquals(0, theme.percent)
+        assertEquals("", theme.activeJobId)
+        // Over, for a theme that is reloaded as well.
+        assertEquals("", androidTheme().activeScanJobId())
+    }
+
     // Each number of the summary in its own place in the sentence, which the
-    // two scans above cannot show: they stop at once, with nothing identified.
+    // scans above cannot show: they stop at once, with nothing identified.
     // And an abort is an error whether or not the summary says which it was.
     @Test fun `a summary that says aborted becomes an error record with the advice for its cause`() {
         val summary = RomScanPipeline.Summary(
@@ -1390,10 +1483,16 @@ class ThemeContractTest {
             "Nothing was recorded as missing. " +
             "Copy the Web API key from your RetroAchievements settings into credentials.json " +
             "and scan again."
+        val connect = "No internet connection: stopped after 9 of 40 files (2 identified). " +
+            "Nothing was recorded as missing. " +
+            "Connect and scan again — it will resume where it left off."
         val advice = mapOf(
             null to wait,
             RomScanPipeline.AbortCause.SOURCE_DOWN to wait,
-            RomScanPipeline.AbortCause.KEY_REFUSED to copy)
+            RomScanPipeline.AbortCause.KEY_REFUSED to copy,
+            RomScanPipeline.AbortCause.OFFLINE to connect)
+        // Every cause there is, so that one added to the pipeline is given its sentence here.
+        assertEquals(RomScanPipeline.AbortCause.values().toSet(), advice.keys - null)
         for ((cause, sentence) in advice) {
             val record = ScanJobRecord.finished("job1", summary.copy(abortCause = cause), "someone", 1791233730, 1791233732)
             assertEquals(androidErrorKeys, record.keySet(), "$cause")

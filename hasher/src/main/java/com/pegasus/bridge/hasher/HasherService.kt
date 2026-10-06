@@ -225,10 +225,24 @@ class HasherService : Service() {
         // one for each core on a device with fewer. It was the first of the
         // two, whatever the device.
         Log.i(TAG, "Scan $jobId: ${RomScanPipeline.hashProducers(hashWorkers)} hash workers")
+        // Whether a request that failed is to be put down to the connection.
+        // The lookup asks when one has failed and at no other time, so nothing
+        // is asked of Android before a scan or for one that finds everything
+        // cached, and a scan is never turned away for what Android says: it
+        // stops as offline only once a request has failed as well. The verdict
+        // is the scan's own, like the lookup, because it remembers how long a
+        // network has gone unvalidated. The lookup tells it of every answer,
+        // which is what ends that wait on a network that carries requests.
+        val linkState = ScanCollaborators.linkState
+        val verdict = OfflineVerdict()
+        val device = object : DeviceConnection {
+            override fun offline() = verdict.offline(linkState(this@HasherService))
+            override fun answered() = verdict.answered()
+        }
         val pipeline = RomScanPipeline(
             paths         = Paths.bridge,
             hasher        = ArchiveAwareHasher(ScanCollaborators.hasher(), cacheDir),
-            lookup        = ScanCollaborators.lookup(raUser, raApiKey),
+            lookup        = ScanCollaborators.lookup(raUser, raApiKey, device),
             throttleMs    = ::thermalDelayMs,
             hashWorkers   = hashWorkers,
             extensionsFor = RomScanExtensions.forScan

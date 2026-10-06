@@ -98,10 +98,11 @@ Each shell supplies what stands around it:
 
 - **Android** — `HasherService` (`hasher/`): the foreground service, the wake
   lock, the notification with its Cancel, the thermal back-off the pipeline
-  takes as its throttle, the native hasher (`NativeHasher`), and the job record
-  below.
+  takes as its throttle, the native hasher (`NativeHasher`), what Android says
+  of the connection (`DeviceNetwork`), and the job record below.
 - **Desktop** — `BridgeRouter` (`GET /scan`) and `JobRegistry` in
-  `shared/daemon`, with `NativeRomHasher`.
+  `shared/daemon`, with `NativeRomHasher` and what the JVM can tell of the
+  connection (`HostNetwork`).
 
 Files are hashed 2 at a time on Android and 4 on the desktop. Either can be
 told otherwise, to time a library on its own storage: `hashWorkers=N` on the
@@ -124,11 +125,71 @@ and leaves it there when the scan is over. The theme polls it:
   `No ROMs found` or a sentence that begins `Done — `.
 - An error record has `error` and neither progress nor counters. It is how a
   scan ends when it is cancelled, when credentials are missing, when the
-  pipeline stops because RetroAchievements stopped answering or refused the
-  key (the error then says what to do next), and when anything is thrown —
-  a final `_index.json` that cannot be written included.
+  pipeline stops itself (the error then says what to do next), and when
+  anything is thrown — a final `_index.json` that cannot be written included.
 
 `done/{jobId}.done` holds the text `done`, written after the record is whole.
+
+### When the pipeline stops a scan
+
+Three things make the pipeline stop before the end of the library
+(`RomScanPipeline.AbortCause`). It looks for them in this order, the first and
+the last after every result and `OFFLINE` after a result whose lookup failed,
+and the sentence the scan ends on is `ScanJobRecord.abortAdvice`, the same on
+both shells:
+
+| Cause | When | The error begins |
+|-------|------|------------------|
+| `KEY_REFUSED` | RetroAchievements answered the key with a 401 | `RetroAchievements refused the API key` |
+| `OFFLINE` | a request failed without an answer and the device says it has no connection | `No internet connection: stopped after` |
+| `SOURCE_DOWN` | 8 lookups in a row got no answer | `RetroAchievements stopped responding after` |
+
+Whichever it was, the file whose lookup failed is in the ledger as `API_RETRY`
+and never as `NOT_FOUND`, the ledger and the index are saved, and the next scan
+asks only about what this one did not settle. That is why `OFFLINE` waits for
+a result whose lookup failed: the lookup knows it has no connection before its
+result reaches the collector, and a scan stopped at whichever file went by in
+between, one that needed no lookup, would end with that failure in none of its
+counts and its file in no ledger.
+
+**No connection.** What the device knows about its connection explains a
+failure and prevents nothing. Every request is made. Only when one has failed
+without an answer of any kind — an exception, not an HTTP status — does the
+lookup ask the device, and if the device says it is offline the lookup does not
+go through its other three attempts and their seven seconds of back-off: it
+gives up, and the pipeline stops the scan at that result. A device that is
+wrong about being offline therefore costs nothing while requests get through,
+and one that cannot say, or throws when asked, counts as online. Nothing is
+asked before a scan, or during one that makes no request: a library scanned
+before is scanned again on a plane and ends `done`, every file cached. The
+first answer that arrives takes the verdict back.
+
+A connection that goes in the middle of a scan stops it the same way, at the
+next request that fails, and one that is gone for a moment counts as gone: the
+scan that used to ride out a Wi-Fi that dropped and came back, on its seven
+seconds of back-off, now ends there and is resumed by the next.
+
+- **Android** asks `ConnectivityManager` (`DeviceNetwork`, permission
+  `ACCESS_NETWORK_STATE`). No active network — airplane mode, Wi-Fi off with no
+  mobile data — is offline at once. A network Android has not validated, which
+  is the one it marks "connected, no internet" (a router with no line out, a
+  sign-in page), is offline only when it is still unvalidated at a second
+  failed request five seconds or more after the first (`OfflineVerdict`): every
+  network is unvalidated for a moment after it is joined. In practice that is
+  the fourth attempt of the first lookup, about seven seconds in. A request
+  that is answered in between starts those five seconds again, so a network
+  Android never validates and that carries requests all the same is not called
+  offline for two failures a long way apart. It is called offline, wrongly,
+  when one lookup fails all four of its attempts on such a network while
+  nothing else is answered: the scan then stops at that one failure with the
+  no-internet sentence, though it was RetroAchievements that did not answer.
+  A VPN is never taken for offline, since Android does not test one. So with
+  a VPN that stays up over no network at all, airplane mode included, a scan
+  still ends after 8 failed lookups and as an outage of RetroAchievements.
+- **The desktop** has only what the JVM can see (`HostNetwork`): it is offline
+  when no network interface is up with an address other than a loopback or a
+  link-local one. Anything else is online, a machine whose router has no line
+  out included, and such a scan ends after 8 failed lookups as before.
 
 ### When `/sdcard` is full or read-only
 

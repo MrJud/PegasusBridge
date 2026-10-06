@@ -60,6 +60,23 @@ interface RaHashLookup {
      * the count.
      */
     val authRejected: Boolean get() = false
+
+    /**
+     * True when the last request that failed did so on a device that says it
+     * has no connection, and nothing has been heard from the source since. A
+     * caller should stop at once, as for [authRejected], and say that this is
+     * what it was: the lookups after it would fail the same way, and waiting
+     * for [consecutiveFailures] took half a minute on a tablet in airplane
+     * mode and then blamed a source that had never been reached.
+     *
+     * What happened to a request, and not what the device says when asked.
+     * A lookup that had nothing to ask leaves it false wherever it runs, so a
+     * library scanned before is scanned again on a plane and found cached.
+     * So does a lookup whose requests were all answered, with a refusal each
+     * time: it failed, and not for want of a connection. And unlike a refused
+     * key it is taken back, by the first answer that arrives.
+     */
+    val offline: Boolean get() = false
 }
 
 /**
@@ -87,6 +104,36 @@ object VirtualGameId {
     }
 }
 
+/** Where [RaApiHashLookup] asks unless it is told another place, as a test tells it. */
+const val RETROACHIEVEMENTS_URL = "https://retroachievements.org"
+
+/**
+ * What [RaApiHashLookup] has to do with the platform's knowledge of its own
+ * connection: one question, and one thing it tells in return.
+ *
+ * One object and not two functions side by side. Given as a second function
+ * after the first, the telling takes the place of the question in every
+ * caller that writes the question as its last argument in braces, and the
+ * compiler says nothing: a block that ends in `true` is as good a function
+ * that returns nothing.
+ */
+fun interface DeviceConnection {
+    /**
+     * True when the platform is certain there is no connection. Asked only
+     * about a request that has just failed without an answer, to tell why,
+     * and never before one.
+     */
+    fun offline(): Boolean
+
+    /**
+     * A request has brought back an answer, whatever its status. For a
+     * platform whose opinion of the connection has to be set against what a
+     * request has just shown, as [OfflineVerdict] does on Android. Nothing to
+     * do for one that looks afresh each time it is asked.
+     */
+    fun answered() {}
+}
+
 /**
  * Live implementation against retroachievements.org.
  *
@@ -94,11 +141,20 @@ object VirtualGameId {
  * a 403 — curl's default and OkHttp's own `okhttp/4.12.0` among them — which is
  * why a plain curl reproduction appears to show the endpoint as blocked when it
  * is not.
+ *
+ * [device] is what the platform knows of its own connection. It is asked
+ * only about a request that has just failed without an answer, to tell why,
+ * and never before one: every request is tried whatever it would say, so a
+ * platform that is wrong about being offline costs nothing while requests get
+ * through. What it throws counts as a no. It is told of every request that
+ * is answered, and what it throws then is dropped. Left out, nothing is ever
+ * put down to the connection.
  */
 class RaApiHashLookup(
     private val raUser: String,
     private val raApiKey: String,
-    baseUrl: String = "https://retroachievements.org"
+    baseUrl: String = RETROACHIEVEMENTS_URL,
+    private val device: DeviceConnection = DeviceConnection { false }
 ) : RaHashLookup {
 
     private val base = baseUrl.trimEnd('/')
@@ -126,6 +182,14 @@ class RaApiHashLookup(
     // builds a new one for every scan.
     @Volatile private var rejected = false
     override val authRejected: Boolean get() = rejected
+
+    // What the device said of its connection when a request last failed, and
+    // false again once any request is answered. The stored value and never a
+    // question put to the device from here: the pipeline reads this after
+    // every lookup that came to nothing, and one that was answered four times
+    // with a refusal is not to be put down to the connection.
+    @Volatile private var unreachable = false
+    override val offline: Boolean get() = unreachable
 
     /** Spaces requests out, whatever the parallelism, so RA sees a steady trickle. */
     private suspend fun pace() = paceMutex.withLock {
@@ -286,6 +350,11 @@ class RaApiHashLookup(
                 pace()
                 val req = Request.Builder().url(url).header("User-Agent", USER_AGENT).build()
                 val reply = execute(req)
+                // An answer, whatever it says, came over a connection. Said
+                // to the platform's side as well, and nothing it throws is
+                // let turn a request that was answered into one that failed.
+                unreachable = false
+                try { device.answered() } catch (t: Throwable) { }
                 when {
                     reply.ok -> return reply
                     // 403 belongs here: it is what being refused for too many
@@ -302,6 +371,18 @@ class RaApiHashLookup(
                 throw c
             } catch (e: Exception) {
                 lastFailure = describe(e)
+                // Asked here and nowhere else: after a request that was made
+                // and brought back no answer at all. With no connection the
+                // attempts left would fail as this one did, and the back-off
+                // before each is seven seconds of waiting for nothing. With
+                // one, this is a failure like any other and is tried again.
+                unreachable = try { device.offline() } catch (t: Throwable) { false }
+                if (unreachable) {
+                    // Redacted as below, and for the same reason.
+                    BridgeLog.e(TAG, "no internet connection: not asking again for " +
+                                     "${SafeUrl.redact(url)} ($lastFailure)")
+                    return null
+                }
             }
             // Not after the last attempt: nothing is left to wait for, and sleeping
             // there added eight seconds to every request that failed for good.

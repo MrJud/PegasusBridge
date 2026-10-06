@@ -91,7 +91,7 @@ class RomScanPipeline(
         /** Why, in one sentence, when [aborted]. Empty otherwise. */
         val reason: String = "",
         /**
-         * Which of the two aborts it was, when [aborted]. Null otherwise.
+         * Which of the three aborts it was, when [aborted]. Null otherwise.
          *
          * For a caller that has to tell a person what to do next. [reason] cannot
          * serve: it is a sentence for the log, with this run's counts in it, and
@@ -148,10 +148,12 @@ class RomScanPipeline(
         val ambiguousArchives: List<Pair<String, String>> = emptyList()
     )
 
-    /** Why a scan stopped itself. What a person can do about it differs between the two. */
+    /** Why a scan stopped itself. What a person can do about it differs from one to the next. */
     enum class AbortCause {
         /** The source refused the credentials. Nothing changes until the key does. */
         KEY_REFUSED,
+        /** A request failed and the device says it has no connection. Nothing changes until it has one. */
+        OFFLINE,
         /** [MAX_CONSECUTIVE_FAILURES] lookups in a row got no answer. Waiting may be enough. */
         SOURCE_DOWN
     }
@@ -397,6 +399,25 @@ class RomScanPipeline(
                     if (lookup.authRejected) {
                         throw ScanAborted("RetroAchievements refused the API key " +
                                           "($processed of $total processed)", AbortCause.KEY_REFUSED)
+                    }
+
+                    // No connection: the lookup has given up on a request because
+                    // the device says so, and the rest of the library would go the
+                    // same way. Before the count of failures is looked at, so that
+                    // a scan that has both is told what it can act on: this used to
+                    // end eight lookups and half a minute later as a source that
+                    // "stopped answering", with the advice to wait.
+                    //
+                    // Looked at only on a result whose lookup failed. The lookup
+                    // says it has no connection before its result is in the queue,
+                    // and files that need no lookup go past in their thousands
+                    // meanwhile: stopped on one of those, the scan would end with
+                    // no failed lookup in its counts and the file that had failed
+                    // in no ledger, since what is still queued at an abort is
+                    // dropped.
+                    if (r.failed && lookup.offline) {
+                        throw ScanAborted("no internet connection " +
+                                          "($processed of $total processed)", AbortCause.OFFLINE)
                     }
 
                     // Once RetroAchievements has stopped answering there is nothing to

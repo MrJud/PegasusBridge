@@ -109,8 +109,8 @@ object ScanJobRecord {
 
     /**
      * What to tell the person whose scan stopped itself, which is what they
-     * can do about it and differs between the two causes. [identified] is how
-     * many matches the scan had written by then.
+     * can do about it and differs from one cause to the next. [identified] is
+     * how many matches the scan had written by then.
      *
      * [raUser] is whose key was refused, and the sentence says so when there
      * is somebody to name. The Android service never starts a scan without a
@@ -128,6 +128,12 @@ object ScanJobRecord {
             "($identified identified). Nothing was recorded as missing. " +
             "Copy the Web API key from your RetroAchievements settings into credentials.json " +
             "and scan again."
+        // The cause first and what to do last: the theme shows an error on one
+        // line and cuts a long one in the middle.
+        RomScanPipeline.AbortCause.OFFLINE ->
+            "No internet connection: stopped after $processed of $total files " +
+            "($identified identified). Nothing was recorded as missing. " +
+            "Connect and scan again — it will resume where it left off."
         RomScanPipeline.AbortCause.SOURCE_DOWN ->
             "RetroAchievements stopped responding after $processed of $total files " +
             "($identified identified). Nothing was recorded as missing. " +

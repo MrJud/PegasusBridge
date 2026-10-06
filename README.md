@@ -170,6 +170,9 @@ is paced rather than parallelised as hard as the network allows:
   not exist* and no later scan ever asks again;
 - a rejection is retried, and after **8 consecutive failures** the scan stops with
   a message instead of grinding through the rest of the library;
+- a request that fails on a device that knows it has **no internet connection** is
+  not retried at all: the scan stops at that first failure and says so, where it
+  used to spend half a minute on retries and then blame the source;
 - results are cached locally and rescans are incremental, so a second scan of an
   unchanged library makes no network calls at all.
 
@@ -474,8 +477,11 @@ Android `hasher/` module is what only Android has:
   with its Cancel, the thermal back-off, and the writing of the job's record
   and marker;
 - `NativeHasher` — the JNI entry into the rcheevos library built for the device;
+- `DeviceNetwork` — what Android's `ConnectivityManager` says of the
+  connection, asked when a lookup's request has failed;
 - `ScanCollaborators` and `RomScanExtensions` — where the service gets its
-  hasher, its lookup and each collection's extensions.
+  hasher, its lookup, that reading of the connection and each collection's
+  extensions.
 
 So a change under `android-shared` needs both checks, and CI runs only the
 first:

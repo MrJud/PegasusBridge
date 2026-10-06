@@ -17,6 +17,8 @@ import org.json.JSONObject
 import java.io.File
 import java.net.InetSocketAddress
 import java.nio.file.Files
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
 import kotlin.test.AfterTest
 import kotlin.test.BeforeTest
@@ -53,6 +55,7 @@ class ScanAbortTest {
     @AfterTest fun tearDown() {
         dataRoot.deleteRecursively(); romRoot.deleteRecursively()
         BridgeLog.current = StderrLog
+        heldPorts.forEach { it.close() }
     }
 
     private class ContentHasher : RomHasher {
@@ -307,6 +310,251 @@ class ScanAbortTest {
         } finally {
             server.stop(0)
         }
+    }
+
+    /**
+     * Answers [answersFirst] lookups and then finds the device without a
+     * connection, as [RaApiHashLookup] does when a request fails and the
+     * platform says so: null, and [offline] from then on. Its count of
+     * failures in a row is left at 0, so that nothing but [offline] can be
+     * what stops a scan.
+     *
+     * It runs ahead of the collector as the real one does, and says it is
+     * offline while the answers it gave before are still in the queue. The
+     * pipeline goes by that only at a result whose lookup failed, so those
+     * answers are taken in first and a test can count them.
+     */
+    private class Unplugged(private val answersFirst: Int = 0) : RaHashLookup {
+        private val seen = AtomicInteger()
+        @Volatile private var down = false
+        override suspend fun lookup(hash: String): GameMetadata? {
+            if (seen.incrementAndGet() <= answersFirst) {
+                val id = 1000 + (hash.substringAfter("hash-").toIntOrNull() ?: 0)
+                return GameMetadata(id, "Game $id", "NES", "/i.png", 10)
+            }
+            down = true
+            return null
+        }
+        override val offline: Boolean get() = down
+    }
+
+    private val heldPorts = ArrayList<java.net.Socket>()
+
+    /**
+     * A port with nothing behind it: every request to it is refused at once,
+     * and for real. Bound and never listened on, and held until the test is
+     * over. A port taken and given back is the next one the system hands out
+     * now and then, to a server of the test's own or to anything else on the
+     * machine, and the request would be answered.
+     */
+    private fun deadPort(): Int =
+        java.net.Socket().also { it.bind(InetSocketAddress("127.0.0.1", 0)); heldPorts += it }.localPort
+
+    /**
+     * Thirteen files on a device with no connection. The scan went on until
+     * eight lookups in a row had failed, each through its retries, and ended
+     * as a source that had stopped answering. It stops at the first result,
+     * which is the first lookup, and says what it was. One worker per stage,
+     * so that the first result is that lookup's and no other is collected.
+     *
+     * Everything an abort keeps is kept: the file is a retry in the ledger and
+     * not a miss, the ledger and the index are on disk, and the counts are of
+     * the one file seen.
+     */
+    @Test fun `a lookup that finds the device offline stops the scan at that first failure`(): Unit = runBlocking {
+        repeat(13) { rom("nes", "Game$it.nes", "hash-$it") }
+
+        val s = withTimeout(5_000) {
+            RomScanPipeline(paths, ContentHasher(), Unplugged(), throttleMs = { 0L },
+                            hashWorkers = 1, apiWorkers = 1)
+                .scan(listOf(romRoot.absolutePath))
+        }
+
+        assertTrue(s.aborted, "a scan with no connection ran to the end")
+        assertEquals(RomScanPipeline.AbortCause.OFFLINE, s.abortCause)
+        assertTrue(s.reason.startsWith("no internet connection"), s.reason)
+        assertEquals(13, s.total)
+        assertEquals(1, s.processed)
+        assertEquals(1, s.failedLookups)
+        assertEquals(s.processed, s.counted())
+        assertEquals(mapOf(ScanLedger.State.API_RETRY to 1), s.states)
+        assertEquals(mapOf("API_RETRY" to 1), statesOnDisk(), "the file was written off, or the ledger not saved")
+        assertEquals(0, JSONObject(paths.discoveryIndex.readText()).getInt("count"))
+    }
+
+    // The connection goes in the middle of a scan. The next lookup is the one
+    // that stops it, and not the eighth after it; the five matches made while
+    // there was a connection are on disk and in the index. One worker per
+    // stage, so that the results come in the order the lookups were made:
+    // five answers and then the failure, however far the lookup is ahead of
+    // the collector by then.
+    @Test fun `a connection lost in the middle of a scan stops it there and keeps what was matched`(): Unit = runBlocking {
+        repeat(20) { rom("nes", "Game$it.nes", "hash-$it") }
+
+        val s = withTimeout(5_000) {
+            RomScanPipeline(paths, ContentHasher(), Unplugged(answersFirst = 5), throttleMs = { 0L },
+                            hashWorkers = 1, apiWorkers = 1)
+                .scan(listOf(romRoot.absolutePath))
+        }
+
+        assertEquals(RomScanPipeline.AbortCause.OFFLINE, s.abortCause)
+        assertEquals(6, s.processed)
+        assertEquals(5, s.newEntries)
+        assertEquals(1, s.failedLookups)
+        assertEquals(s.processed, s.counted())
+        assertEquals(mapOf("MATCHED" to 5, "API_RETRY" to 1), statesOnDisk())
+        assertEquals(5, paths.metadata.listFiles { f -> !f.name.startsWith("_") }!!.size)
+        assertEquals(5, JSONObject(paths.discoveryIndex.readText()).getInt("count"))
+    }
+
+    // Both at once: eight failures in a row and a device that says it has no
+    // connection, which is what a lookup with no pacing can reach before the
+    // first result is collected. The scan is told the one a person can act on.
+    @Test fun `a scan with no connection is not told that the source stopped answering`(): Unit = runBlocking {
+        repeat(13) { rom("nes", "Game$it.nes", "hash-$it") }
+        val both = object : RaHashLookup {
+            override suspend fun lookup(hash: String): GameMetadata? = null
+            override val consecutiveFailures: Int get() = RomScanPipeline.MAX_CONSECUTIVE_FAILURES
+            override val offline: Boolean get() = true
+        }
+
+        val s = withTimeout(5_000) {
+            RomScanPipeline(paths, ContentHasher(), both, throttleMs = { 0L })
+                .scan(listOf(romRoot.absolutePath))
+        }
+
+        assertEquals(RomScanPipeline.AbortCause.OFFLINE, s.abortCause)
+    }
+
+    // And the other pair. With two requests at a time one can be answered
+    // with a 401 while the other fails for want of a connection, and the key
+    // is still the one to hear about: a connection that comes back does not
+    // mend it.
+    @Test fun `a scan whose key was refused is told so, with no connection as well`(): Unit = runBlocking {
+        repeat(13) { rom("nes", "Game$it.nes", "hash-$it") }
+        val both = object : RaHashLookup {
+            override suspend fun lookup(hash: String): GameMetadata? = null
+            override val authRejected: Boolean get() = true
+            override val offline: Boolean get() = true
+        }
+
+        val s = withTimeout(5_000) {
+            RomScanPipeline(paths, ContentHasher(), both, throttleMs = { 0L })
+                .scan(listOf(romRoot.absolutePath))
+        }
+
+        assertEquals(RomScanPipeline.AbortCause.KEY_REFUSED, s.abortCause)
+    }
+
+    /**
+     * A library that is mostly of no interest to RetroAchievements, with one
+     * new file in it. The lookup says it has no connection before its result
+     * is in the queue, and the files that need no lookup are going past the
+     * collector all the while. Stopped at one of those, the scan would end
+     * with no failed lookup in its counts and the new file in no ledger at
+     * all.
+     *
+     * Held open here so that it happens every time. The collector is kept at
+     * its first result until the lookup has said it is offline, and the
+     * lookup is kept from handing its failure back until that result has
+     * gone through. So one result at least, of a file that was never asked
+     * about, is collected while the lookup says there is no connection.
+     */
+    @Test fun `a scan with no connection stops at the lookup that failed and not at a file that needed none`(): Unit = runBlocking {
+        repeat(40) { rom("switch", "Game$it.nes", "content-$it") }
+        rom("nes", "New.nes", "hash-new")
+        val saidOffline = CountDownLatch(1)
+        val anotherCollected = CompletableDeferred<Unit>()
+        val lookup = object : RaHashLookup {
+            @Volatile private var down = false
+            override suspend fun lookup(hash: String): GameMetadata? {
+                down = true
+                saidOffline.countDown()
+                anotherCollected.await()
+                return null
+            }
+            override val offline: Boolean get() = down
+        }
+
+        // With forty-one files there is a report for each result.
+        val s = withTimeout(10_000) {
+            RomScanPipeline(paths, ContentHasher(), lookup, throttleMs = { 0L })
+                .scan(listOf(romRoot.absolutePath)) {
+                    assertTrue(saidOffline.await(5, TimeUnit.SECONDS), "the new file was never asked about")
+                    anotherCollected.complete(Unit)
+                }
+        }
+
+        assertEquals(RomScanPipeline.AbortCause.OFFLINE, s.abortCause)
+        assertEquals(1, s.failedLookups, "stopped at a file that needed no lookup, ${s.processed} of 41 in")
+        assertEquals(s.processed - 1, s.skippedPlatforms)
+        assertEquals(s.processed, s.counted())
+        assertEquals(1, statesOnDisk()["API_RETRY"], "the file whose lookup failed is not in the ledger: ${statesOnDisk()}")
+    }
+
+    /**
+     * The tablet's scan as it was run: thirteen files nobody has asked about,
+     * the real lookup with its two requests at a time, and no connection. A
+     * port with nothing behind it stands for the network that is not there,
+     * and the device says it has none. It took 31 seconds, through four
+     * attempts and seven seconds of back-off for each of eight lookups. No
+     * back-off is waited through now, and these are real seconds: the first
+     * result of a scan that waited would be seven of them away.
+     */
+    @Test fun `thirteen files with no connection are stopped at once and none is written off`(): Unit = runBlocking {
+        repeat(13) { rom("nes", "Game$it.nes", "hash-$it") }
+        val asked = AtomicInteger()
+        val lookup = RaApiHashLookup("someuser", "a-key", "http://127.0.0.1:${deadPort()}") {
+            asked.incrementAndGet(); true
+        }
+
+        val started = System.nanoTime()
+        val s = withTimeout(20_000) {
+            RomScanPipeline(paths, ContentHasher(), lookup, throttleMs = { 0L })
+                .scan(listOf(romRoot.absolutePath))
+        }
+        val tookMs = (System.nanoTime() - started) / 1_000_000
+
+        assertEquals(RomScanPipeline.AbortCause.OFFLINE, s.abortCause)
+        assertTrue(tookMs < 3_000, "the scan took $tookMs ms: a back-off was waited through")
+        // One request in flight for each worker and, paced a quarter of a second
+        // behind them, whatever a worker began before the abort reached it.
+        assertTrue(asked.get() in 1 until RomScanPipeline.MAX_CONSECUTIVE_FAILURES,
+                   "the device was asked ${asked.get()} times: the scan went on asking after the first failure")
+        assertTrue(s.processed in 1 until 13, "processed ${s.processed} of 13")
+        assertEquals(s.processed, s.failedLookups)
+        assertEquals(s.processed, s.counted())
+        assertEquals(mapOf("API_RETRY" to s.processed), statesOnDisk())
+    }
+
+    /**
+     * A library scanned before, scanned again on a plane. Nothing needs
+     * asking, so no request is made, none fails, and the device is never
+     * asked what it thinks of its connection: the scan ends done, every file
+     * found cached. What a device says explains a request that failed, and
+     * here there is none to explain.
+     */
+    @Test fun `a library that needs no lookup is scanned to the end with no connection`(): Unit = runBlocking {
+        repeat(13) { rom("nes", "Game$it.nes", "hash-$it") }
+        val first = RomScanPipeline(paths, ContentHasher(), Unplugged(answersFirst = 13), throttleMs = { 0L })
+            .scan(listOf(romRoot.absolutePath))
+        assertEquals(13, first.newEntries)
+
+        val asked = AtomicInteger()
+        val lookup = RaApiHashLookup("someuser", "a-key", "http://127.0.0.1:${deadPort()}") {
+            asked.incrementAndGet(); true
+        }
+        val s = withTimeout(5_000) {
+            RomScanPipeline(paths, ContentHasher(), lookup, throttleMs = { 0L })
+                .scan(listOf(romRoot.absolutePath))
+        }
+
+        assertFalse(s.aborted, "a scan that had nothing to ask was stopped: ${s.reason}")
+        assertNull(s.abortCause)
+        assertEquals(13, s.processed)
+        assertEquals(13, s.cachedHits)
+        assertEquals(0, asked.get(), "the device was asked about its connection with no request failed")
+        assertFalse(lookup.offline)
     }
 
     /**

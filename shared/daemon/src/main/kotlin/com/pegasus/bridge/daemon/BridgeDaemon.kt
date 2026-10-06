@@ -5,7 +5,9 @@ import com.pegasus.bridge.core.BridgePaths
 import com.pegasus.bridge.core.Config
 import com.pegasus.bridge.core.SchemaVersion
 import com.pegasus.bridge.hasher.ArchiveAwareHasher
+import com.pegasus.bridge.hasher.DeviceConnection
 import com.pegasus.bridge.hasher.NativeRomHasher
+import com.pegasus.bridge.hasher.RETROACHIEVEMENTS_URL
 import com.pegasus.bridge.hasher.RaApiHashLookup
 import com.pegasus.bridge.hasher.RomHasher
 import com.pegasus.bridge.hasher.RomScanPipeline
@@ -48,7 +50,22 @@ class BridgeDaemon(
      * [hashWorkers] left out where the pipeline is built, every test there was
      * still passed.
      */
-    private val loadHasher: () -> RomHasher? = { nativeHasher() }
+    private val loadHasher: () -> RomHasher? = { nativeHasher() },
+    /**
+     * Whether this machine is certain it has no connection, which a scan's
+     * lookup asks when a request of its own has failed ([HostNetwork]).
+     *
+     * A parameter, with [raBaseUrl], for the reason [loadHasher] is one: so
+     * that a test can see what a scan is given where the pipeline is built.
+     * The two together let it run a scan whose requests fail at once, against
+     * a port with nothing behind it, on a machine it can call offline.
+     *
+     * That test gives its own, so what it holds is that the lookup is handed
+     * the check. That the check is [HostNetwork]'s when none is given is not
+     * under any test: one would have to take this machine's network away.
+     */
+    private val deviceOffline: () -> Boolean = { HostNetwork.offline() },
+    private val raBaseUrl: String = RETROACHIEVEMENTS_URL
 ) {
 
     /**
@@ -87,7 +104,8 @@ class BridgeDaemon(
                 RomScanPipeline(
                     paths,
                     ArchiveAwareHasher(it, File(dataRoot, "tmp")),
-                    RaApiHashLookup(ra?.user.orEmpty(), ra?.apiKey.orEmpty()),
+                    RaApiHashLookup(ra?.user.orEmpty(), ra?.apiKey.orEmpty(), raBaseUrl,
+                                    DeviceConnection(deviceOffline)),
                     hashWorkers = hashWorkers,
                     // A collection states which extensions it contains, and the
                     // scanner's built-in list is only a default. They disagree

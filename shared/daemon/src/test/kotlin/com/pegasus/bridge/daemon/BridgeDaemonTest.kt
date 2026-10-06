@@ -263,6 +263,65 @@ class BridgeDaemonTest {
         assertEquals(1, hashedAtOnce(0))
     }
 
+    /**
+     * The scan a daemon runs on a machine with no connection, over HTTP and
+     * with the lookup the daemon builds itself. No request leaves the machine:
+     * RetroAchievements is a port with nothing behind it, which a request
+     * fails on at once, and the machine is one the test says is offline. The
+     * hasher gives each file its own text for a hash, so that there is
+     * something to ask about.
+     *
+     * What it holds is the line in start() where the lookup is built. With the
+     * check left out there, the lookup has nobody to ask, goes through its
+     * retries, and the job is still running long after this has given up.
+     */
+    @Test fun `a scan on a machine that says it is offline ends as an error that says so`() {
+        val root = Files.createTempDirectory("daemon-test-offline").toFile()
+        val roms = File(root, "roms/snes").apply { mkdirs() }
+        repeat(3) { File(roms, "Game $it.sfc").writeText("hash-$it") }
+        val textHasher = object : RomHasher {
+            override fun hash(path: String): HashResult =
+                File(path).readText().let { HashResult(it, 3, fileMd5 = "md5-$it", fileCrc32 = "crc-$it") }
+        }
+        // Bound and never listened on, and held to the end: a request to it
+        // is refused at once. A port taken and given back could be the one
+        // the daemon is handed a line further down, and the lookup would be
+        // answered by the daemon itself.
+        val nobody = java.net.Socket().apply { bind(java.net.InetSocketAddress("127.0.0.1", 0)) }
+        val asked = AtomicInteger()
+
+        val scanning = BridgeDaemon(File(root, "data"), loadHasher = { textHasher },
+                                    deviceOffline = { asked.incrementAndGet(); true },
+                                    raBaseUrl = "http://127.0.0.1:${nobody.localPort}")
+        try {
+            scanning.start()
+            fun at(p: String) = client.newCall(
+                Request.Builder().url("http://127.0.0.1:${scanning.boundPort}$p").build()).execute()
+
+            val started = at("/scan?roots=" + File(root, "roms").absolutePath)
+                .use { JSONObject(it.body!!.string()) }
+            assertEquals("started", started.optString("status"), "the daemon started no scan: $started")
+            val jobId = started.getString("jobId")
+            var job = JSONObject()
+            // Five seconds, which is less than one lookup's retries take.
+            for (attempt in 0 until 100) {
+                Thread.sleep(50)
+                job = at("/jobs/$jobId").use { JSONObject(it.body!!.string()) }
+                if (job.getString("status") != "running") break
+            }
+
+            assertEquals("error", job.getString("status"), "the scan did not stop: $job")
+            assertTrue(job.getString("error").startsWith("No internet connection: stopped after "),
+                       job.getString("error"))
+            assertTrue(asked.get() > 0, "the machine was never asked about its connection")
+            val result = job.getJSONObject("result")
+            assertTrue(result.getBoolean("aborted"))
+            assertEquals(result.getInt("processed"), result.getJSONObject("states").getInt("API_RETRY"))
+        } finally {
+            scanning.stop(); root.deleteRecursively(); nobody.close()
+        }
+    }
+
     // Scanning is the only feature that needs the native library; everything else
     // must keep working without it.
     @Test fun `the api serves even when no native hasher is present`() {

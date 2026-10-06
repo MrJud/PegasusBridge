@@ -14,10 +14,12 @@ import com.pegasus.bridge.hasher.HashResult
 import com.pegasus.bridge.hasher.RaHashLookup
 import com.pegasus.bridge.hasher.RomHasher
 import com.pegasus.bridge.hasher.RomScanPipeline
+import com.pegasus.bridge.hasher.ScanJobRecord
 import com.pegasus.bridge.hasher.ScanLedger
 import com.pegasus.bridge.ra.RaMatcher
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import org.json.JSONArray
@@ -42,7 +44,7 @@ import kotlin.test.assertTrue
  * the Android scan is moved onto the shared pipeline, so that the move can be
  * held to it. The theme is [ThemeScanReader], a port of its code.
  *
- * In three parts.
+ * In four parts.
  *
  * Android is replayed. HasherService cannot run in this build, so the files in
  * `theme-contract/android-before` are what it wrote when it was driven on a JVM
@@ -72,6 +74,12 @@ import kotlin.test.assertTrue
  * server, with a hasher and a lookup the test holds.
  *
  * The files are the pipeline's own, set against the two Android samples.
+ *
+ * The job record is ScanJobRecord's, which HasherService writes through. It is
+ * set against every replayed record, and then put in front of the theme with
+ * the real pipeline behind it: a scan run to its end, a library with nothing
+ * in it, an outage and a refused key, each kept the way a caller of the
+ * pipeline is to keep it.
  *
  * Everything is compared as parsed values and never as text. Android's org.json
  * escapes `/` and orders keys differently from the library these tests run on,
@@ -1001,5 +1009,450 @@ class ThemeContractTest {
         for (k in entries.keySet()) {
             assertEquals(ScanLedger.ALGORITHM_VERSION, entries.getJSONObject(k).getInt("algorithmVersion"), k)
         }
+    }
+
+    // ── The job record, built ───────────────────────────────────────────────
+
+    private val stamps = setOf("startedAt", "updatedAt")
+
+    /** The two counts the pipeline keeps apart and the service's own loop does not. */
+    private val failureCounts = setOf("hashFailed", "failedLookups")
+
+    private val sevenCounts = listOf("newEntries", "cachedHits", "skippedPlatforms", "unmatched",
+                                     "incompatible", "hashFailed", "failedLookups")
+
+    /**
+     * A record's fields with every number as the one kind. Which of Integer,
+     * BigDecimal and Double the parser hands back goes by how the number was
+     * spelt, and a progress of 1.0 is spelt `1`.
+     */
+    private fun fields(record: JSONObject): Map<String, Any> =
+        record.toMap().mapValues { (_, v) -> if (v is Number) v.toDouble() else v }
+
+    private fun replayed(name: String) = fields(JSONObject(fixture("$name.json")))
+
+    // What HasherService hands the builder for each record, with the values the
+    // scans behind the fixtures had reached. Everything but the two stamps is
+    // compared, and those are looked for under their own names.
+    @Test fun `the builder gives back every replayed android record, key for key and value for value`() {
+        fun counts(new: Int, cached: Int, skipped: Int, unmatched: Int, incompatible: Int) =
+            ScanJobRecord.Counts(new, cached, skipped, unmatched, incompatible)
+        val outage = ScanJobRecord.abortAdvice(RomScanPipeline.AbortCause.SOURCE_DOWN, "harness", 1, 600, 0)
+        val refusal = ScanJobRecord.abortAdvice(RomScanPipeline.AbortCause.KEY_REFUSED, "harness", 1, 30, 0)
+        val began = 1791233730L
+        val wrote = 1791233732L
+        val built = mapOf(
+            "pending-first" to ScanJobRecord.started("job1", began, wrote),
+            "pending-running" to
+                ScanJobRecord.running("job1", 10, 300, "g97c0.sfc", counts(10, 0, 0, 0, 0), began, wrote),
+            "pending-running-rescan" to
+                ScanJobRecord.running("job2", 10, 10, "game0.sfc", counts(0, 10, 0, 0, 0), began, wrote),
+            "pending-running-mixed" to
+                ScanJobRecord.running("job1", 11, 11, "unknown1.sfc", counts(5, 0, 3, 2, 1), began, wrote),
+            "pending-done" to ScanJobRecord.done("job1", counts(10, 0, 0, 0, 0), began, wrote),
+            "pending-done-incompatible" to ScanJobRecord.done("job1", counts(0, 0, 0, 0, 10), began, wrote),
+            "pending-done-rescan" to ScanJobRecord.done("job2", counts(0, 10, 0, 0, 0), began, wrote),
+            "pending-done-mixed" to ScanJobRecord.done("job1", counts(5, 0, 3, 2, 1), began, wrote),
+            "pending-done-mixed-rescan" to ScanJobRecord.done("job2", counts(0, 5, 3, 2, 1), began, wrote),
+            "pending-empty" to ScanJobRecord.noRoms("job1", counts(0, 0, 0, 0, 0), began, wrote),
+            "error-outage" to ScanJobRecord.error("job1", outage, began, wrote),
+            "error-key" to ScanJobRecord.error("job1", refusal, began, wrote),
+            "error-cancelled" to ScanJobRecord.error("job1", "Cancelled", began, wrote),
+            "error-no-credentials" to
+                ScanJobRecord.error("job1", "Missing RA credentials in credentials.json", began, wrote))
+
+        // Every record in the directory, so that one added there is not left out here.
+        val kept = File(javaClass.getResource("/theme-contract/android-before")!!.toURI()).list()!!
+            .filter { it.startsWith("pending-") || it.startsWith("error-") }
+            .map { it.removeSuffix(".json") }.toSet()
+        assertEquals(kept, built.keys)
+
+        for ((name, record) in built) {
+            // As a reader finds it, which is as text.
+            val written = JSONObject(record.toString())
+            assertEquals(replayed(name) - stamps, fields(written) - stamps, name)
+            assertEquals(began, written.getLong("startedAt"), name)
+            assertEquals(wrote, written.getLong("updatedAt"), name)
+
+            // And the theme makes of it what it makes of the one replayed.
+            val job = written.getString("jobId")
+            BridgePaths.writeAtomic(paths.pending(job), record.toString())
+            val ofBuilt = androidTheme(job).apply { readHasherProgress() }.view()
+            leave(name)
+            assertEquals(androidTheme(job).apply { readHasherProgress() }.view(), ofBuilt, name)
+        }
+    }
+
+    /** What a scan left in `pending`, each record as a reader found it, and what the pipeline returned. */
+    private class Recorded(val records: List<JSONObject>, val summary: RomScanPipeline.Summary)
+
+    /**
+     * Runs the real pipeline and keeps its job record as ScanJobRecord has a
+     * caller keep it: the first record before the walk, one for each report
+     * that is due, the last from the summary. [afterEach] runs when a record is
+     * in place, which is when a poll of the theme's can find it.
+     */
+    private suspend fun recordedScan(
+        job: String, h: RomHasher, l: RaHashLookup, afterEach: () -> Unit = {}
+    ): Recorded {
+        val startedAt = BridgePaths.epochSeconds()
+        val records = ArrayList<JSONObject>()
+        fun write(record: JSONObject) {
+            BridgePaths.writeAtomic(paths.pending(job), record.toString())
+            records += JSONObject(paths.pending(job).readText())
+            afterEach()
+        }
+        write(ScanJobRecord.started(job, startedAt))
+        var published = 0
+        val summary = pipeline(h, l).scan(listOf(romRoot.absolutePath)) { p ->
+            if (ScanJobRecord.due(p.processed, p.total, published)) {
+                published = p.processed
+                write(ScanJobRecord.running(job, p, startedAt))
+            }
+        }
+        write(ScanJobRecord.finished(job, summary, "harness", startedAt))
+        return Recorded(records, summary)
+    }
+
+    /** Never answers, and says how many times in a row: what the pipeline stops a scan for. */
+    private class SilentSource : RaHashLookup {
+        private val calls = AtomicInteger()
+        override suspend fun lookup(hash: String): GameMetadata? { calls.incrementAndGet(); return null }
+        override val consecutiveFailures: Int get() = calls.get()
+    }
+
+    // The library pending-done-mixed came from: five matches, three files of a
+    // platform that is not covered, two misses and a dump held under a virtual
+    // id. With the pipeline behind it the record ends on the same sentence and
+    // the same five counts, and the theme reads the same from it.
+    @Test fun `the theme follows a scan recorded through the builder to the sentence android ends on`(): Unit = runBlocking {
+        repeat(5) { rom("snes", "game$it.sfc", "hash-game$it") }
+        repeat(3) { rom("switch", "title$it.zip", "never read") }
+        repeat(2) { rom("snes", "unknown$it.sfc", "hash-unknown$it") }
+        rom("snes", "virtual0.sfc", "hash-virtual")
+        val hashes = ContentHasher()
+        val answers = MapLookup((0 until 5).associate {
+            "hash-game$it" to GameMetadata(1000 + it, "Game ${1000 + it}", "SNES/Super Famicom", "/Images/000001.png", 10)
+        } + ("hash-virtual" to GameMetadata(gameId = 1100001487)))
+
+        val theme = androidTheme()
+        val seen = ArrayList<View>()
+        val first = recordedScan("job1", hashes, answers) { theme.readHasherProgress(); seen += theme.view() }
+
+        // Eleven files: a record at the tenth result and one at the last.
+        assertEquals(4, first.records.size)
+        val (start, tenth, last, done) = first.records
+        assertEquals(androidRunningKeys, start.keySet())
+        for (r in listOf(tenth, last, done)) assertEquals(androidRunningKeys + failureCounts, r.keySet())
+        assertTrue(tenth.getString("message").startsWith("[10/11] "), tenth.getString("message"))
+        assertTrue(last.getString("message").startsWith("[11/11] "), last.getString("message"))
+
+        assertEquals(View("running", 0, 0, 0, "Scanning ROM folders…", 0, 0), seen[0])
+        assertEquals(View("running", 91, 10, 11, tenth.getString("message").removePrefix("[10/11] "),
+                          tenth.getInt("newEntries"), tenth.getInt("cachedHits")), seen[1])
+        assertEquals(View("running", 100, 11, 11, last.getString("message").removePrefix("[11/11] "), 5, 0), seen[2])
+        // "done" in the record does not end the scan for the theme. The marker does.
+        assertEquals(View("running", 100, 11, 11, androidMixedSentence, 5, 0), seen[3])
+        leaveMarker()
+        theme.readHasherProgress()
+        assertEquals(View("done", 100, 11, 11, androidMixedSentence, 5, 0), theme.view())
+        assertEquals("", theme.activeJobId)
+
+        // What the service's own loop left for this library, beside the two
+        // counts it does not keep, both at nothing here. Which file came last
+        // is up to the workers.
+        assertEquals(replayed("pending-first") - stamps, fields(start) - stamps)
+        assertEquals(replayed("pending-running-mixed") - stamps - "message",
+                     fields(last) - stamps - "message" - failureCounts)
+        assertEquals(replayed("pending-done-mixed") - stamps, fields(done) - stamps - failureCounts)
+        for (r in listOf(last, done)) for (k in failureCounts) assertEquals(0, r.getInt(k), k)
+
+        // The second scan reads no file. The matches are cached, and the three
+        // answers that were no stand in the ledger and are counted as what they
+        // were, where the service's own loop hashes and asks about the two
+        // misses again to count them.
+        val again = androidTheme("job2")
+        val hashed = hashes.calls.get()
+        val second = recordedScan("job2", hashes, answers) { again.readHasherProgress() }
+        assertEquals(hashed, hashes.calls.get())
+        assertEquals(replayed("pending-done-mixed-rescan") - stamps,
+                     fields(second.records.last()) - stamps - failureCounts)
+        leaveMarker("job2")
+        again.readHasherProgress()
+        assertEquals(View("done", 100, 11, 11, androidMixedRescanSentence, 0, 5), again.view())
+    }
+
+    @Test fun `a library with no rom in it is recorded with the sentence android has for it`(): Unit = runBlocking {
+        val theme = androidTheme()
+        val records = recordedScan("job1", ContentHasher(), MapLookup(catalogue)) { theme.readHasherProgress() }.records
+
+        assertEquals(2, records.size)
+        val last = records.last()
+        assertEquals(androidRunningKeys + failureCounts, last.keySet())
+        assertEquals(replayed("pending-empty") - stamps, fields(last) - stamps - failureCounts)
+        for (k in failureCounts) assertEquals(0, last.getInt(k), k)
+
+        assertEquals(View("running", 100, 0, 0, "No ROMs found", 0, 0), theme.view())
+        leaveMarker()
+        theme.readHasherProgress()
+        assertEquals(View("done", 100, 0, 0, "No ROMs found", 0, 0), theme.view())
+    }
+
+    // The pipeline returns from an outage as from any scan, with `aborted` set
+    // in its summary. The record must not say done: the theme goes by status
+    // alone, and would put up "Scan Complete" over a scan that stopped at its
+    // first results. 600 files as in error-outage.json, whose sentence this is
+    // but for the count, which is of the results collected when the scan stopped.
+    @Test fun `an outage is recorded as the error android writes, and the theme never reads it as done`(): Unit = runBlocking {
+        repeat(600) { rom("snes", "g$it.sfc", "hash-$it") }
+        val theme = androidTheme()
+        val statuses = ArrayList<String>()
+
+        val scan = withTimeout(5_000) {
+            recordedScan("job1", ContentHasher(), SilentSource()) { theme.readHasherProgress(); statuses += theme.status }
+        }
+
+        assertTrue(scan.summary.aborted)
+        assertTrue(scan.summary.processed < 600, "an abort must not have gone through the library")
+        val last = scan.records.last()
+        assertEquals(androidErrorKeys, last.keySet())
+        assertEquals("error", last.getString("status"))
+        val sentence = last.getString("error")
+        assertTrue(sentence.startsWith("RetroAchievements stopped responding after "), sentence)
+        assertEquals(JSONObject(fixture("error-outage.json")).getString("error")
+                         .replace("after 1 of 600 files", "after ${scan.summary.processed} of 600 files"),
+                     sentence)
+
+        // The service marks the job done after the error, as after anything.
+        leaveMarker()
+        theme.readHasherProgress()
+        statuses += theme.status
+        assertFalse("done" in statuses, "read as $statuses")
+        assertEquals("error", statuses.last())
+        assertEquals(sentence, theme.currentFile)
+        assertEquals(0, theme.percent)
+        assertEquals("", theme.activeJobId)
+    }
+
+    @Test fun `a refused key is recorded as the error android writes, naming whose key it was`(): Unit = runBlocking {
+        repeat(30) { rom("snes", "g$it.sfc", "hash-$it") }
+        val refusing = object : RaHashLookup {
+            @Volatile var refused = false
+            override suspend fun lookup(hash: String): GameMetadata? { refused = true; return null }
+            override val authRejected: Boolean get() = refused
+        }
+        val theme = androidTheme()
+        val statuses = ArrayList<String>()
+
+        val scan = withTimeout(5_000) {
+            recordedScan("job1", ContentHasher(), refusing) { theme.readHasherProgress(); statuses += theme.status }
+        }
+
+        assertEquals(RomScanPipeline.AbortCause.KEY_REFUSED, scan.summary.abortCause)
+        val last = scan.records.last()
+        assertEquals(androidErrorKeys, last.keySet())
+        val sentence = last.getString("error")
+        assertTrue(sentence.startsWith("RetroAchievements refused the API key for harness after "), sentence)
+        assertEquals(JSONObject(fixture("error-key.json")).getString("error")
+                         .replace("after 1 of 30 files", "after ${scan.summary.processed} of 30 files"),
+                     sentence)
+
+        leaveMarker()
+        theme.readHasherProgress()
+        statuses += theme.status
+        assertFalse("done" in statuses, "read as $statuses")
+        assertEquals("error", statuses.last())
+        assertEquals(sentence, theme.currentFile)
+    }
+
+    // Each number of the summary in its own place in the sentence, which the
+    // two scans above cannot show: they stop at once, with nothing identified.
+    // And an abort is an error whether or not the summary says which it was.
+    @Test fun `a summary that says aborted becomes an error record with the advice for its cause`() {
+        val summary = RomScanPipeline.Summary(
+            total = 40, processed = 9, newEntries = 2, cachedHits = 3, skippedPlatforms = 0, indexed = 5,
+            aborted = true, reason = "the lookup source stopped answering: 4 of 9 failed, 8 in a row",
+            failedLookups = 4)
+        val wait = "RetroAchievements stopped responding after 9 of 40 files (2 identified). " +
+            "Nothing was recorded as missing. " +
+            "Wait a few minutes and scan again — it will resume where it left off."
+        val copy = "RetroAchievements refused the API key for someone after 9 of 40 files (2 identified). " +
+            "Nothing was recorded as missing. " +
+            "Copy the Web API key from your RetroAchievements settings into credentials.json " +
+            "and scan again."
+        val advice = mapOf(
+            null to wait,
+            RomScanPipeline.AbortCause.SOURCE_DOWN to wait,
+            RomScanPipeline.AbortCause.KEY_REFUSED to copy)
+        for ((cause, sentence) in advice) {
+            val record = ScanJobRecord.finished("job1", summary.copy(abortCause = cause), "someone", 1791233730, 1791233732)
+            assertEquals(androidErrorKeys, record.keySet(), "$cause")
+            assertEquals("error", record.getString("status"), "$cause")
+            // The advice, and not the line the pipeline wrote for the log.
+            assertEquals(sentence, record.getString("error"), "$cause")
+            assertEquals(1791233730, record.getLong("startedAt"), "$cause")
+            assertEquals(1791233732, record.getLong("updatedAt"), "$cause")
+        }
+    }
+
+    // With no scan behind them, so that every number can be a different one,
+    // the two stamps included, and each is looked for in its own place.
+    @Test fun `a report and a summary of the pipeline's are recorded number for number`() {
+        val report = RomScanPipeline.Progress(
+            processed = 30, total = 120, currentFile = "Some Game (USA).sfc",
+            newEntries = 9, cachedHits = 8, skippedPlatforms = 6,
+            unmatched = 4, incompatible = 2, hashFailed = 1, failedLookups = 0)
+        assertEquals(
+            fields(JSONObject("""{"schemaVersion":1,"jobId":"job7","verb":"scan","status":"running",
+                "progress":0.25,"message":"[30/120] Some Game (USA).sfc",
+                "newEntries":9,"cachedHits":8,"skippedPlatforms":6,"unmatched":4,"incompatible":2,
+                "hashFailed":1,"failedLookups":0,"startedAt":1791233730,"updatedAt":1791233732}""")),
+            fields(JSONObject(ScanJobRecord.running("job7", report, 1791233730, 1791233732).toString())))
+        // Nothing out of nothing is no progress, and not a number JSON cannot hold.
+        assertEquals(0.0, ScanJobRecord.running("job7", RomScanPipeline.Progress(0, 0, "", 0, 0, 0), 1, 2)
+            .getDouble("progress"))
+
+        val summary = RomScanPipeline.Summary(
+            total = 120, processed = 120, newEntries = 40, cachedHits = 30, skippedPlatforms = 20, indexed = 70,
+            failedLookups = 1, unmatched = 15, incompatible = 9, hashFailed = 5)
+        assertEquals(
+            fields(JSONObject("""{"schemaVersion":1,"jobId":"job7","verb":"scan","status":"done",
+                "progress":1,"message":"Done — 40 new, 30 cached, 20 skipped, 15 not in the database, 9 dumps RetroAchievements does not support, 5 could not be hashed, 1 lookups got no answer",
+                "newEntries":40,"cachedHits":30,"skippedPlatforms":20,"unmatched":15,"incompatible":9,
+                "hashFailed":5,"failedLookups":1,"startedAt":1791233730,"updatedAt":1791233732}""")),
+            fields(JSONObject(ScanJobRecord.finished("job7", summary, "someone", 1791233730, 1791233732).toString())))
+
+        // What the pipeline returns when the walk found nothing.
+        val nothing = RomScanPipeline.Summary(0, 0, 0, 0, 0, indexed = 70)
+        assertEquals(
+            fields(JSONObject("""{"schemaVersion":1,"jobId":"job7","verb":"scan","status":"done",
+                "progress":1,"message":"No ROMs found",
+                "newEntries":0,"cachedHits":0,"skippedPlatforms":0,"unmatched":0,"incompatible":0,
+                "hashFailed":0,"failedLookups":0,"startedAt":1791233730,"updatedAt":1791233732}""")),
+            fields(JSONObject(ScanJobRecord.finished("job7", nothing, "someone", 1791233730, 1791233732).toString())))
+    }
+
+    // Every count a different number, so that one written under another's name
+    // shows wherever it lands: 12 files cached from the scan before, 9 new, 8
+    // of a platform that is not covered, 7 misses, 6 held under a virtual id,
+    // 5 the hasher gives nothing for and 4 whose lookup gets no answer.
+    @Test fun `the seven counts of a record add up to the results it says were collected`(): Unit = runBlocking {
+        val hashes = object : RomHasher {
+            override fun hash(path: String): HashResult? = File(path).readText().let { text ->
+                if (text.startsWith("unreadable")) null
+                else HashResult(text, 3, fileMd5 = "md5-$text", fileCrc32 = "crc-$text")
+            }
+        }
+        val answers = object : RaHashLookup {
+            override suspend fun lookup(hash: String): GameMetadata? = when (hash.substringBeforeLast('-')) {
+                "hash-match" -> (3000 + hash.substringAfterLast('-').toInt()).let { id ->
+                    GameMetadata(id, "Game $id", "SNES/Super Famicom", "/Images/000001.png", 10)
+                }
+                "hash-virtual" -> GameMetadata(gameId = 1100001487)
+                "hash-silent" -> null
+                else -> GameMetadata(gameId = 0)
+            }
+        }
+        repeat(12) { rom("snes", "kept$it.sfc", "hash-match-$it") }
+        assertEquals(12, recordedScan("job1", hashes, answers).summary.newEntries)
+
+        repeat(9) { rom("snes", "fresh$it.sfc", "hash-match-${100 + it}") }
+        repeat(8) { rom("switch", "title$it.zip", "never read") }
+        repeat(7) { rom("snes", "unknown$it.sfc", "hash-unknown-$it") }
+        repeat(6) { rom("snes", "virtual$it.sfc", "hash-virtual-$it") }
+        repeat(5) { rom("snes", "broken$it.sfc", "unreadable-$it") }
+        repeat(4) { rom("snes", "unanswered$it.sfc", "hash-silent-$it") }
+        val records = recordedScan("job2", hashes, answers).records
+
+        // 51 files: a record every ten results, and one for the last.
+        val running = records.filter { it.getString("message").startsWith("[") }
+        val collected = running.map { it.getString("message").substringAfter('[').substringBefore('/').toInt() }
+        assertEquals(listOf(10, 20, 30, 40, 50, 51), collected)
+        for ((r, n) in running.zip(collected)) {
+            assertEquals(androidRunningKeys + failureCounts, r.keySet())
+            assertEquals("running", r.getString("status"))
+            assertEquals(n, sevenCounts.sumOf { r.getInt(it) }, r.getString("message"))
+        }
+
+        val done = records.last()
+        val counts = mapOf("newEntries" to 9, "cachedHits" to 12, "skippedPlatforms" to 8, "unmatched" to 7,
+                           "incompatible" to 6, "hashFailed" to 5, "failedLookups" to 4)
+        for (r in listOf(running.last(), done)) assertEquals(counts, sevenCounts.associateWith { r.getInt(it) })
+        assertEquals("done", done.getString("status"))
+        assertEquals(androidRunningKeys + failureCounts, done.keySet())
+        assertEquals("Done — 9 new, 12 cached, 8 skipped, 7 not in the database, " +
+                     "6 dumps RetroAchievements does not support, 5 could not be hashed, " +
+                     "4 lookups got no answer", done.getString("message"))
+    }
+
+    // The two numbers are read from the start of the message and the name is
+    // whatever follows them, so a name with brackets of its own stays whole.
+    @Test fun `a file whose name begins with a bracket is shown under its whole name`(): Unit = runBlocking {
+        rom("snes", "[BIOS] Super Game Boy (World).sfc", "hash-alpha")
+        val theme = androidTheme()
+        val seen = ArrayList<View>()
+
+        val records = recordedScan("job1", ContentHasher(), MapLookup(catalogue)) {
+            theme.readHasherProgress(); seen += theme.view()
+        }.records
+
+        assertEquals("[1/1] [BIOS] Super Game Boy (World).sfc", records[1].getString("message"))
+        assertEquals(View("running", 100, 1, 1, "[BIOS] Super Game Boy (World).sfc", 1, 0), seen[1])
+    }
+
+    /** The results the pipeline reports, by its own rule: every fiftieth of the library, and the last. */
+    private fun reportedOf(total: Int): List<Int> {
+        val step = (total / 50).coerceAtLeast(1)
+        return (1..total).filter { it % step == 0 || it == total }
+    }
+
+    /** The ones of [reported] that a caller asking [ScanJobRecord.due] writes a record for. */
+    private fun writtenOf(total: Int, reported: List<Int> = reportedOf(total)): List<Int> {
+        var last = 0
+        return reported.filter { n -> ScanJobRecord.due(n, total, last).also { if (it) last = n } }
+    }
+
+    // What the next test rests on. Files of a platform that is not covered,
+    // which the pipeline reports like any other and neither reads nor asks about.
+    @Test fun `the pipeline reports every fiftieth of a library and its last result`(): Unit = runBlocking {
+        for (total in listOf(7, 120, 480)) {
+            val library = File(romRoot, "library-$total")
+            File(library, "switch").mkdirs()
+            repeat(total) { File(library, "switch/title$it.zip").writeText("never read") }
+            val reported = ArrayList<Int>()
+
+            pipeline(ContentHasher(), MapLookup(catalogue)).scan(listOf(library.absolutePath)) { reported += it.processed }
+
+            assertEquals(reportedOf(total), reported, "$total files")
+        }
+    }
+
+    // The service's own loop writes a record when the count of results is a
+    // multiple of max(total / 50, 10), and for the last. Asked about every
+    // result, the rule gives those and no others. The pipeline reports on
+    // multiples of max(total / 50, 1): up to 99 files that is every result and
+    // from 500 it is the service's step, so the records fall where they did.
+    // In between the two steps differ, and a record is written at the first
+    // report ten results or more after the one before: 10 to 18 apart.
+    @Test fun `a record is written where android writes one, or within twice its step`() {
+        for (total in 1..2000) {
+            val step = (total / 50).coerceAtLeast(10)
+            val android = (1..total).filter { it % step == 0 || it == total }
+            assertEquals(android, writtenOf(total, (1..total).toList()), "$total files, asked about every result")
+
+            val written = writtenOf(total)
+            assertEquals(total, written.last(), "$total files: the last result")
+
+            val gaps = (listOf(0) + written).zipWithNext { a, b -> b - a }
+            assertTrue(gaps.max() <= 2 * step, "$total files: ${gaps.max()} results with no record")
+            assertTrue(gaps.dropLast(1).all { it >= step }, "$total files: records closer than $step")
+
+            if (total < 100 || total >= 500) assertEquals(android, written, "$total files")
+        }
+
+        // 480 files: reported every 9, written every 18, and the last. Keeping
+        // the reports that are multiples of 10 would have kept one in ten of
+        // them, a record every 90 results.
+        assertEquals((18..468 step 18) + 480, writtenOf(480))
     }
 }

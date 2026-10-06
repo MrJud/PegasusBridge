@@ -109,7 +109,7 @@ class HasherService : Service() {
         val raUser   = creds.ra?.user   ?: ""
         val raApiKey = creds.ra?.apiKey ?: ""
         if (raUser.isEmpty() || raApiKey.isEmpty()) {
-            writeError(jobId, "scan", "Missing RA credentials in credentials.json")
+            writeError(jobId, "Missing RA credentials in credentials.json")
             endWithoutScan(startId); return START_NOT_STICKY
         }
 
@@ -122,11 +122,11 @@ class HasherService : Service() {
                 runScan(roots, jobId, raUser, raApiKey)
             } catch (e: CancellationException) {
                 Log.i(TAG, "Scan cancelled")
-                writeError(jobId, "scan", "Cancelled")
+                writeError(jobId, "Cancelled")
             } catch (e: ScanAborted) {
                 // Logged where it was decided, with the counts. The message is
                 // the advice the theme shows, so it goes out as it is.
-                writeError(jobId, "scan", e.message ?: "Scan aborted")
+                writeError(jobId, e.message ?: "Scan aborted")
             } catch (t: Throwable) {
                 // Throwable, not Exception. An Error — an UnsatisfiedLinkError
                 // from the native hasher, or one a lookup's owner hands every file
@@ -136,7 +136,7 @@ class HasherService : Service() {
                 // failure; rethrown after the error is written, it would still
                 // kill the app.
                 Log.e(TAG, "Scan failed", t)
-                writeError(jobId, "scan", t.message ?: t.javaClass.simpleName)
+                writeError(jobId, t.message ?: t.javaClass.simpleName)
             } finally {
                 // Under the lock a start request takes. Outside it, one arriving
                 // after isRunning went false began a scan that the rest of this
@@ -253,12 +253,15 @@ class HasherService : Service() {
 
     private suspend fun runScan(roots: List<String>, jobId: String, raUser: String, raApiKey: String) = coroutineScope {
         Paths.ensureAll()
-        writePending(jobId, "scan", "running", 0.0, "Scanning ROM folders…")
+        writePending(jobId) { ScanJobRecord.started(jobId, it, it) }
 
         val romFiles = RomScanner.scan(roots, RomScanExtensions.forScan)
         val total    = romFiles.size
         Log.i(TAG, "Found $total ROM files")
-        if (total == 0) { writePending(jobId, "scan", "done", 1.0, "No ROMs found"); return@coroutineScope }
+        if (total == 0) {
+            writePending(jobId) { ScanJobRecord.noRoms(jobId, ScanJobRecord.Counts(0, 0, 0, 0, 0), it, it) }
+            return@coroutineScope
+        }
 
         val apiClient   = RAApiClient(raUser, raApiKey)
         val hashChannel = Channel<HashJob>(capacity = 32)
@@ -508,37 +511,28 @@ class HasherService : Service() {
                 withContext(NonCancellable) { stages.joinAll() }
                 writeDiscoveryIndex()
                 ledger.save(Paths::writeAtomic)
-                throw ScanAborted(
-                    if (keyRefused)
-                        "RetroAchievements refused the API key for $raUser after $processed of $total files " +
-                        "($newEntries identified). Nothing was recorded as missing. " +
-                        "Copy the Web API key from your RetroAchievements settings into credentials.json " +
-                        "and scan again."
-                    else
-                        "RetroAchievements stopped responding after $processed of $total files " +
-                        "($newEntries identified). Nothing was recorded as missing. " +
-                        "Wait a few minutes and scan again — it will resume where it left off.")
+                throw ScanAborted(ScanJobRecord.abortAdvice(
+                    if (keyRefused) RomScanPipeline.AbortCause.KEY_REFUSED
+                    else RomScanPipeline.AbortCause.SOURCE_DOWN,
+                    raUser, processed, total, newEntries))
             }
             if (processed % writeStep == 0 || processed == total) {
-                val pct = processed.toDouble() / total
-                writePending(jobId, "scan", "running", pct,
-                    "[$processed/$total] ${r.job.file.name}",
-                    newEntries, cachedHits, skippedPlat, unmatched, incompatible)
+                writePending(jobId) {
+                    ScanJobRecord.running(jobId, processed, total, r.job.file.name,
+                        ScanJobRecord.Counts(newEntries, cachedHits, skippedPlat, unmatched, incompatible),
+                        it, it)
+                }
                 updateNotification("[$processed/$total] ${r.job.file.name}", processed, total)
             }
         }
 
         writeDiscoveryIndex()
         ledger.save(Paths::writeAtomic)
-        // The dumps RA does not support get a clause of their own, and only when
-        // there are any. Left out, they would vanish from the summary altogether —
-        // a library of them would finish "0 new, 0 cached, 0 skipped, 0 not in the
-        // database".
-        writePending(jobId, "scan", "done", 1.0,
-            "Done — $newEntries new, $cachedHits cached, $skippedPlat skipped, " +
-            "$unmatched not in the database" +
-            (if (incompatible > 0) ", $incompatible dumps RetroAchievements does not support" else ""),
-            newEntries, cachedHits, skippedPlat, unmatched, incompatible)
+        writePending(jobId) {
+            ScanJobRecord.done(jobId,
+                ScanJobRecord.Counts(newEntries, cachedHits, skippedPlat, unmatched, incompatible),
+                it, it)
+        }
         Log.i(TAG, "Scan complete: $processed processed, $newEntries new, $cachedHits cached, " +
                    "$skippedPlat skipped, $unmatched unmatched, $incompatible incompatible, " +
                    "$failedLookups lookups failed")
@@ -640,46 +634,24 @@ class HasherService : Service() {
         tmp.renameTo(out)
     }
 
-    private fun writePending(
-        jobId: String, verb: String, status: String, progress: Double, message: String,
-        newEntries: Int = 0, cachedHits: Int = 0, skippedPlatforms: Int = 0,
-        /** Looked up and genuinely not in RetroAchievements — an answer, not a failure. */
-        unmatched: Int = 0,
-        /** Held by RetroAchievements only as a virtual id — incompatible, untested, needs a patch. */
-        incompatible: Int = 0
-    ) {
-        val now = System.currentTimeMillis() / 1000L
-        val j = JSONObject()
-            .put("schemaVersion", SchemaVersion.CURRENT)
-            .put("jobId",     jobId)
-            .put("verb",      verb)
-            .put("status",    status)
-            .put("progress",  progress)
-            .put("message",   message)
-            .put("newEntries",        newEntries)
-            .put("cachedHits",        cachedHits)
-            .put("skippedPlatforms",  skippedPlatforms)
-            .put("unmatched",         unmatched)
-            .put("incompatible",      incompatible)
-            .put("startedAt", now)
-            .put("updatedAt", now)
-        val f = Paths.pending(jobId)
-        val tmp = File(f.parent, "${f.name}.tmp")
-        tmp.writeText(j.toString())
-        tmp.renameTo(f)
-    }
+    // What the record says is ScanJobRecord's; this is where it goes. [record]
+    // is handed the time of the write, for both stamps: the loop above never
+    // kept when its job began, and has always written the time of the write
+    // as startedAt too.
+    //
+    // Through Paths.writeAtomic, as the error record already went. A record of
+    // a scan under way had a temp file and a rename of its own, whose result
+    // nobody looked at: a rename that failed left the record before it in
+    // place and said nothing. The record is written directly when that happens.
+    private fun writePending(jobId: String, record: (now: Long) -> JSONObject) =
+        Paths.writeAtomic(Paths.pending(jobId), record(System.currentTimeMillis() / 1000L).toString())
 
-    // Through a temp file, as writePending does, and done is marked only once
-    // the file is whole. writeText truncates first: a theme poll landing in that
-    // gap read an empty file, took it for a finished job, and never showed the
-    // abort, the cancel or the error this is the only record of.
-    private fun writeError(jobId: String, verb: String, error: String) {
-        val now = System.currentTimeMillis() / 1000L
-        Paths.writeAtomic(Paths.pending(jobId), JSONObject()
-            .put("schemaVersion", SchemaVersion.CURRENT)
-            .put("jobId",     jobId).put("verb", verb)
-            .put("status",    "error").put("error", error)
-            .put("startedAt", now).put("updatedAt", now).toString())
+    // Done is marked only once the record is whole. Written in place it was
+    // truncated first: a theme poll landing in that gap read an empty file,
+    // took it for a finished job, and never showed the abort, the cancel or
+    // the error this is the only record of.
+    private fun writeError(jobId: String, error: String) {
+        writePending(jobId) { ScanJobRecord.error(jobId, error, it, it) }
         Paths.markDone(jobId)
     }
 

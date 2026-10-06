@@ -457,6 +457,38 @@ cd ..
 Create one yourself and put the details in `local.properties` (git-ignored) —
 see the comment at the top of `app/build.gradle.kts`.
 
+### One copy of what both shells run
+
+These are two Gradle builds, and neither includes the other. Code that both
+shells run lives in `shared/<module>/src/android-shared/kotlin`: the `shared/`
+build compiles and tests it, and the Android module of the same name adds the
+directory to its own sources (`:media` takes the one of `scrapers`).
+
+The ROM scan is such code. `RomScanPipeline`, the archive handling, the
+RetroAchievements lookup, the ledger and the job record are in
+`shared/hasher/src/android-shared`, and the tests in `shared/hasher` and
+`shared/daemon` are the tests of what the tablet runs. What stays in the
+Android `hasher/` module is what only Android has:
+
+- `HasherService` — the foreground service, the wake lock, the notification
+  with its Cancel, the thermal back-off, and the writing of the job's record
+  and marker;
+- `NativeHasher` — the JNI entry into the rcheevos library built for the device;
+- `ScanCollaborators` and `RomScanExtensions` — where the service gets its
+  hasher, its lookup and each collection's extensions.
+
+So a change under `android-shared` needs both checks, and CI runs only the
+first:
+
+```bash
+cd shared && ./gradlew test && ./tests/check_test_counts.py   # the shared tests
+cd .. && ./gradlew :app:assembleDebug                          # compiles the same files against Android
+```
+
+The second needs the SDK: copy `local.properties.template` to
+`local.properties` and set `sdk.dir`, or export `ANDROID_HOME`. It is the only
+thing that notices a call the Android class library does not have.
+
 ---
 
 ## Troubleshooting

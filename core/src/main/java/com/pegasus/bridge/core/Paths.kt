@@ -89,8 +89,10 @@ object Paths {
      * The same contract as `BridgePaths.writeAtomic`, which this build compiles
      * too; this copy stays because it is the one the Android services call.
      * MediaExporter and LaunchPreferences take the function as a parameter
-     * rather than importing either — which is what lets one copy of them serve
-     * both shells.
+     * rather than importing either. That was what let one copy of them serve
+     * both shells while BridgePaths was the desktop's alone. It is a leftover
+     * now: the scan pipeline, which both shells compile as well, calls
+     * `BridgePaths.writeAtomic` by name.
      */
     fun writeAtomic(target: File, content: String) {
         target.parentFile?.mkdirs()

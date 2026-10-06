@@ -24,6 +24,8 @@
       "type": "object",
       "properties": {
         "hash":         { "type": "string" },
+        "fileMd5":      { "type": "string" },
+        "fileCrc32":    { "type": "string" },
         "fileSize":     { "type": "integer" },
         "lastModified": { "type": "integer" }
       }

@@ -443,9 +443,14 @@ class RomScanPipeline(
             throw t
         } finally {
             // Cancel, not close: closing refuses new sends but leaves one already
-            // blocked on a full buffer where it is. Cancelling wakes it. Redundant
-            // after a ScanAborted — the scope has cancelled its children by then —
-            // and not redundant when the *caller* cancels us.
+            // blocked on a full buffer where it is, and cancelling wakes it. By
+            // the time this runs there is none to wake, whichever way the scan
+            // ended. The scope above does not come back before its children have
+            // finished, after an abort, after a cancel by the caller and after a
+            // failure alike, which is what the catch above counts on. Taken
+            // out, the tests still passed and a stopped scan took no longer. It
+            // stays as a second line: were a sender ever started outside the
+            // scope, this is what would release it.
             fileQueue.cancel(); hashQueue.cancel(); resultQueue.cancel()
         }
 

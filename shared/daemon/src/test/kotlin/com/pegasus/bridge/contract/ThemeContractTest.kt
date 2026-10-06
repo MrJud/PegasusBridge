@@ -38,10 +38,10 @@ import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 /**
- * What a scan leaves for its two readers, as it is today on both shells: the job
- * record and the marker the ReStory theme polls, and the metadata files and the
- * index the theme lists and [RaMatcher] resolves a ROM against. Written before
- * the Android scan is moved onto the shared pipeline, so that the move can be
+ * What a scan leaves for its two readers on both shells: the job record and the
+ * marker the ReStory theme polls, and the metadata files and the index the
+ * theme lists and [RaMatcher] resolves a ROM against. Written before the
+ * Android scan was moved onto the shared pipeline, so that the move could be
  * held to it. The theme is [ThemeScanReader], a port of its code.
  *
  * In four parts.
@@ -512,7 +512,13 @@ class ThemeContractTest {
 
     private val http = ThemeHttp(::httpGet)
 
-    /** Asks for a scan of the ROM root the way the hub does, under an id of the shape it makes up. */
+    /**
+     * Asks for a scan of the ROM root the way the hub does. The hub names the
+     * job itself, `pdl_<ms>_<n>`. The ids here are `scan_<ms>_<n>`, which is
+     * what BridgeApi.js makes up for a caller that names none and what the
+     * daemon makes up for a request without one. Nothing reads the prefix: the
+     * daemon takes any id of letters, digits, `_` and `-`.
+     */
     private fun desktopTheme(jobId: String) =
         ThemeScanReader(http).apply { launched(http.requestScan(romRoot.absolutePath, jobId)) }
 

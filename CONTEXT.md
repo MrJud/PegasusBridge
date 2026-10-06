@@ -12,10 +12,12 @@ The QML theme (ReStory) was reduced to a **renderer**: it fires verbs, polls for
 PegasusBridge/
   app/        — DataLayerApp + DataLayerRouter (manifest entry point, URI dispatch)
   core/       — Paths, Config, schema constants (shared by all modules)
-  hasher/     — ROM scanning + RA hash matching → metadata/*.json + metadata/_index.json
+  hasher/     — HasherService and the native hasher: the Android shell around the ROM scan
   media/      — MediaService + ScrapeSourceDispatcher (SGDB / IGN / Steam / IGDB clients)
   ra/         — RA profile / achievements / game-list refresh
   video/      — Trailer search/play/download
+  shared/     — the desktop daemon, and under <module>/src/android-shared the code both
+                shells compile, the ROM scan included (see §3)
   app-debug.apk
 ```
 
@@ -31,7 +33,7 @@ The theme fires Android Intents with `pegasus-data://<verb>?…` URIs. `DataLaye
 
 | Verb                   | Service           | Purpose                                         |
 | ---------------------- | ----------------- | ----------------------------------------------- |
-| `scan`                 | HasherService     | Scan ROM tree → write `metadata/*.json` + `_index.json` |
+| `scan`                 | HasherService     | Scan ROM tree → write `metadata/*.json` + `_index.json` (the shared scan pipeline, §3) |
 | `scrape-media`         | MediaService      | Aggregate cover/screenshots/video for a game    |
 | `scrape-source`        | MediaService      | Per-source op (SGDB/IGN/Steam/IGDB, see §4)     |
 | `refresh-ra-profile`   | RaService         | RA user summary                                  |
@@ -51,15 +53,19 @@ Each Intent carries a theme-generated `jobId` (e.g. `gdb_scrape_<ts>_<rand>`) us
 
 ```
 config/credentials.json     — user-supplied API keys (steamGridDb, igdb, ra, rawg)
-pending/{jobId}.json        — request payload (written by service on accept; for scan jobs
-                               includes newEntries, cachedHits, skippedPlatforms counters)
-done/{jobId}.done           — empty marker file: appears when result is ready
+pending/{jobId}.json        — the job's record while it runs. For a scan also how it ended:
+                               status, progress, message and seven counters, or an error
+                               (see §3). A scan's record stays there after the scan
+done/{jobId}.done           — marker file: appears when the job is over. Never empty —
+                               Qt reads an empty file over file:// as a missing one
 scrape/{jobId}.json         — scrape-media / scrape-source result
 search-ra/{jobId}.json      — search-ra-games result
 search/{jobId}.json         — search-video result
 download/{jobId}.json       — download-video result
-metadata/{gameId}.json      — per-game RA metadata (HasherService output)
-metadata/_index.json        — discovery index: { games[], byKey{} } (HasherService output)
+metadata/{gameId}.json      — per-game RA metadata (scan output)
+metadata/_index.json        — discovery index: { games[], byKey{} } (scan output)
+cache/scan-ledger.json      — what a scan settled about each file, misses included, so the
+                               next one does not ask again (not read by themes)
 profile/{user}.json         — RA profile cache
 completion/{user}.json      — RA completion cache
 media/{gameId}.json         — aggregated media cache (scrape-media output)
@@ -67,20 +73,75 @@ media/{gameId}.json         — aggregated media cache (scrape-media output)
 
 **Job lifecycle**:
 1. Theme generates `jobId`, fires `pegasus-data://verb?...&jobId=…`.
-2. Service writes pending/{jobId}.json (optional, for visibility).
+2. Service writes pending/{jobId}.json (optional, for visibility — except for a scan,
+   which writes it before it walks the directories: the theme takes a scan with no
+   record after a few polls for one that has finished).
 3. Service does work, writes result atomically (temp file + rename).
-4. Service touches `done/{jobId}.done` last → theme polling wakes up.
-5. Theme reads result, deletes done marker.
+4. Service writes `done/{jobId}.done` last, with content → theme polling wakes up.
+5. Theme reads result. Nothing deletes the marker.
 
 Atomic writes use `tmp.renameTo(out)` to avoid partial-read races.
 
 ---
 
-## 3. HasherService — discovery index
+## 3. The ROM scan — job record, metadata, discovery index
 
-`HasherService` scans the configured ROM tree, computes RA-compatible hashes (with iNES/SMC/N64 header stripping), matches against the RA hash catalog, and writes one `metadata/{gameId}.json` per match.
+The scan is `RomScanPipeline`, in `shared/hasher/src/android-shared/`. There is
+one copy: the Android `:hasher` module and the desktop daemon both compile it,
+and the tests of the `shared/` build are its tests. It walks the ROM tree,
+computes RA-compatible hashes (with iNES/SMC/N64 header stripping), asks
+RetroAchievements about each and writes one `metadata/{gameId}.json` per match.
+What it settles about every other file goes into `cache/scan-ledger.json`, so a
+miss is not read and asked about again on the next scan.
 
-After every scan it builds **`metadata/_index.json`**:
+Each shell supplies what stands around it:
+
+- **Android** — `HasherService` (`hasher/`): the foreground service, the wake
+  lock, the notification with its Cancel, the thermal back-off the pipeline
+  takes as its throttle, the native hasher (`NativeHasher`), and the job record
+  below.
+- **Desktop** — `BridgeRouter` (`GET /scan`) and `JobRegistry` in
+  `shared/daemon`, with `NativeRomHasher`.
+
+Files are hashed 2 at a time on Android and 4 on the desktop. Either can be
+told otherwise, to time a library on its own storage: `hashWorkers=N` on the
+`pegasus-data://scan` URI (1–8), `--hash-workers=N` on the daemon (1–16).
+Lookups are paced the same whatever the count.
+
+### The job record
+
+On Android the service writes `pending/{jobId}.json`, built by `ScanJobRecord`,
+and leaves it there when the scan is over. The theme polls it:
+
+- `status` is `running`, `done` or `error`.
+- A running or done record has `progress` (0–1), `message`, and seven counters
+  that add up to the files processed so far: `newEntries`, `cachedHits`,
+  `skippedPlatforms`, `unmatched`, `incompatible`, `hashFailed`,
+  `failedLookups`. The message is `Scanning ROM folders…` before the first
+  result, `[processed/total] file name` after each, and at the end either
+  `No ROMs found` or a sentence that begins `Done — `.
+- An error record has `error` and neither progress nor counters. It is how a
+  scan ends when it is cancelled, when credentials are missing, when the
+  pipeline stops because RetroAchievements stopped answering or refused the
+  key (the error then says what to do next), and when anything is thrown —
+  a final `_index.json` that cannot be written included, so a full or
+  read-only `/sdcard` shows as a failed scan.
+
+`done/{jobId}.done` holds the text `done`, written after the record is whole.
+
+On the desktop the record is the body of `GET /jobs/{id}`. The status values
+are the same, and a scan the pipeline stopped is an error with the same
+sentence. What differs: only `newEntries`, `cachedHits` and `skippedPlatforms`
+are published as counters; an error keeps the progress, message and counters
+the job had; a scan that returned, stopped or not, has a `result` object; the
+copy in `pending/` is deleted when the job ends; and the marker is a small JSON
+object.
+
+### The discovery index
+
+Whenever the pipeline has walked the roots — at the end of a scan, and also of
+one that found no ROM, was stopped, was cancelled or failed — it rebuilds
+**`metadata/_index.json`**:
 
 ```json
 {
@@ -92,7 +153,7 @@ After every scan it builds **`metadata/_index.json`**:
       "total": 50, "imageIcon": "/Images/12345.png" }
   ],
   "byKey": {
-    "super mario world|snes": {
+    "supermarioworld|snes": {
       "gameId": 7236, "title": "...", "platform": "snes",
       "imageIcon": "/Images/12345.png", "total": 50
     }
@@ -101,7 +162,10 @@ After every scan it builds **`metadata/_index.json`**:
 ```
 
 - `games[]` powers the "discovered on-device" list in the RA hub.
-- `byKey{}` is the reverse-lookup map used by `_lookupFromApkCache` and `_checkExternalHashCache`. Key format: `normalize(title)|shortName` (FuzzyMatch.makeCacheKey).
+- `byKey{}` is the reverse lookup from a ROM to its game. The Bridge reads it,
+  in `RaMatcher` (`/ra/match`, `match-ra`); the theme does not. A key is
+  `FuzzyMatch.makeCacheKey` of the ROM's file name without its extension and
+  of the folder it sits in.
 
 The legacy `ra_hashes_cache.json` (single mega-file with `external_hashes` and `verify_map`) is gone. `verify_map` was user-stored state and now lives only in `api.memory("ra_hash_verify_map")`.
 

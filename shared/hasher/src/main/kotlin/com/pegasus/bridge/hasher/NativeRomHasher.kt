@@ -4,11 +4,14 @@ import com.pegasus.bridge.core.BridgeLog
 import java.io.File
 
 /**
- * [RomHasher] backed by the rcheevos native library.
+ * [RomHasher] backed by the rcheevos native library, on the desktop.
  *
  * The same C sources build for Android arm64 and desktop x86_64 and produce
- * byte-identical hashes for the same ROM, so this class is the shared entry
- * point; only how the library is located differs.
+ * byte-identical hashes for the same ROM. What is shared is those sources and
+ * the [RomHasher] interface, not this class: the Android build never compiles
+ * it. The Android library is entered through `NativeHasher`, a class of the
+ * Android module, because each library exports its one function under the name
+ * of the class that declares it.
  *
  * Loading is deliberately lazy and non-fatal: a daemon with no native library
  * should still serve scraping and RetroAchievements, and simply report that it

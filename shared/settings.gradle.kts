@@ -6,10 +6,12 @@
 // including the Linux box this port is developed on. As a standalone build they
 // compile and test with nothing but a JDK.
 //
-// The Android build does not include this one. Each of its modules adds the
-// src/android-shared/kotlin directory of the module it mirrors here to its own
-// sources, so what both shells run is compiled twice from one copy. The desktop
-// daemon is the :daemon module below.
+// The Android build does not include this one. Five of its modules add a
+// src/android-shared/kotlin directory from here to their own sources, so what
+// both shells run is compiled twice from one copy: :core, :hasher, :ra and
+// :pegasus take the one of the module of the same name, and :media takes that
+// of :scrapers. :app and :video take none, and :video here has none to give.
+// The desktop daemon is the :daemon module below.
 
 pluginManagement {
     repositories {

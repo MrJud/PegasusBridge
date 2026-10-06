@@ -1,16 +1,24 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
   "title": "pending",
+  "description": "A job's record. A scan's stays after the scan and says how it ended: running and done records carry progress, message and the seven counts, which add up to the files processed; an error record carries error and none of those.",
   "type": "object",
   "required": ["schemaVersion", "jobId", "verb", "status"],
   "properties": {
     "schemaVersion": { "type": "integer", "const": 1 },
     "jobId":         { "type": "string" },
     "verb":          { "type": "string", "enum": ["scan", "refresh-ra", "scrape-media", "search-video", "play-video", "download-video"] },
-    "status":        { "type": "string", "enum": ["running", "error"] },
+    "status":        { "type": "string", "enum": ["running", "done", "error"] },
     "progress":      { "type": "number", "minimum": 0, "maximum": 1 },
     "message":       { "type": ["string", "null"] },
     "error":         { "type": ["string", "null"] },
+    "newEntries":       { "type": "integer", "minimum": 0 },
+    "cachedHits":       { "type": "integer", "minimum": 0 },
+    "skippedPlatforms": { "type": "integer", "minimum": 0 },
+    "unmatched":        { "type": "integer", "minimum": 0 },
+    "incompatible":     { "type": "integer", "minimum": 0 },
+    "hashFailed":       { "type": "integer", "minimum": 0 },
+    "failedLookups":    { "type": "integer", "minimum": 0 },
     "startedAt":     { "type": "integer" },
     "updatedAt":     { "type": "integer" }
   }

@@ -1015,7 +1015,11 @@ class ThemeContractTest {
 
     private val stamps = setOf("startedAt", "updatedAt")
 
-    /** The two counts the pipeline keeps apart and the service's own loop does not. */
+    /**
+     * The two counts the pipeline keeps apart and the service's own loop did
+     * not. Every record with counts has them now; the replayed ones, written by
+     * that loop, do not.
+     */
     private val failureCounts = setOf("hashFailed", "failedLookups")
 
     private val sevenCounts = listOf("newEntries", "cachedHits", "skippedPlatforms", "unmatched",
@@ -1031,12 +1035,14 @@ class ThemeContractTest {
 
     private fun replayed(name: String) = fields(JSONObject(fixture("$name.json")))
 
-    // What HasherService hands the builder for each record, with the values the
-    // scans behind the fixtures had reached. Everything but the two stamps is
-    // compared, and those are looked for under their own names.
-    @Test fun `the builder gives back every replayed android record, key for key and value for value`() {
+    // Each record built from the values the scan behind its fixture had
+    // reached. A record with counts has the replayed keys and the two the
+    // service did not write then, at 0 in every one of these scans, and no
+    // other; an error record has the replayed keys. Every value but the two
+    // stamps is compared, and those are looked for under their own names.
+    @Test fun `the builder gives back every replayed android record, and two counts more where it has counts`() {
         fun counts(new: Int, cached: Int, skipped: Int, unmatched: Int, incompatible: Int) =
-            ScanJobRecord.Counts(new, cached, skipped, unmatched, incompatible)
+            ScanJobRecord.Counts(new, cached, skipped, unmatched, incompatible, hashFailed = 0, failedLookups = 0)
         val outage = ScanJobRecord.abortAdvice(RomScanPipeline.AbortCause.SOURCE_DOWN, "harness", 1, 600, 0)
         val refusal = ScanJobRecord.abortAdvice(RomScanPipeline.AbortCause.KEY_REFUSED, "harness", 1, 30, 0)
         val began = 1791233730L
@@ -1070,7 +1076,10 @@ class ThemeContractTest {
         for ((name, record) in built) {
             // As a reader finds it, which is as text.
             val written = JSONObject(record.toString())
-            assertEquals(replayed(name) - stamps, fields(written) - stamps, name)
+            val added = if (name.startsWith("error-")) emptySet() else failureCounts
+            assertEquals(replayed(name).keys + added, written.keySet(), name)
+            for (k in added) assertEquals(0, written.getInt(k), "$name: $k")
+            assertEquals(replayed(name) - stamps, fields(written) - stamps - added, name)
             assertEquals(began, written.getLong("startedAt"), name)
             assertEquals(wrote, written.getLong("updatedAt"), name)
 
@@ -1142,8 +1151,7 @@ class ThemeContractTest {
         // Eleven files: a record at the tenth result and one at the last.
         assertEquals(4, first.records.size)
         val (start, tenth, last, done) = first.records
-        assertEquals(androidRunningKeys, start.keySet())
-        for (r in listOf(tenth, last, done)) assertEquals(androidRunningKeys + failureCounts, r.keySet())
+        for (r in first.records) assertEquals(androidRunningKeys + failureCounts, r.keySet())
         assertTrue(tenth.getString("message").startsWith("[10/11] "), tenth.getString("message"))
         assertTrue(last.getString("message").startsWith("[11/11] "), last.getString("message"))
 
@@ -1159,17 +1167,17 @@ class ThemeContractTest {
         assertEquals("", theme.activeJobId)
 
         // What the service's own loop left for this library, beside the two
-        // counts it does not keep, both at nothing here. Which file came last
+        // counts it did not keep, both at nothing here. Which file came last
         // is up to the workers.
-        assertEquals(replayed("pending-first") - stamps, fields(start) - stamps)
+        assertEquals(replayed("pending-first") - stamps, fields(start) - stamps - failureCounts)
         assertEquals(replayed("pending-running-mixed") - stamps - "message",
                      fields(last) - stamps - "message" - failureCounts)
         assertEquals(replayed("pending-done-mixed") - stamps, fields(done) - stamps - failureCounts)
-        for (r in listOf(last, done)) for (k in failureCounts) assertEquals(0, r.getInt(k), k)
+        for (r in first.records) for (k in failureCounts) assertEquals(0, r.getInt(k), k)
 
         // The second scan reads no file. The matches are cached, and the three
         // answers that were no stand in the ledger and are counted as what they
-        // were, where the service's own loop hashes and asks about the two
+        // were, where the service's own loop hashed and asked about the two
         // misses again to count them.
         val again = androidTheme("job2")
         val hashed = hashes.calls.get()
@@ -1427,7 +1435,7 @@ class ThemeContractTest {
         }
     }
 
-    // The service's own loop writes a record when the count of results is a
+    // The service's own loop wrote a record when the count of results was a
     // multiple of max(total / 50, 10), and for the last. Asked about every
     // result, the rule gives those and no others. The pipeline reports on
     // multiples of max(total / 50, 1): up to 99 files that is every result and

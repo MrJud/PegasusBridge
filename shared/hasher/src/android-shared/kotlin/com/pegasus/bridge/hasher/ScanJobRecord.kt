@@ -26,12 +26,9 @@ import org.json.JSONObject
 object ScanJobRecord {
 
     /**
-     * A scan's counts so far, under the names the record gives them.
-     *
-     * The last two are null for a caller that does not keep them: the service's
-     * own loop counts a file that would not hash with the ones that are not in
-     * the database, and only logs the lookups that failed. Neither key is
-     * written then. A 0 it never counted would read as "none failed".
+     * A scan's counts so far, under the names the record gives them. Every
+     * result is in one of the seven and in no other, so together they are the
+     * results the record reports.
      */
     data class Counts(
         val newEntries: Int,
@@ -42,9 +39,9 @@ object ScanJobRecord {
         /** Held by RetroAchievements only as a virtual id — incompatible, untested, needs a patch. */
         val incompatible: Int,
         /** Files that gave no hash to ask about. */
-        val hashFailed: Int? = null,
+        val hashFailed: Int,
         /** Lookups that brought nothing usable back. */
-        val failedLookups: Int? = null
+        val failedLookups: Int
     )
 
     /**
@@ -55,7 +52,7 @@ object ScanJobRecord {
      * is taken for one that finished.
      */
     fun started(jobId: String, startedAt: Long, updatedAt: Long = BridgePaths.epochSeconds()): JSONObject =
-        pending(jobId, "running", 0.0, "Scanning ROM folders…", Counts(0, 0, 0, 0, 0), startedAt, updatedAt)
+        pending(jobId, "running", 0.0, "Scanning ROM folders…", Counts(0, 0, 0, 0, 0, 0, 0), startedAt, updatedAt)
 
     /**
      * The record after a result. The name goes after the two numbers as it is:
@@ -76,7 +73,7 @@ object ScanJobRecord {
      * there are any. Left out, they would vanish from the summary altogether —
      * a library of them would finish "0 new, 0 cached, 0 skipped, 0 not in the
      * database". The same goes for the files that could not be hashed and the
-     * lookups that got no answer, from a caller that counts them.
+     * lookups that got no answer.
      */
     fun done(
         jobId: String, counts: Counts,
@@ -128,7 +125,7 @@ object ScanJobRecord {
             "Wait a few minutes and scan again — it will resume where it left off."
     }
 
-    /** [running] for a report of the pipeline's, which keeps all seven counts. */
+    /** [running] for a report of the pipeline's. */
     fun running(
         jobId: String, progress: RomScanPipeline.Progress,
         startedAt: Long, updatedAt: Long = BridgePaths.epochSeconds()
@@ -182,8 +179,8 @@ object ScanJobRecord {
     fun due(processed: Int, total: Int, lastPublished: Int): Boolean =
         processed == total || processed - lastPublished >= (total / 50).coerceAtLeast(10)
 
-    private fun clause(count: Int?, what: String): String =
-        if (count != null && count > 0) ", $count $what" else ""
+    private fun clause(count: Int, what: String): String =
+        if (count > 0) ", $count $what" else ""
 
     private fun base(jobId: String, status: String, startedAt: Long, updatedAt: Long): JSONObject =
         JSONObject()
@@ -206,6 +203,6 @@ object ScanJobRecord {
             .put("skippedPlatforms", counts.skippedPlatforms)
             .put("unmatched", counts.unmatched)
             .put("incompatible", counts.incompatible)
-            .also { j -> counts.hashFailed?.let { j.put("hashFailed", it) } }
-            .also { j -> counts.failedLookups?.let { j.put("failedLookups", it) } }
+            .put("hashFailed", counts.hashFailed)
+            .put("failedLookups", counts.failedLookups)
 }

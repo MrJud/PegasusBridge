@@ -918,6 +918,32 @@ class ThemeContractTest {
         assertMarkedAndCleared(id)
     }
 
+    // A daemon scans whether or not it has been given a RetroAchievements
+    // user, which the Android service does not, and a key refused then had
+    // nobody to be the key of: the sentence read "refused the API key for
+    // after", with two spaces where the name goes. It names nobody now.
+    @Test fun `a desktop scan stopped by a refused key names nobody when no user is configured`() {
+        repeat(3) { rom("snes", "Game $it.sfc", "hash-$it") }
+        hasher = ContentHasher()
+        lookup = object : RaHashLookup {
+            @Volatile var refused = false
+            override suspend fun lookup(hash: String): GameMetadata? { refused = true; return null }
+            override val authRejected: Boolean get() = refused
+        }
+        val id = "scan_1791233730000_9"
+
+        desktopTheme(id)
+        val body = finished(id)
+        assertEquals("error", body.getString("status"))
+        val processed = body.getJSONObject("result").getInt("processed")
+        assertEquals("RetroAchievements refused the API key after $processed of 3 files " +
+                     "(0 identified). Nothing was recorded as missing. " +
+                     "Copy the Web API key from your RetroAchievements settings into credentials.json " +
+                     "and scan again.",
+                     body.getString("error"))
+        assertMarkedAndCleared(id)
+    }
+
     // ── The files a scan writes ─────────────────────────────────────────────
 
     private fun pipeline(h: RomHasher, l: RaHashLookup) =
@@ -1378,6 +1404,30 @@ class ThemeContractTest {
             assertEquals(1791233730, record.getLong("startedAt"), "$cause")
             assertEquals(1791233732, record.getLong("updatedAt"), "$cause")
         }
+    }
+
+    // The one sentence with a name in it, with a name and without. With one it
+    // is what the fixture of a refused key holds, to the letter: the Android
+    // service always has a user and its record must not move. Without one,
+    // which only the desktop can come to, " for " goes with the name, and a
+    // name of spaces is no name.
+    @Test fun `the refused-key sentence names the user when there is one and nobody when there is none`() {
+        fun refused(user: String) =
+            ScanJobRecord.abortAdvice(RomScanPipeline.AbortCause.KEY_REFUSED, user, 1, 30, 0)
+        val rest = " after 1 of 30 files (0 identified). Nothing was recorded as missing. " +
+            "Copy the Web API key from your RetroAchievements settings into credentials.json " +
+            "and scan again."
+
+        assertEquals(JSONObject(fixture("error-key.json")).getString("error"), refused("harness"))
+        assertEquals("RetroAchievements refused the API key for harness$rest", refused("harness"))
+        assertEquals("RetroAchievements refused the API key$rest", refused(""))
+        assertEquals("RetroAchievements refused the API key$rest", refused("  "))
+
+        // The outage names nobody either way, and is the same sentence for both.
+        fun outage(user: String) =
+            ScanJobRecord.abortAdvice(RomScanPipeline.AbortCause.SOURCE_DOWN, user, 1, 600, 0)
+        assertEquals(JSONObject(fixture("error-outage.json")).getString("error"), outage("harness"))
+        assertEquals(outage("harness"), outage(""))
     }
 
     // With no scan behind them, so that every number can be a different one,

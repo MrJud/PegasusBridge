@@ -111,13 +111,20 @@ object ScanJobRecord {
      * What to tell the person whose scan stopped itself, which is what they
      * can do about it and differs between the two causes. [identified] is how
      * many matches the scan had written by then.
+     *
+     * [raUser] is whose key was refused, and the sentence says so when there
+     * is somebody to name. The Android service never starts a scan without a
+     * user. The desktop daemon does, and a key refused there read "refused the
+     * API key for  after 3 of 3 files": a blank user is left out, " for "
+     * with it.
      */
     fun abortAdvice(
         cause: RomScanPipeline.AbortCause, raUser: String,
         processed: Int, total: Int, identified: Int
     ): String = when (cause) {
         RomScanPipeline.AbortCause.KEY_REFUSED ->
-            "RetroAchievements refused the API key for $raUser after $processed of $total files " +
+            "RetroAchievements refused the API key" + (if (raUser.isBlank()) "" else " for $raUser") +
+            " after $processed of $total files " +
             "($identified identified). Nothing was recorded as missing. " +
             "Copy the Web API key from your RetroAchievements settings into credentials.json " +
             "and scan again."

@@ -457,6 +457,54 @@ class ScreenScraperCacheTest {
         assertEquals(1, systemsCalls.get(), "op=systems fetched a table that was fresh")
     }
 
+    // `op=systems` looks at the disk again once it has the lock. A request is fetching
+    // the table, its `systemesListe` kept unanswered at the server, when `op=systems`
+    // finds the table on disk stale. It waits for the request and answers with the
+    // table that one writes. The request has done all its looking by the time its fetch
+    // is at the server, so whoever says after that that the table is from an older
+    // schema is `op=systems`.
+    @Test fun `asking for a stale table during a fetch waits for it and asks nothing`() {
+        val old = JSONObject(ScreenScraperSystemMap.toJson(
+            listOf(ScreenScraperClient.SsSystem(3, listOf("nes"), listOf("nes")))))
+        old.remove("schemaVersion")
+        BridgePaths.writeAtomic(paths.cache(SS_SYSTEMS_FILE), old.toString())
+
+        val usa = rom("Contra (USA).nes", "usa-bytes")
+        val d = dispatcher()
+
+        val atServer = java.util.concurrent.atomic.AtomicBoolean(false)
+        val looked = CountDownLatch(1)
+        BridgeLog.current = object : BridgeLog {
+            override fun d(tag: String, msg: String) = Unit
+            override fun i(tag: String, msg: String) {
+                if (atServer.get() && msg.contains("older schema")) looked.countDown()
+            }
+            override fun w(tag: String, msg: String, t: Throwable?) = Unit
+            override fun e(tag: String, msg: String, t: Throwable?) = Unit
+        }
+        val hold = CountDownLatch(1)
+        val arrived = CountDownLatch(1)
+        systemsHold = hold
+        systemsArrived = arrived
+
+        val pool = Executors.newFixedThreadPool(2)
+        val game = pool.submit { d.run("ss", "game", mediaParams(usa)) }
+        val fetching = arrived.await(30, TimeUnit.SECONDS)
+        atServer.set(true)
+        val systems = pool.submit<Any> { d.run("ss", "systems", emptyMap()).results }
+        val systemsLooked = looked.await(30, TimeUnit.SECONDS)
+        hold.countDown()
+        game.get(30, TimeUnit.SECONDS)
+        val listed = systems.get(30, TimeUnit.SECONDS) as JSONArray
+        pool.shutdown()
+
+        assertTrue(fetching, "the request never fetched the table")
+        assertTrue(systemsLooked, "op=systems never looked at the table")
+        assertEquals(1, listed.length(), "not the table the request wrote: $listed")
+        assertEquals(1, systemsCalls.get(),
+                     "op=systems fetched the table a request had just written")
+    }
+
     // ── H1.3: the system table is not kept forever ──────────────────────────
 
     @Test fun `a fresh system table is read from disk instead of refetched`() {

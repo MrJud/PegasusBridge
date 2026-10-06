@@ -22,6 +22,8 @@ import org.json.JSONObject
  * `newEntries` and `cachedHits`; and `error`, shown in place of the message.
  *
  * The desktop daemon's record of a job is JobRegistry's, and is not built here.
+ * What the daemon takes from this is [abortAdvice], so that a scan which stopped
+ * itself is told in the same words on both.
  */
 object ScanJobRecord {
 
@@ -125,6 +127,15 @@ object ScanJobRecord {
             "Wait a few minutes and scan again — it will resume where it left off."
     }
 
+    /**
+     * [abortAdvice] for a summary of the pipeline's. The pipeline names the
+     * cause of every abort it makes; the type lets one through without, and
+     * that one is told as an outage.
+     */
+    fun abortAdvice(summary: RomScanPipeline.Summary, raUser: String): String =
+        abortAdvice(summary.abortCause ?: RomScanPipeline.AbortCause.SOURCE_DOWN, raUser,
+                    summary.processed, summary.total, summary.newEntries)
+
     /** [running] for a report of the pipeline's. */
     fun running(
         jobId: String, progress: RomScanPipeline.Progress,
@@ -154,12 +165,9 @@ object ScanJobRecord {
                             summary.unmatched, summary.incompatible,
                             summary.hashFailed, summary.failedLookups)
         return when {
-            // The pipeline names the cause of every abort it makes. The type lets
-            // one through without, and that one must not come out as done either.
-            summary.aborted -> error(jobId,
-                abortAdvice(summary.abortCause ?: RomScanPipeline.AbortCause.SOURCE_DOWN, raUser,
-                            summary.processed, summary.total, summary.newEntries),
-                startedAt, updatedAt)
+            // Asked of `aborted` and not of the cause: a summary that names none
+            // must not come out as done either.
+            summary.aborted -> error(jobId, abortAdvice(summary, raUser), startedAt, updatedAt)
             summary.total == 0 -> noRoms(jobId, counts, startedAt, updatedAt)
             else -> done(jobId, counts, startedAt, updatedAt)
         }

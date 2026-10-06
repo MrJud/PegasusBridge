@@ -809,35 +809,86 @@ class ThemeContractTest {
         assertEquals(View("error", 0, 0, 0, "the lookup broke", 0, 0), theme.view())
     }
 
-    // On Android the same outage is the record in error-outage.json: status
-    // "error" and a sentence saying what to do. Here the pipeline's abort is an
-    // ordinary return, the router finishes the job, and the theme, which reads
-    // status and never `result`, puts up "Scan Complete".
-    @Test fun `known divergence - the desktop reports an aborted scan as done`() {
+    // The pipeline's abort is an ordinary return. The router finished the job on
+    // it, and the theme, which reads status and never `result`, put up "Scan
+    // Complete" for a scan RetroAchievements had stopped answering. It is a
+    // failed job, and its error is the sentence of Android's error-outage.json,
+    // so an outage is told in the same words on both shells. What the desktop
+    // keeps beside it is its own: the progress and the counters as the last
+    // result left them, and the result.
+    @Test fun `a desktop scan the pipeline cut short reads as an error with the advice sentence`() {
         repeat(20) { rom("snes", "Game $it.sfc", "hash-$it") }
         hasher = ContentHasher()
+        // Held until the theme has seen the job running. One that is over by the
+        // theme's first poll goes through "job unknown to the bridge", as above.
+        val gate = CompletableDeferred<Unit>().also { held += it }
         lookup = object : RaHashLookup {
             val calls = AtomicInteger()
-            override suspend fun lookup(hash: String): GameMetadata? { calls.incrementAndGet(); return null }
+            override suspend fun lookup(hash: String): GameMetadata? { gate.await(); calls.incrementAndGet(); return null }
             override val consecutiveFailures: Int get() = calls.get()
         }
         val id = "scan_1791233730000_5"
 
         val theme = desktopTheme(id)
+        theme.pollTwice()
+        assertEquals(View("running", 0, 0, 0, "", 0, 0), theme.view())
+
+        gate.complete(Unit)
         val body = finished(id)
-        assertEquals("done", body.getString("status"))
-        assertFalse(body.has("error"))
+        assertEquals(desktopKeys + desktopCounters + "error" + "result", body.keySet())
+        assertEquals("error", body.getString("status"))
         val result = body.getJSONObject("result")
+        assertEquals(desktopResultKeys, result.keySet())
         assertTrue(result.getBoolean("aborted"))
         assertTrue(result.getString("reason").startsWith("the lookup source stopped answering"),
                    result.getString("reason"))
-        assertTrue(result.getInt("processed") < 20, "an abort must not have gone through the library")
+        val processed = result.getInt("processed")
+        assertTrue(processed in 1 until 20, "an abort must not have gone through the library: $processed")
+        assertEquals("RetroAchievements stopped responding after $processed of 20 files (0 identified). " +
+                     "Nothing was recorded as missing. " +
+                     "Wait a few minutes and scan again — it will resume where it left off.",
+                     body.getString("error"))
+        // Where the last result left them, and not the 1.0 of a job that finished.
+        assertEquals(processed / 20.0, body.getDouble("progress"))
+        assertTrue(body.getString("message").startsWith("[$processed/20] "), body.getString("message"))
+        assertEquals(0, body.getInt("newEntries"))
 
         theme.pollTwice()
-        assertEquals("done", theme.status)
-        assertEquals(100, theme.percent)
-        assertEquals(result.getInt("processed"), theme.processed)
-        assertEquals(20, theme.total)
+        assertEquals(View("error", processed * 5, processed, 20, body.getString("error"), 0, 0), theme.view())
+        assertEquals("", theme.activeJobId)
+        assertMarkedAndCleared(id)
+        // Not so for a theme that reads the daemon's files and not its port. The
+        // registry ends every job alike, the marker written and the mirror
+        // removed, and those files say done of a job that failed.
+        assertEquals("done", filesView(id).status)
+    }
+
+    // The other abort, and the one sentence that names somebody: the user the
+    // daemon is configured with, read when the scan ends.
+    @Test fun `a desktop scan stopped by a refused key says whose key and what to do about it`() {
+        repeat(3) { rom("snes", "Game $it.sfc", "hash-$it") }
+        Config(paths).writeCredentials(raUser = "someone", raApiKey = "a-key-that-was-revoked")
+        hasher = ContentHasher()
+        lookup = object : RaHashLookup {
+            @Volatile var refused = false
+            override suspend fun lookup(hash: String): GameMetadata? { refused = true; return null }
+            override val authRejected: Boolean get() = refused
+        }
+        val id = "scan_1791233730000_8"
+
+        desktopTheme(id)
+        val body = finished(id)
+        assertEquals("error", body.getString("status"))
+        val result = body.getJSONObject("result")
+        assertTrue(result.getBoolean("aborted"))
+        assertTrue(result.getString("reason").startsWith("RetroAchievements refused the API key"),
+                   result.getString("reason"))
+        val processed = result.getInt("processed")
+        assertEquals("RetroAchievements refused the API key for someone after $processed of 3 files " +
+                     "(0 identified). Nothing was recorded as missing. " +
+                     "Copy the Web API key from your RetroAchievements settings into credentials.json " +
+                     "and scan again.",
+                     body.getString("error"))
         assertMarkedAndCleared(id)
     }
 

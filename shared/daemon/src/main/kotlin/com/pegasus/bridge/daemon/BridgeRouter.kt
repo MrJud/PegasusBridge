@@ -7,6 +7,7 @@ import com.pegasus.bridge.core.SchemaVersion
 import com.pegasus.bridge.daemon.MicroHttpServer.Request
 import com.pegasus.bridge.daemon.MicroHttpServer.Response
 import com.pegasus.bridge.hasher.RomScanPipeline
+import com.pegasus.bridge.hasher.ScanJobRecord
 import com.pegasus.bridge.ra.RaConsoleMap
 import com.pegasus.bridge.ra.RaMatcher
 import com.pegasus.bridge.ra.RaSync
@@ -414,11 +415,11 @@ class BridgeRouter(
                             .put("cachedHits", p.cachedHits)
                             .put("skippedPlatforms", p.skippedPlatforms))
                 }
-                jobs.finish(job, JSONObject()
+                val result = JSONObject()
                     .put("total", summary.total)
                     // A scan cut short must not report as a complete one. `processed`
                     // is what the collector actually saw, `aborted` says the rest was
-                    // never looked at, and `reason` is the sentence a user can act on.
+                    // never looked at, and `reason` says why, in the words of the log.
                     .put("processed", summary.processed)
                     .put("newEntries", summary.newEntries)
                     .put("cachedHits", summary.cachedHits)
@@ -440,7 +441,20 @@ class BridgeRouter(
                         summary.ambiguousArchives.take(50).forEach { (path, candidates) ->
                             arr.put(JSONObject().put("file", path).put("candidates", candidates))
                         }
-                    }))
+                    })
+                // A scan the pipeline cut short comes back as a summary like any
+                // other, and was finished like any other: "done" at 100%, with the
+                // abort inside `result`. The theme goes by `status` and reads no
+                // `result`, so a scan RetroAchievements stopped answering a tenth
+                // of the way through was announced as complete. It is a job that
+                // failed, and its error is the sentence the Android service
+                // writes for the same scan, which says what to do next. The
+                // result stays beside it, for a client that reads one.
+                if (summary.aborted) {
+                    jobs.fail(job, ScanJobRecord.abortAdvice(summary, config.load().ra?.user.orEmpty()), result)
+                } else {
+                    jobs.finish(job, result)
+                }
             } catch (t: Throwable) {
                 BridgeLog.e(TAG, "scan failed", t)
                 jobs.fail(job, t.message ?: t.javaClass.simpleName)

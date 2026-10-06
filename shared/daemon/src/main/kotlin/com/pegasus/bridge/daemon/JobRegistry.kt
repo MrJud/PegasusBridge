@@ -97,9 +97,16 @@ class JobRegistry(private val paths: BridgePaths) {
         complete(job)
     }
 
-    fun fail(job: Job, reason: String) {
+    /**
+     * [result] is for a job that failed with something to show for it. A scan
+     * the pipeline cut short has counted and written what it got through, and
+     * its progress stays where it stopped: unlike [finish], nothing here says
+     * the work was all done.
+     */
+    fun fail(job: Job, reason: String, result: JSONObject? = null) {
         job.state = State.ERROR
         job.error = reason
+        job.result = result
         complete(job)
     }
 

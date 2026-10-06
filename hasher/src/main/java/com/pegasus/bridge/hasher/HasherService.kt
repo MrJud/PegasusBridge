@@ -34,11 +34,22 @@ class HasherService : Service() {
         private const val CHANNEL_ID      = "pegasus_bridge_hasher"
         private const val NOTIFICATION_ID = 2001
 
-        // Parallelism tuning
-        private const val NUM_HASH_PRODUCERS = 4   // parallel hash workers (CPU+IO bound)
+        // How many files a scan reads and hashes at once when the request does
+        // not say. It was four, which is what the desktop daemon keeps. Here a
+        // library is as a rule on one card, where more readers need not mean
+        // more read, and each worker is a core kept busy in a device this
+        // service already has to slow down for when it gets warm. Two is a
+        // choice and not a result: the card has not been timed with one
+        // reader, two or four. EXTRA_HASH_WORKERS is there so that it can be,
+        // with one build.
+        private const val DEFAULT_HASH_WORKERS = 2
+        // The most a request is given: a bound on a number that comes from
+        // outside. The pipeline has one of its own, the number of cores.
+        private const val MAX_HASH_WORKERS = 8
 
         const val EXTRA_ROOTS  = "roots"   // pipe- or comma-separated directories
         const val EXTRA_JOB_ID = "jobId"
+        const val EXTRA_HASH_WORKERS = "hashWorkers"   // optional, an int
 
         @Volatile var isRunning = false
             private set
@@ -88,6 +99,12 @@ class HasherService : Service() {
         val rootsCsv = intent?.getStringExtra(EXTRA_ROOTS) ?: run { endWithoutScan(startId); return START_NOT_STICKY }
         val jobId    = intent.getStringExtra(EXTRA_JOB_ID) ?: java.util.UUID.randomUUID().toString()
         val roots    = rootsCsv.split('|', ',').map { it.trim() }.filter { it.isNotEmpty() }
+        // Held to a range and not passed on as it came. It arrives in a URI that
+        // anything on the device can send, and the pipeline refuses to be built
+        // with no worker: a 0 would end the scan as an error about a parameter
+        // the person looking at the popup has never heard of.
+        val hashWorkers = intent.getIntExtra(EXTRA_HASH_WORKERS, DEFAULT_HASH_WORKERS)
+            .coerceIn(1, MAX_HASH_WORKERS)
         // When the job began, read once. Every record it leaves carries this,
         // the one it ends on and an error included; each used to carry the
         // time it was written.
@@ -107,7 +124,7 @@ class HasherService : Service() {
 
         scanJob = scope.launch {
             try {
-                scan(roots, jobId, raUser, raApiKey, startedAt)
+                scan(roots, jobId, raUser, raApiKey, startedAt, hashWorkers)
             } catch (e: CancellationException) {
                 Log.i(TAG, "Scan cancelled")
                 writeError(jobId, ScanJobRecord.error(jobId, "Cancelled", startedAt))
@@ -181,7 +198,8 @@ class HasherService : Service() {
      * saves the ledger on each of the three ways out.
      */
     private suspend fun scan(
-        roots: List<String>, jobId: String, raUser: String, raApiKey: String, startedAt: Long
+        roots: List<String>, jobId: String, raUser: String, raApiKey: String, startedAt: Long,
+        hashWorkers: Int
     ) {
         // Not left to the pipeline, whose BridgePaths has no pegasus/ to make.
         Paths.ensureAll()
@@ -190,12 +208,15 @@ class HasherService : Service() {
         // record by the theme's fifth poll is taken for one that has finished.
         writePending(jobId, ScanJobRecord.started(jobId, startedAt))
 
+        // Said in the log, so that a timing can be put beside the count it was
+        // taken with, and a misspelt parameter shows as the default it got.
+        Log.i(TAG, "Scan $jobId: $hashWorkers hash workers")
         val pipeline = RomScanPipeline(
             paths         = Paths.bridge,
             hasher        = ArchiveAwareHasher(ScanCollaborators.hasher(), cacheDir),
             lookup        = ScanCollaborators.lookup(raUser, raApiKey),
             throttleMs    = ::thermalDelayMs,
-            hashWorkers   = NUM_HASH_PRODUCERS,
+            hashWorkers   = hashWorkers,
             extensionsFor = RomScanExtensions.forScan
         )
 

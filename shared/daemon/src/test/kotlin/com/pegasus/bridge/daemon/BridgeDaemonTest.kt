@@ -152,6 +152,31 @@ class BridgeDaemonTest {
         }
     }
 
+    // From the command line to the count a scan is given, as main() takes it.
+    private fun hashWorkersWith(vararg args: String): Int =
+        BridgeDaemon(dataRoot, hashWorkers = BridgeDaemon.hashWorkersArg(arrayOf(*args))).hashWorkers
+
+    // Four is what a scan had before there was a flag. A daemon started the way
+    // every installed unit starts it has to go on scanning as it did.
+    @Test fun `the hash worker flag is taken when it is a number, and without one a scan keeps four`() {
+        assertEquals(2, hashWorkersWith("--port=0", "--hash-workers=2"))
+        assertEquals(4, hashWorkersWith("--port=0"))
+        assertEquals(4, hashWorkersWith("--hash-workers=many"))
+        assertEquals(4, hashWorkersWith("--hash-workers="))
+        assertEquals(4, BridgeDaemon(dataRoot).hashWorkers)
+    }
+
+    // The pipeline refuses to be built with no worker, and the daemon builds it
+    // only when a scan is asked for: a 0 that got through would cost every scan
+    // and show nowhere before the first.
+    @Test fun `a count of hash workers out of range is brought into it`() {
+        assertEquals(1, hashWorkersWith("--hash-workers=0"))
+        assertEquals(1, hashWorkersWith("--hash-workers=-3"))
+        assertEquals(16, hashWorkersWith("--hash-workers=99"))
+        assertEquals(16, hashWorkersWith("--hash-workers=16"))
+        assertEquals(1, hashWorkersWith("--hash-workers=1"))
+    }
+
     // Scanning is the only feature that needs the native library; everything else
     // must keep working without it.
     @Test fun `the api serves even when no native hasher is present`() {

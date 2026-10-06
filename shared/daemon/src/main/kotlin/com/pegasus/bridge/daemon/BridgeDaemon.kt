@@ -35,8 +35,23 @@ class BridgeDaemon(
      * being deleted at shutdown — a client that cannot read the port cannot make
      * the connection that would start the daemon again.
      */
-    private val advertisePort: Int = 0
+    private val advertisePort: Int = 0,
+    hashWorkers: Int = RomScanPipeline.DEFAULT_HASH_WORKERS
 ) {
+
+    /**
+     * How many files a scan reads and hashes at once: the pipeline's own count
+     * unless `--hash-workers=N` gives another.
+     *
+     * Which count is quickest depends on what the library is kept on, and that
+     * differs from one machine to the next and cannot be told from here.
+     *
+     * Held between 1 and [MAX_HASH_WORKERS] whatever was asked. The pipeline
+     * refuses to be built with no worker, and it is built when a scan is
+     * requested: a 0 passed through would start a daemon that answers
+     * `/health` and fails every scan.
+     */
+    val hashWorkers: Int = hashWorkers.coerceIn(1, MAX_HASH_WORKERS)
 
     lateinit var paths: BridgePaths; private set
     private lateinit var server: MicroHttpServer
@@ -60,6 +75,7 @@ class BridgeDaemon(
                     paths,
                     ArchiveAwareHasher(it, File(dataRoot, "tmp")),
                     RaApiHashLookup(ra?.user.orEmpty(), ra?.apiKey.orEmpty()),
+                    hashWorkers = hashWorkers,
                     // A collection states which extensions it contains, and the
                     // scanner's built-in list is only a default. They disagree
                     // more often than is comfortable — every collection in the
@@ -191,6 +207,16 @@ class BridgeDaemon(
 
     companion object {
         private const val TAG = "BridgeDaemon"
+        const val MAX_HASH_WORKERS = 16
+
+        /**
+         * `--hash-workers=N` as [main] reads it. Without the flag, or with an N
+         * that is not a number, the count the pipeline has by default.
+         */
+        internal fun hashWorkersArg(args: Array<String>): Int =
+            args.firstOrNull { it.startsWith("--hash-workers=") }
+                ?.removePrefix("--hash-workers=")?.toIntOrNull()
+                ?: RomScanPipeline.DEFAULT_HASH_WORKERS
 
         @JvmStatic
         fun main(args: Array<String>) {
@@ -202,12 +228,15 @@ class BridgeDaemon(
             val advertise = args.firstOrNull { it.startsWith("--advertise-port=") }
                 ?.removePrefix("--advertise-port=")?.toIntOrNull() ?: 0
 
-            val daemon = BridgeDaemon(dataRoot, port, advertise)
+            val daemon = BridgeDaemon(dataRoot, port, advertise, hashWorkersArg(args))
             val bound = daemon.start()
             println("PegasusBridge daemon listening on http://127.0.0.1:$bound")
             if (advertise > 0) println("advertised to clients as port $advertise")
             println("data root: ${daemon.dataRoot}")
             println("endpoint file: ${DaemonPaths.endpointFile(daemon.dataRoot)}")
+            // The count in use, not the one asked for: the two differ when the
+            // flag was out of range or was not a number.
+            println("hash workers: ${daemon.hashWorkers}")
 
             // Nothing else to do on the main thread; the server runs its own.
             Thread.currentThread().join()

@@ -44,6 +44,11 @@ class DataLayerRouter : Activity() {
                 startForegroundService(Intent(this, HasherService::class.java).apply {
                     putExtra(HasherService.EXTRA_ROOTS,  roots)
                     putExtra(HasherService.EXTRA_JOB_ID, jobId)
+                    // For whoever is timing a card with more or fewer readers.
+                    // The theme does not send it. Left out, or not a number, it
+                    // is not passed on and the service's own count stands.
+                    uri.getQueryParameter("hashWorkers")?.toIntOrNull()
+                        ?.let { putExtra(HasherService.EXTRA_HASH_WORKERS, it) }
                 })
             }
             "scrape-media" -> {

@@ -355,14 +355,56 @@ class ScrapeSourceDispatcher(
     /** Guards [ssCache] and [ssInFlight]. Never held across hashing or HTTP. */
     private val ssLock = Any()
 
+    /**
+     * Held by the one caller that is fetching the system table, while the others that
+     * have to fetch it wait.
+     *
+     * The table is fetched by whoever finds it missing, stale or without the platform
+     * it was asked about, and the four requests of a game screen find that together.
+     * Left to themselves they fetch it four times, write the one file four times and
+     * read it back four times. That is three requests wasted, and it can cost one
+     * more. [BridgePaths.writeAtomic] keeps a half-written file from a reader only
+     * while one caller writes: two share its temporary file, and the one whose rename
+     * finds that file already gone writes the target in place. A caller that reads the
+     * table back at that moment can find it empty. It then takes the platform for
+     * unknown and sends no `systemeid`, so its question goes out under another
+     * [SsRequest.cacheKey] than everybody else's about the same ROM, and the ROM is
+     * asked about twice.
+     *
+     * Whoever fetches the table takes this lock, `op=systems` included, since each of
+     * them writes the one file. Nobody takes it to read a table that is good.
+     *
+     * Unlike [ssLock] this one is held across the request, and that is the point of
+     * it: a caller that waits here has nothing to do until the table is there, and
+     * what it did instead of waiting was a `systemesListe` of its own.
+     */
+    private val ssSystemsLock = Any()
+
     private fun dispatchScreenScraper(op: String, params: Map<String, String>): Result = when (op) {
         "game"    -> Result(ssGameToJson(ssIdentify(params)))
         "media"   -> Result(ssFetchMedia(params))
-        "systems" -> Result(ssSystems(force = params["refresh"] == "1"))
+        "systems" -> Result(ssSystemsOp(refresh = params["refresh"] == "1"))
         else      -> throw IllegalArgumentException("ss: unknown op '$op'")
     }
 
-    /** The system table, refreshed from the API and kept on disk between runs. */
+    /**
+     * `op=systems`. A table on disk that is good is the answer, read with no lock, so
+     * that asking for it does not wait for a fetch another caller is making. A refresh,
+     * or a table that is not good, is a fetch and a write, and takes [ssSystemsLock].
+     * Unless it was asked to refresh, [ssSystems] looks at the disk again under the
+     * lock, so a caller that waited there for somebody else's fetch answers with the
+     * table that one wrote and asks nothing.
+     */
+    private fun ssSystemsOp(refresh: Boolean): JSONArray {
+        if (!refresh) cachedSystems()?.let { return systemsToJson(it) }
+        return synchronized(ssSystemsLock) { ssSystems(force = refresh) }
+    }
+
+    /**
+     * The system table, refreshed from the API and kept on disk between runs.
+     *
+     * Called with [ssSystemsLock] held, because it writes the table.
+     */
     private fun ssSystems(force: Boolean = false): JSONArray {
         if (!force) {
             cachedSystems()?.let { return systemsToJson(it) }
@@ -427,8 +469,13 @@ class ScrapeSourceDispatcher(
      * `romnom` one — arcade — actually needs an id. A refresh that *fails* keeps
      * whatever was on disk rather than falling back to nothing, because a stale id is
      * still overwhelmingly likely to be right and no id at all is certainly not.
+     *
+     * A table that is there and knows the platform is read with no lock. One that has
+     * to be fetched is fetched under [ssSystemsLock], by a second pass through this
+     * function with [fetching] set: it looks at the disk again first, and a caller
+     * that waited for the lock finds there the table it was about to ask for.
      */
-    private fun ssSystemIndex(platform: String = ""): Map<String, Int> {
+    private fun ssSystemIndex(platform: String = "", fetching: Boolean = false): Map<String, Int> {
         val p = paths ?: return emptyMap()
         val f = p.cache(SS_SYSTEMS_FILE)
 
@@ -439,8 +486,12 @@ class ScrapeSourceDispatcher(
             // indistinguishable from a stale table, and asking once is cheap.
             if (platform.isEmpty() || ScreenScraperSystemMap.systemeId(platform, index) > 0)
                 return index
-            BridgeLog.i(TAG, "no ScreenScraper system for '$platform'; refreshing the table")
+            if (fetching)
+                BridgeLog.i(TAG, "no ScreenScraper system for '$platform'; refreshing the table")
         }
+
+        if (!fetching)
+            return synchronized(ssSystemsLock) { ssSystemIndex(platform, fetching = true) }
 
         return try {
             ssSystems(force = true)

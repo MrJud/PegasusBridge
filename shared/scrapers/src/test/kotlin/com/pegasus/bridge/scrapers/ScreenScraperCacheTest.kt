@@ -9,6 +9,7 @@ import okhttp3.mockwebserver.Dispatcher
 import okhttp3.mockwebserver.MockResponse
 import okhttp3.mockwebserver.MockWebServer
 import okhttp3.mockwebserver.RecordedRequest
+import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
 import java.nio.file.Files
@@ -55,6 +56,12 @@ class ScreenScraperCacheTest {
     /** Swapped per test to change what the API returns for the same ROM. */
     @Volatile private var mediaUrlSuffix = "us"
 
+    /** Set by a test to keep `systemesListe` unanswered until it opens the latch. */
+    @Volatile private var systemsHold: CountDownLatch? = null
+
+    /** Set by a test to learn that a `systemesListe` has reached the server. */
+    @Volatile private var systemsArrived: CountDownLatch? = null
+
     @BeforeTest fun setUp() {
         BridgeLog.current = NoopLog
         dataRoot = Files.createTempDirectory("ss-data").toFile()
@@ -78,6 +85,8 @@ class ScreenScraperCacheTest {
                     }
                     path.startsWith("/systemesListe.php") -> {
                         systemsCalls.incrementAndGet()
+                        systemsArrived?.countDown()
+                        systemsHold?.await(30, TimeUnit.SECONDS)
                         MockResponse().setBody(SYSTEMS_BODY)
                     }
                     path.startsWith("/media") -> MockResponse()
@@ -299,6 +308,140 @@ class ScreenScraperCacheTest {
         assertTrue(errors.isEmpty(), "concurrent identification failed: ${errors.firstOrNull()}")
         assertEquals(files.size, jeuInfosCalls.get(),
                      "240 requests over 40 ROMs should be 40 questions")
+    }
+
+    // The system table is one more thing the four requests of a game screen miss
+    // together, and each of them used to fetch it, write it to the one file and read
+    // it back. That is three requests too many every time. It is also a way for the
+    // test above to count 41 questions, as it did once on CI: of two callers writing
+    // the table at the same moment one rewrites it in place, and a caller that reads
+    // it back just then can find it empty, send no `systemeid` and so ask under a
+    // cache key of its own. Whether that is what happened there is not known.
+    //
+    // That moment cannot be staged from here. What leads to it can. The table on disk
+    // is from an older schema, so every caller that looks at it says so in the log,
+    // and the server keeps the first `systemesListe` unanswered until all four have
+    // looked. By then each of them has decided that the table must be fetched.
+    @Test fun `four callers that find the system table stale together fetch it once`() {
+        val old = JSONObject(ScreenScraperSystemMap.toJson(
+            listOf(ScreenScraperClient.SsSystem(3, listOf("nes"), listOf("nes")))))
+        old.remove("schemaVersion")
+        BridgePaths.writeAtomic(paths.cache(SS_SYSTEMS_FILE), old.toString())
+
+        val usa = rom("Contra (USA).nes", "usa-bytes")
+        val d = dispatcher()
+        val kinds = listOf("cover", "wheel", "wallpaper", "screenshot")
+
+        val looked = java.util.Collections.synchronizedSet(mutableSetOf<Thread>())
+        val allLooked = CountDownLatch(1)
+        BridgeLog.current = object : BridgeLog {
+            override fun d(tag: String, msg: String) = Unit
+            override fun i(tag: String, msg: String) {
+                if (!msg.contains("older schema")) return
+                looked += Thread.currentThread()
+                if (looked.size == kinds.size) allLooked.countDown()
+            }
+            override fun w(tag: String, msg: String, t: Throwable?) = Unit
+            override fun e(tag: String, msg: String, t: Throwable?) = Unit
+        }
+        val hold = CountDownLatch(1)
+        systemsHold = hold
+
+        val pool = Executors.newFixedThreadPool(kinds.size)
+        val futures = kinds.map { kind ->
+            pool.submit { d.run("ss", "media", mediaParams(usa, kind)) }
+        }
+        val everyoneLooked = allLooked.await(30, TimeUnit.SECONDS)
+        hold.countDown()
+        futures.forEach { it.get(30, TimeUnit.SECONDS) }
+        pool.shutdown()
+
+        assertTrue(everyoneLooked, "not every caller looked at the table before it was fetched")
+        assertEquals(1, systemsCalls.get(),
+                     "four callers that found the table stale together should fetch it once")
+        assertEquals(1, jeuInfosCalls.get(),
+                     "one table read by four callers is one system id, and one question")
+    }
+
+    // `op=systems` writes the same file, so it fetches under the same lock. A refresh
+    // is on its way here, its `systemesListe` kept unanswered at the server, when a
+    // request finds the table on disk stale. The request waits for the refresh and
+    // takes the table that one writes, rather than fetch and write another beside it.
+    @Test fun `a request that finds the table stale during a refresh waits for it`() {
+        val old = JSONObject(ScreenScraperSystemMap.toJson(
+            listOf(ScreenScraperClient.SsSystem(3, listOf("nes"), listOf("nes")))))
+        old.remove("schemaVersion")
+        BridgePaths.writeAtomic(paths.cache(SS_SYSTEMS_FILE), old.toString())
+
+        val usa = rom("Contra (USA).nes", "usa-bytes")
+        val d = dispatcher()
+
+        // A refresh does not look at the table on disk, so the only caller to say
+        // that it is from an older schema is the request.
+        val looked = CountDownLatch(1)
+        BridgeLog.current = object : BridgeLog {
+            override fun d(tag: String, msg: String) = Unit
+            override fun i(tag: String, msg: String) {
+                if (msg.contains("older schema")) looked.countDown()
+            }
+            override fun w(tag: String, msg: String, t: Throwable?) = Unit
+            override fun e(tag: String, msg: String, t: Throwable?) = Unit
+        }
+        val hold = CountDownLatch(1)
+        val arrived = CountDownLatch(1)
+        systemsHold = hold
+        systemsArrived = arrived
+
+        val pool = Executors.newFixedThreadPool(2)
+        val refresh = pool.submit { d.run("ss", "systems", mapOf("refresh" to "1")) }
+        val refreshArrived = arrived.await(30, TimeUnit.SECONDS)
+        val game = pool.submit { d.run("ss", "game", mediaParams(usa)) }
+        val gameLooked = looked.await(30, TimeUnit.SECONDS)
+        hold.countDown()
+        refresh.get(30, TimeUnit.SECONDS); game.get(30, TimeUnit.SECONDS)
+        pool.shutdown()
+
+        assertTrue(refreshArrived, "the refresh never reached the server")
+        assertTrue(gameLooked, "the request never looked at the table")
+        assertEquals(1, systemsCalls.get(),
+                     "a request that found the table stale during a refresh fetched it again")
+    }
+
+    // The lock is for fetching the table, not for reading it. A request for a platform
+    // the table does not list fetches it, and is kept waiting at the server with the
+    // lock in hand. The table on disk is from today all the while, and `op=systems`
+    // answers with it at once. It lists two systems and the server's lists one.
+    @Test fun `a fresh table is returned without waiting for a fetch in progress`() {
+        BridgePaths.writeAtomic(paths.cache(SS_SYSTEMS_FILE), ScreenScraperSystemMap.toJson(listOf(
+            ScreenScraperClient.SsSystem(3, listOf("nes"), listOf("nes")),
+            ScreenScraperClient.SsSystem(1, listOf("megadrive"), listOf("md")))))
+
+        val snes = rom("Contra III (USA).sfc", "snes-bytes")
+        val d = dispatcher()
+
+        val hold = CountDownLatch(1)
+        val arrived = CountDownLatch(1)
+        systemsHold = hold
+        systemsArrived = arrived
+
+        val pool = Executors.newFixedThreadPool(2)
+        val game = pool.submit { d.run("ss", "game", mediaParams(snes) + ("platform" to "snes")) }
+        val fetching = arrived.await(30, TimeUnit.SECONDS)
+        val systems = pool.submit<Any> { d.run("ss", "systems", emptyMap()).results }
+        // A caller that waits for the fetch times out here: the server answers that one
+        // only below, or after the thirty seconds it keeps a request for at the most.
+        val table = runCatching { systems.get(10, TimeUnit.SECONDS) }
+        hold.countDown()
+        game.get(30, TimeUnit.SECONDS); systems.get(30, TimeUnit.SECONDS)
+        pool.shutdown()
+
+        assertTrue(fetching, "the request never fetched the table")
+        assertTrue(table.isSuccess,
+                   "op=systems on a fresh table waited for another caller's fetch: " +
+                   "${table.exceptionOrNull()}")
+        val listed = table.getOrThrow() as JSONArray
+        assertEquals(2, listed.length(), "not the table that was on disk: $listed")
+        assertEquals(1, systemsCalls.get(), "op=systems fetched a table that was fresh")
     }
 
     // ── H1.3: the system table is not kept forever ──────────────────────────

@@ -286,10 +286,19 @@ class ScanLedger(private val file: File) {
          * decided before any I/O, so what gets redone is the misses and the
          * ambiguous archives.
          *
+         * 4: the Android scan service had a loop of its own, which still hashed
+         * the largest entry of an archive, the rule 2 retired, and wrote the
+         * virtual ids it was answered into this ledger under the number that
+         * stood here: 3, for verdicts 3 does not describe. The service runs the
+         * pipeline now and an archive resolves there as it does on the desktop,
+         * so what that loop recorded is asked about again. The number is one
+         * for both shells: the desktop redoes its misses and its ambiguous
+         * archives once more, with nothing changed in how it reaches them.
+         *
          * The one counter for what a file resolves to. A second version kept
          * elsewhere for part of the same decision would drift from this one, and
          * bumping either would leave the other's verdicts standing.
          */
-        const val ALGORITHM_VERSION = 3
+        const val ALGORITHM_VERSION = 4
     }
 }

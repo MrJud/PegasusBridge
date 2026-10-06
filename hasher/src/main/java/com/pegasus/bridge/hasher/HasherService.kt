@@ -10,6 +10,7 @@ import android.content.Intent
 import android.os.IBinder
 import android.os.PowerManager
 import android.util.Log
+import com.pegasus.bridge.core.BridgePaths
 import com.pegasus.bridge.core.Config
 import com.pegasus.bridge.core.FuzzyMatch
 import com.pegasus.bridge.core.Paths
@@ -104,12 +105,16 @@ class HasherService : Service() {
         val rootsCsv = intent?.getStringExtra(EXTRA_ROOTS) ?: run { endWithoutScan(startId); return START_NOT_STICKY }
         val jobId    = intent.getStringExtra(EXTRA_JOB_ID) ?: java.util.UUID.randomUUID().toString()
         val roots    = rootsCsv.split('|', ',').map { it.trim() }.filter { it.isNotEmpty() }
+        // When the job began, read once. Every record it leaves carries this,
+        // the one it ends on and an error included; each used to carry the
+        // time it was written.
+        val startedAt = BridgePaths.epochSeconds()
 
         val creds = Config.load()
         val raUser   = creds.ra?.user   ?: ""
         val raApiKey = creds.ra?.apiKey ?: ""
         if (raUser.isEmpty() || raApiKey.isEmpty()) {
-            writeError(jobId, "Missing RA credentials in credentials.json")
+            writeError(jobId, ScanJobRecord.error(jobId, "Missing RA credentials in credentials.json", startedAt))
             endWithoutScan(startId); return START_NOT_STICKY
         }
 
@@ -119,14 +124,14 @@ class HasherService : Service() {
 
         scanJob = scope.launch {
             try {
-                runScan(roots, jobId, raUser, raApiKey)
+                scan(roots, jobId, raUser, raApiKey, startedAt)
             } catch (e: CancellationException) {
                 Log.i(TAG, "Scan cancelled")
-                writeError(jobId, "Cancelled")
+                writeError(jobId, ScanJobRecord.error(jobId, "Cancelled", startedAt))
             } catch (e: ScanAborted) {
                 // Logged where it was decided, with the counts. The message is
                 // the advice the theme shows, so it goes out as it is.
-                writeError(jobId, e.message ?: "Scan aborted")
+                writeError(jobId, ScanJobRecord.error(jobId, e.message ?: "Scan aborted", startedAt))
             } catch (t: Throwable) {
                 // Throwable, not Exception. An Error — an UnsatisfiedLinkError
                 // from the native hasher, or one a lookup's owner hands every file
@@ -136,7 +141,7 @@ class HasherService : Service() {
                 // failure; rethrown after the error is written, it would still
                 // kill the app.
                 Log.e(TAG, "Scan failed", t)
-                writeError(jobId, t.message ?: t.javaClass.simpleName)
+                writeError(jobId, ScanJobRecord.error(jobId, t.message ?: t.javaClass.simpleName, startedAt))
             } finally {
                 // Under the lock a start request takes. Outside it, one arriving
                 // after isRunning went false began a scan that the rest of this
@@ -183,6 +188,55 @@ class HasherService : Service() {
     }
 
     // ── Pipeline ────────────────────────────────────────────────────────────
+
+    /**
+     * One scan, run by the pipeline the desktop daemon runs. What is left to
+     * this class is what only Android has: the record the theme polls, the
+     * notification, and the thermal back-off the pipeline takes as its
+     * throttle.
+     *
+     * A scan the pipeline stops itself comes back as a summary like any other
+     * and is written here as an error, which it is for whoever is watching. A
+     * cancel and a failure come out as what was thrown, for [handleStart] to
+     * record. Once it has found the files, the pipeline rebuilds the index and
+     * saves the ledger on each of the three ways out.
+     */
+    private suspend fun scan(
+        roots: List<String>, jobId: String, raUser: String, raApiKey: String, startedAt: Long
+    ) {
+        // Not left to the pipeline, whose BridgePaths has no pegasus/ to make.
+        Paths.ensureAll()
+        // Before the directories are walked. The pipeline says nothing while it
+        // walks them, which takes a while on a card, and a job that has left no
+        // record by the theme's fifth poll is taken for one that has finished.
+        writePending(jobId, ScanJobRecord.started(jobId, startedAt))
+
+        val pipeline = RomScanPipeline(
+            paths         = Paths.bridge,
+            hasher        = ArchiveAwareHasher(ScanCollaborators.hasher(), cacheDir),
+            lookup        = ScanCollaborators.lookup(raUser, raApiKey),
+            throttleMs    = ::thermalDelayMs,
+            hashWorkers   = NUM_HASH_PRODUCERS,
+            extensionsFor = RomScanExtensions.forScan
+        )
+
+        // The pipeline reports more often than a record is worth writing. Only
+        // its collector calls back, one result at a time, so the count of the
+        // last record written needs no lock.
+        var published = 0
+        val summary = pipeline.scan(roots) { p ->
+            if (ScanJobRecord.due(p.processed, p.total, published)) {
+                published = p.processed
+                val record = ScanJobRecord.running(jobId, p, startedAt)
+                writePending(jobId, record)
+                // What the popup shows, so the two cannot come to differ.
+                updateNotification(record.getString("message"), p.processed, p.total)
+            }
+        }
+
+        val record = ScanJobRecord.finished(jobId, summary, raUser, startedAt)
+        if (summary.aborted) writeError(jobId, record) else writePending(jobId, record)
+    }
 
     private data class HashJob(
         val file: File, val cacheKey: String, val hash: HashResult,
@@ -634,24 +688,26 @@ class HasherService : Service() {
         tmp.renameTo(out)
     }
 
-    // What the record says is ScanJobRecord's; this is where it goes. [record]
-    // is handed the time of the write, for both stamps: the loop above never
-    // kept when its job began, and has always written the time of the write
-    // as startedAt too.
+    // What the record says is ScanJobRecord's; this is where it goes.
     //
     // Through Paths.writeAtomic, as the error record already went. A record of
     // a scan under way had a temp file and a rename of its own, whose result
     // nobody looked at: a rename that failed left the record before it in
     // place and said nothing. The record is written directly when that happens.
+    private fun writePending(jobId: String, record: JSONObject) =
+        Paths.writeAtomic(Paths.pending(jobId), record.toString())
+
+    // For runScan, which never kept when its job began: [record] is handed the
+    // time of the write, for both stamps.
     private fun writePending(jobId: String, record: (now: Long) -> JSONObject) =
-        Paths.writeAtomic(Paths.pending(jobId), record(System.currentTimeMillis() / 1000L).toString())
+        writePending(jobId, record(System.currentTimeMillis() / 1000L))
 
     // Done is marked only once the record is whole. Written in place it was
     // truncated first: a theme poll landing in that gap read an empty file,
     // took it for a finished job, and never showed the abort, the cancel or
     // the error this is the only record of.
-    private fun writeError(jobId: String, error: String) {
-        writePending(jobId) { ScanJobRecord.error(jobId, error, it, it) }
+    private fun writeError(jobId: String, record: JSONObject) {
+        writePending(jobId, record)
         Paths.markDone(jobId)
     }
 
@@ -739,7 +795,12 @@ class HasherService : Service() {
     }
 
     private fun thermalDelayMs(): Long {
-        val status = try { powerManager.currentThermalStatus } catch (_: Exception) { PowerManager.THERMAL_STATUS_NONE }
+        // Throwable, not Exception. currentThermalStatus came with Android 10 and
+        // this installs from Android 8, where the call is a NoSuchMethodError: an
+        // Error. And the pipeline calls its throttle after the hash, outside the
+        // try that makes a file's failure that file's alone, so what gets out of
+        // here ends the scan.
+        val status = try { powerManager.currentThermalStatus } catch (_: Throwable) { PowerManager.THERMAL_STATUS_NONE }
         return when (status) {
             PowerManager.THERMAL_STATUS_NONE     -> 0L
             PowerManager.THERMAL_STATUS_LIGHT    -> 0L      // softened

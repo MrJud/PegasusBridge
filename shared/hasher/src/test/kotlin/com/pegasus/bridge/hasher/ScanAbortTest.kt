@@ -366,6 +366,46 @@ class ScanAbortTest {
     }
 
     /**
+     * A lookup that holds its thread and has no suspension point: a blocking
+     * read, as one written without a thought for cancellation makes. The scope
+     * cancels the workers when the collector gives up, but a cancel is noticed
+     * only where a coroutine suspends, and such a worker never does. The next
+     * hash is waiting in the queue's buffer, the lookup blocks, and the result
+     * queue has room. Each went on through every hash still queued while the
+     * scope waited for it: 42 lookups here, the 32 of the buffer among them,
+     * where 10 end the scan.
+     *
+     * The first eight are short, and long enough for the producers to fill the
+     * queue behind them. The ones after are long, so that the scan has been
+     * stopped well before a worker comes back for another.
+     */
+    @Test fun `a lookup that cannot be interrupted is not asked again once the scan has stopped`(): Unit = runBlocking {
+        repeat(200) { rom("nes", "Game$it.nes", "hash-$it") }
+        val calls = AtomicInteger()
+        val failures = AtomicInteger()
+        val deaf = object : RaHashLookup {
+            override val consecutiveFailures: Int get() = failures.get()
+            override suspend fun lookup(hash: String): GameMetadata? {
+                Thread.sleep(if (calls.incrementAndGet() > RomScanPipeline.MAX_CONSECUTIVE_FAILURES) 300 else 30)
+                failures.incrementAndGet()
+                return null
+            }
+        }
+
+        val s = withTimeout(20_000) {
+            RomScanPipeline(paths, ContentHasher(), deaf, throttleMs = { 0L })
+                .scan(listOf(romRoot.absolutePath))
+        }
+
+        assertTrue(s.aborted)
+        assertEquals(RomScanPipeline.AbortCause.SOURCE_DOWN, s.abortCause)
+        // The eight that stop it, and the one each worker was held in by then.
+        val atMost = RomScanPipeline.MAX_CONSECUTIVE_FAILURES + RomScanPipeline.DEFAULT_API_WORKERS
+        assertTrue(calls.get() <= atMost,
+                   "${calls.get()} lookups: a scan that had stopped went on asking, past the $atMost that end it")
+    }
+
+    /**
      * Cancelled from outside — the daemon shutting down, the Android service
      * being stopped — while one worker owns a lookup that will never answer and
      * another is waiting on it for a copy of the same ROM. The cancel must

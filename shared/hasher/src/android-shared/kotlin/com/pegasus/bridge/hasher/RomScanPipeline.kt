@@ -232,6 +232,16 @@ class RomScanPipeline(
                 val workers = List(apiWorkers) {
                     launch(Dispatchers.IO) {
                         for (job in hashQueue) {
+                            // Asked, as the producers ask, because nothing else here
+                            // need notice that the scan has been stopped. A cancel
+                            // shows only where a coroutine suspends: a hash waiting in
+                            // the buffer is taken without suspending, and so is a result
+                            // sent while the queue has room. A lookup that suspends is
+                            // cancelled there, as RaApiHashLookup is at its next
+                            // request. One that holds its thread is not, and its worker
+                            // went on through every hash still queued, 32 of them, with
+                            // the scope waiting for it.
+                            if (!isActive) break
                             // One network call per distinct hash, however many files share it.
                             // Claiming the hash and registering the promise happen under the
                             // same lock, so exactly one worker owns the call and the others

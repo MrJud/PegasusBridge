@@ -3,6 +3,7 @@ package com.pegasus.bridge.hasher
 import com.pegasus.bridge.core.BridgePaths
 import com.pegasus.bridge.core.SchemaVersion
 import org.json.JSONObject
+import java.util.concurrent.TimeUnit
 
 /**
  * A ROM scan's record in `pending/{jobId}.json` as the Android service writes
@@ -47,7 +48,7 @@ object ScanJobRecord {
     )
 
     /**
-     * The record before the first result.
+     * The record before anything is known of the library.
      *
      * For the caller to write before it walks the directories, which on a card
      * can take a while: a job that has left no record by the theme's fifth poll
@@ -55,6 +56,24 @@ object ScanJobRecord {
      */
     fun started(jobId: String, startedAt: Long, updatedAt: Long = BridgePaths.epochSeconds()): JSONObject =
         pending(jobId, "running", 0.0, "Scanning ROM folders…", Counts(0, 0, 0, 0, 0, 0, 0), startedAt, updatedAt)
+
+    /**
+     * The record once the files are counted, until the first result.
+     *
+     * [started] with another message, and nothing else of it moved: the walk
+     * is over, so "Scanning ROM folders…" is no longer what is going on, and
+     * the first result can be a long way off, behind a disc image to hash or
+     * a lookup that is being retried. A sentence, and not `[0/13]` with a
+     * name after it: the theme takes a message of that shape apart and shows
+     * what follows the numbers as the file in hand. This one it shows whole,
+     * as it shows the one before it.
+     */
+    fun checking(
+        jobId: String, total: Int,
+        startedAt: Long, updatedAt: Long = BridgePaths.epochSeconds()
+    ): JSONObject =
+        pending(jobId, "running", 0.0, "Checking $total ROM ${if (total == 1) "file" else "files"}…",
+                Counts(0, 0, 0, 0, 0, 0, 0), startedAt, updatedAt)
 
     /**
      * The record after a result. The name goes after the two numbers as it is:
@@ -187,18 +206,67 @@ object ScanJobRecord {
     }
 
     /**
-     * Whether a result is worth a record, for a caller that is told of results
-     * more often than it should write.
+     * Whether a result is worth a record, for a caller that is told of every
+     * result, which is more often than it should write.
      *
-     * About fifty records over a scan and never one for fewer than ten results,
-     * the step the Android service has always written by, and the last result
-     * whatever the gap. It is a rule on the gap since the record before, and
-     * not on [processed] being a multiple of that step. The pipeline reports
-     * every `total / 50` results, and the multiples of the two steps meet only
-     * now and then: a library of 480 files would have had a record every 90.
+     * Four reasons, any one of which is enough:
+     *
+     * - nothing has been recorded yet. The first result gets a record however
+     *   small a part of the library it is. Until it had one, a scan of 13
+     *   files whose lookups all failed showed "Scanning ROM folders…" at 0%
+     *   for the 31 seconds it took to stop: eight results are not ten;
+     * - it is the last result;
+     * - a fiftieth of the library has gone by since the last record, or ten
+     *   results where that is more: the step the Android service has always
+     *   written by. On a library read from its cache, thousands of results a
+     *   second, this is the rule that holds the writes to about fifty. It
+     *   goes by the gap since the record before and not by [processed] being
+     *   a multiple of the step, since a record written for another reason
+     *   moves the count the gap is taken from;
+     * - [RECORD_INTERVAL_MS] has gone by since the last record. On a first
+     *   scan a result is a file hashed and a lookup answered, perhaps two a
+     *   second, and a fiftieth of a large library took minutes to go by with
+     *   the record standing still. This adds at most one write a second.
+     *
+     * [lastPublished] is the count the last record carried, 0 before the
+     * first, and [sinceLastMs] the time since it was written, by a clock that
+     * cannot be set: [Pace] keeps both.
      */
-    fun due(processed: Int, total: Int, lastPublished: Int): Boolean =
-        processed == total || processed - lastPublished >= (total / 50).coerceAtLeast(10)
+    fun due(processed: Int, total: Int, lastPublished: Int, sinceLastMs: Long): Boolean =
+        lastPublished == 0 || processed == total ||
+        processed - lastPublished >= (total / 50).coerceAtLeast(10) ||
+        sinceLastMs >= RECORD_INTERVAL_MS
+
+    /**
+     * Half of the two seconds between the theme's polls, so that each poll
+     * finds a record written since the one before it, of a scan that has
+     * moved. Shorter would be writes nobody reads.
+     */
+    const val RECORD_INTERVAL_MS = 1_000L
+
+    /**
+     * [due] for a scan under way: what the last record carried and when it
+     * was written, kept from one result to the next. One for a scan, asked by
+     * the collector's callback alone, so it needs no lock.
+     *
+     * The clock is nanoTime, as the lookup's pacing is and for its reason:
+     * the wall clock can be stepped, and a step backwards would hold the
+     * record still for as long as the step. A test gives its own.
+     */
+    class Pace(private val nanoTime: () -> Long = System::nanoTime) {
+        private var published = 0
+        private var publishedAt = 0L
+
+        /** Whether to write a record for this result. A yes is taken as the record written. */
+        fun due(processed: Int, total: Int): Boolean {
+            val now = nanoTime()
+            val sinceLastMs = TimeUnit.NANOSECONDS.toMillis(now - publishedAt)
+            if (!ScanJobRecord.due(processed, total, published, sinceLastMs)) return false
+            published = processed
+            publishedAt = now
+            return true
+        }
+    }
 
     private fun clause(count: Int, what: String): String =
         if (count > 0) ", $count $what" else ""

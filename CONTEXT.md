@@ -120,15 +120,28 @@ and leaves it there when the scan is over. The theme polls it:
 - A running or done record has `progress` (0–1), `message`, and seven counters
   that add up to the files processed so far: `newEntries`, `cachedHits`,
   `skippedPlatforms`, `unmatched`, `incompatible`, `hashFailed`,
-  `failedLookups`. The message is `Scanning ROM folders…` before the first
-  result, `[processed/total] file name` after each, and at the end either
-  `No ROMs found` or a sentence that begins `Done — `.
+  `failedLookups`. The message is `Scanning ROM folders…` while the
+  directories are walked, `Checking N ROM files…` from the count of them to
+  the first result, `[processed/total] file name` after a result, and at the
+  end either `No ROMs found` or a sentence that begins `Done — `. A library
+  with no ROM in it goes from the first of these to `No ROMs found`.
 - An error record has `error` and neither progress nor counters. It is how a
   scan ends when it is cancelled, when credentials are missing, when the
   pipeline stops itself (the error then says what to do next), and when
   anything is thrown — a final `_index.json` that cannot be written included.
 
 `done/{jobId}.done` holds the text `done`, written after the record is whole.
+
+Not every result gets a record (`ScanJobRecord.due`). One is written for the
+first result and for the last; when a fiftieth of the library has gone by since
+the record before, or ten results where that is more, which holds a library
+read from its cache to about fifty records; and when a second has gone by since
+the record before, which is half the two seconds between the theme's polls. The
+last of these is what keeps the record moving through a first scan, where a
+result is a file hashed and a lookup answered: a fiftieth of a large library
+used to take minutes to go by, and a scan of 13 files that stopped at its
+eighth result never wrote a record of a result at all. That second is measured
+with `System.nanoTime`, which setting the clock does not move.
 
 ### When the pipeline stops a scan
 
@@ -234,8 +247,12 @@ On the desktop the record is the body of `GET /jobs/{id}`. The status values
 are the same, and a scan the pipeline stopped is an error with the same
 sentence. What differs: the message is empty until the first report and
 `[processed/total] file name` from then on, the end included — the desktop
-writes none of `Scanning ROM folders…`, `No ROMs found` and the sentence that
-begins `Done — `, and says what a scan found in `result`; only `newEntries`,
+writes none of `Scanning ROM folders…`, `Checking N ROM files…`,
+`No ROMs found` and the sentence that begins `Done — `, and says what a scan
+found in `result`; the record moves on the pipeline's own reports, one for
+every fiftieth of the library and one for the last result, with no rule by the
+clock, because `JobRegistry` writes its copy in `pending/` for every report it
+is given; only `newEntries`,
 `cachedHits` and `skippedPlatforms` are published as counters, and none before
 the first report; an error keeps the progress, message and counters the job
 had; a scan that returned, stopped or not, has a `result` object; the copy in

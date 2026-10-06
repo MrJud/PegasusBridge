@@ -1243,12 +1243,19 @@ class ThemeContractTest {
 
     /**
      * Runs the real pipeline and keeps its job record as ScanJobRecord has a
-     * caller keep it: the first record before the walk, one for each report
-     * that is due, the last from the summary. [afterEach] runs when a record is
-     * in place, which is when a poll of the theme's can find it.
+     * caller keep it, which is as HasherService does: the first record before
+     * the walk, one when the files are counted, one for each result that
+     * [ScanJobRecord.Pace] says is due, of a pipeline told to report them all,
+     * and the last from the summary. [afterEach] runs when a record is in
+     * place, which is when a poll of the theme's can find it.
+     *
+     * [nanoTime] is the clock the pace goes by. Stopped unless a test moves
+     * it, so that no record is written for the time that went by: on the real
+     * clock a machine that stalls for a second in the middle of a scan would
+     * add one, and the tests that count records would fail for it.
      */
     private suspend fun recordedScan(
-        job: String, h: RomHasher, l: RaHashLookup, afterEach: () -> Unit = {}
+        job: String, h: RomHasher, l: RaHashLookup, nanoTime: () -> Long = { 0L }, afterEach: () -> Unit = {}
     ): Recorded {
         val startedAt = BridgePaths.epochSeconds()
         val records = ArrayList<JSONObject>()
@@ -1258,13 +1265,12 @@ class ThemeContractTest {
             afterEach()
         }
         write(ScanJobRecord.started(job, startedAt))
-        var published = 0
-        val summary = pipeline(h, l).scan(listOf(romRoot.absolutePath)) { p ->
-            if (ScanJobRecord.due(p.processed, p.total, published)) {
-                published = p.processed
-                write(ScanJobRecord.running(job, p, startedAt))
+        val pace = ScanJobRecord.Pace(nanoTime)
+        val summary = RomScanPipeline(paths, h, l, throttleMs = { 0L }, reportStep = { 1 })
+            .scan(listOf(romRoot.absolutePath),
+                  onCounted = { total -> write(ScanJobRecord.checking(job, total, startedAt)) }) { p ->
+                if (pace.due(p.processed, p.total)) write(ScanJobRecord.running(job, p, startedAt))
             }
-        }
         write(ScanJobRecord.finished(job, summary, "harness", startedAt))
         return Recorded(records, summary)
     }
@@ -1294,19 +1300,22 @@ class ThemeContractTest {
         val seen = ArrayList<View>()
         val first = recordedScan("job1", hashes, answers) { theme.readHasherProgress(); seen += theme.view() }
 
-        // Eleven files: a record at the tenth result and one at the last.
-        assertEquals(4, first.records.size)
-        val (start, tenth, last, done) = first.records
+        // Eleven files: a record before the walk and one after it, one at
+        // the first result, one at the last, ten results on, and the sentence.
+        assertEquals(5, first.records.size)
+        val (start, counted, one, last, done) = first.records
         for (r in first.records) assertEquals(androidRunningKeys + failureCounts, r.keySet())
-        assertTrue(tenth.getString("message").startsWith("[10/11] "), tenth.getString("message"))
+        assertEquals("Checking 11 ROM files…", counted.getString("message"))
+        assertTrue(one.getString("message").startsWith("[1/11] "), one.getString("message"))
         assertTrue(last.getString("message").startsWith("[11/11] "), last.getString("message"))
 
         assertEquals(View("running", 0, 0, 0, "Scanning ROM folders…", 0, 0), seen[0])
-        assertEquals(View("running", 91, 10, 11, tenth.getString("message").removePrefix("[10/11] "),
-                          tenth.getInt("newEntries"), tenth.getInt("cachedHits")), seen[1])
-        assertEquals(View("running", 100, 11, 11, last.getString("message").removePrefix("[11/11] "), 5, 0), seen[2])
+        assertEquals(View("running", 0, 0, 0, "Checking 11 ROM files…", 0, 0), seen[1])
+        assertEquals(View("running", 9, 1, 11, one.getString("message").removePrefix("[1/11] "),
+                          one.getInt("newEntries"), one.getInt("cachedHits")), seen[2])
+        assertEquals(View("running", 100, 11, 11, last.getString("message").removePrefix("[11/11] "), 5, 0), seen[3])
         // "done" in the record does not end the scan for the theme. The marker does.
-        assertEquals(View("running", 100, 11, 11, androidMixedSentence, 5, 0), seen[3])
+        assertEquals(View("running", 100, 11, 11, androidMixedSentence, 5, 0), seen[4])
         leaveMarker()
         theme.readHasherProgress()
         assertEquals(View("done", 100, 11, 11, androidMixedSentence, 5, 0), theme.view())
@@ -1340,6 +1349,8 @@ class ThemeContractTest {
         val theme = androidTheme()
         val records = recordedScan("job1", ContentHasher(), MapLookup(catalogue)) { theme.readHasherProgress() }.records
 
+        // The record before the walk and the one it ends on. Nothing says
+        // "Checking 0 ROM files…" in between.
         assertEquals(2, records.size)
         val last = records.last()
         assertEquals(androidRunningKeys + failureCounts, last.keySet())
@@ -1597,10 +1608,11 @@ class ThemeContractTest {
         repeat(4) { rom("snes", "unanswered$it.sfc", "hash-silent-$it") }
         val records = recordedScan("job2", hashes, answers).records
 
-        // 51 files: a record every ten results, and one for the last.
+        // 51 files: a record for the first result and one every ten results
+        // after it, the fifth of which is the last.
         val running = records.filter { it.getString("message").startsWith("[") }
         val collected = running.map { it.getString("message").substringAfter('[').substringBefore('/').toInt() }
-        assertEquals(listOf(10, 20, 30, 40, 50, 51), collected)
+        assertEquals(listOf(1, 11, 21, 31, 41, 51), collected)
         for ((r, n) in running.zip(collected)) {
             assertEquals(androidRunningKeys + failureCounts, r.keySet())
             assertEquals("running", r.getString("status"))
@@ -1629,8 +1641,61 @@ class ThemeContractTest {
             theme.readHasherProgress(); seen += theme.view()
         }.records
 
-        assertEquals("[1/1] [BIOS] Super Game Boy (World).sfc", records[1].getString("message"))
-        assertEquals(View("running", 100, 1, 1, "[BIOS] Super Game Boy (World).sfc", 1, 0), seen[1])
+        // After the record before the walk and the one that counts the file.
+        assertEquals("[1/1] [BIOS] Super Game Boy (World).sfc", records[2].getString("message"))
+        assertEquals(View("running", 100, 1, 1, "[BIOS] Super Game Boy (World).sfc", 1, 0), seen[2])
+    }
+
+    // Between the walk and the first result the record says how many files
+    // there are to check. It is the record before the walk with another
+    // message: running, no progress, seven counts of nothing. The theme shows
+    // the sentence whole, as it shows "Scanning ROM folders…", and a theme
+    // that is reloaded returns to the scan.
+    @Test fun `once the files are counted the record says how many are being checked`() {
+        val record = JSONObject(ScanJobRecord.checking("job1", 13, 1791233730, 1791233732).toString())
+        assertEquals(androidRunningKeys + failureCounts, record.keySet())
+        assertEquals("Checking 13 ROM files…", record.getString("message"))
+        assertEquals(fields(JSONObject(ScanJobRecord.started("job1", 1791233730, 1791233732).toString())) - "message",
+                     fields(record) - "message")
+        assertEquals("running", record.getString("status"))
+        assertEquals(0.0, record.getDouble("progress"))
+        for (k in sevenCounts) assertEquals(0, record.getInt(k), k)
+
+        BridgePaths.writeAtomic(paths.pending("job1"), record.toString())
+        val theme = androidTheme().apply { readHasherProgress() }
+        assertEquals(View("running", 0, 0, 0, "Checking 13 ROM files…", 0, 0), theme.view())
+        assertEquals("job1", theme.activeScanJobId())
+
+        // One file is one file, and a count however large never makes the
+        // message one the theme would take apart for two numbers and a name.
+        assertEquals("Checking 1 ROM file…", ScanJobRecord.checking("job1", 1, 1, 2).getString("message"))
+        assertEquals("Checking 2 ROM files…", ScanJobRecord.checking("job1", 2, 1, 2).getString("message"))
+        assertEquals("Checking 48213 ROM files…", ScanJobRecord.checking("job1", 48213, 1, 2).getString("message"))
+    }
+
+    // The scan the tablet ran in airplane mode, as its record went. Thirteen
+    // files and no lookup answered: the record stood at "Scanning ROM
+    // folders…" and 0% for 31 seconds, because a record was written every ten
+    // results and there were eight. The count is said as soon as there is
+    // one, and the first result has a record of its own, so the theme has
+    // seen both before the error.
+    @Test fun `a scan that stops at its first result has left a record of the count and of that result`(): Unit = runBlocking {
+        repeat(13) { rom("snes", "g$it.sfc", "hash-$it") }
+        val theme = androidTheme()
+        val seen = ArrayList<View>()
+
+        val records = withTimeout(5_000) {
+            recordedScan("job1", ContentHasher(), NoConnection()) { theme.readHasherProgress(); seen += theme.view() }
+        }.records
+
+        assertEquals(4, records.size)
+        assertEquals(View("running", 0, 0, 0, "Scanning ROM folders…", 0, 0), seen[0])
+        assertEquals(View("running", 0, 0, 0, "Checking 13 ROM files…", 0, 0), seen[1])
+        val first = records[2].getString("message")
+        assertTrue(first.startsWith("[1/13] "), first)
+        assertEquals(1, records[2].getInt("failedLookups"))
+        assertEquals(View("running", 8, 1, 13, first.removePrefix("[1/13] "), 0, 0), seen[2])
+        assertEquals("error", seen[3].status)
     }
 
     /** The results the pipeline reports, by its own rule: every fiftieth of the library, and the last. */
@@ -1639,53 +1704,118 @@ class ThemeContractTest {
         return (1..total).filter { it % step == 0 || it == total }
     }
 
-    /** The ones of [reported] that a caller asking [ScanJobRecord.due] writes a record for. */
-    private fun writtenOf(total: Int, reported: List<Int> = reportedOf(total)): List<Int> {
-        var last = 0
-        return reported.filter { n -> ScanJobRecord.due(n, total, last).also { if (it) last = n } }
-    }
-
-    // What the next test rests on. Files of a platform that is not covered,
-    // which the pipeline reports like any other and neither reads nor asks about.
-    @Test fun `the pipeline reports every fiftieth of a library and its last result`(): Unit = runBlocking {
+    // What the desktop's record moves by: the router publishes every report
+    // it is given. Files of a platform that is not covered, which the pipeline
+    // reports like any other and neither reads nor asks about. And a pipeline
+    // told to report every result does, which is what the Android service
+    // tells it; a step of nothing is taken for one, and not divided by.
+    @Test fun `the pipeline reports every fiftieth of a library and its last result, or as often as it is told`(): Unit = runBlocking {
         for (total in listOf(7, 120, 480)) {
             val library = File(romRoot, "library-$total")
             File(library, "switch").mkdirs()
             repeat(total) { File(library, "switch/title$it.zip").writeText("never read") }
-            val reported = ArrayList<Int>()
+            suspend fun reportedBy(pipeline: RomScanPipeline): List<Int> = ArrayList<Int>().also { reported ->
+                pipeline.scan(listOf(library.absolutePath)) { reported += it.processed }
+            }
 
-            pipeline(ContentHasher(), MapLookup(catalogue)).scan(listOf(library.absolutePath)) { reported += it.processed }
-
-            assertEquals(reportedOf(total), reported, "$total files")
+            assertEquals(reportedOf(total), reportedBy(pipeline(ContentHasher(), MapLookup(catalogue))), "$total files")
+            for (step in listOf(1, 0)) {
+                val told = RomScanPipeline(paths, ContentHasher(), MapLookup(catalogue), reportStep = { step })
+                assertEquals((1..total).toList(), reportedBy(told), "$total files, a step of $step")
+            }
+            val seenTotals = ArrayList<Int>()
+            val everyFifth = RomScanPipeline(paths, ContentHasher(), MapLookup(catalogue),
+                                             reportStep = { seenTotals += it; 5 })
+            assertEquals((1..total).filter { it % 5 == 0 || it == total }, reportedBy(everyFifth), "$total files")
+            assertEquals(listOf(total), seenTotals, "the step is asked for once, with the count of files")
         }
     }
 
-    // The service's own loop wrote a record when the count of results was a
-    // multiple of max(total / 50, 10), and for the last. Asked about every
-    // result, the rule gives those and no others. The pipeline reports on
-    // multiples of max(total / 50, 1): up to 99 files that is every result and
-    // from 500 it is the service's step, so the records fall where they did.
-    // In between the two steps differ, and a record is written at the first
-    // report ten results or more after the one before: 10 to 18 apart.
-    @Test fun `a record is written where android writes one, or within twice its step`() {
+    /** The results a caller that asks [pace] about every one of [total] writes a record for. */
+    private fun writtenOf(total: Int, pace: ScanJobRecord.Pace = ScanJobRecord.Pace { 0L }): List<Int> =
+        (1..total).filter { pace.due(it, total) }
+
+    // The rule by count alone, on a clock that stands still: a library read
+    // from its cache, where the results come by the thousand in a second.
+    // The first result, then one every max(total / 50, 10) results after the
+    // record before, and the last whatever the gap. Up to the first result
+    // being written this is the step the service has always had, and it is
+    // what holds a rescan to about fifty records.
+    @Test fun `a record is written for the first result, then by the step android has always had, and for the last`() {
         for (total in 1..2000) {
             val step = (total / 50).coerceAtLeast(10)
-            val android = (1..total).filter { it % step == 0 || it == total }
-            assertEquals(android, writtenOf(total, (1..total).toList()), "$total files, asked about every result")
-
             val written = writtenOf(total)
+
+            assertEquals((generateSequence(1) { it + step }.takeWhile { it < total } + total).toList(),
+                         written, "$total files")
+            assertEquals(1, written.first(), "$total files: the first result")
             assertEquals(total, written.last(), "$total files: the last result")
+            assertTrue(written.size <= 57, "$total files: ${written.size} records")
+        }
+        assertEquals(listOf(1, 11, 13), writtenOf(13))
+        assertEquals((1..4901 step 100) + 5000, writtenOf(5000))
+    }
 
-            val gaps = (listOf(0) + written).zipWithNext { a, b -> b - a }
-            assertTrue(gaps.max() <= 2 * step, "$total files: ${gaps.max()} results with no record")
-            assertTrue(gaps.dropLast(1).all { it >= step }, "$total files: records closer than $step")
+    // The same four reasons one at a time, as the function has them.
+    @Test fun `each of the four reasons for a record is enough by itself`() {
+        // Nothing recorded yet: the first result asked about, wherever it falls.
+        assertTrue(ScanJobRecord.due(processed = 1, total = 13, lastPublished = 0, sinceLastMs = 0))
+        assertTrue(ScanJobRecord.due(processed = 7, total = 5000, lastPublished = 0, sinceLastMs = 0))
+        // None of the four.
+        assertFalse(ScanJobRecord.due(processed = 2, total = 13, lastPublished = 1, sinceLastMs = 0))
+        assertFalse(ScanJobRecord.due(processed = 10, total = 13, lastPublished = 1, sinceLastMs = 999))
+        // The last result.
+        assertTrue(ScanJobRecord.due(processed = 13, total = 13, lastPublished = 12, sinceLastMs = 0))
+        // The step: ten results, or a fiftieth of the library where that is more.
+        assertTrue(ScanJobRecord.due(processed = 11, total = 13, lastPublished = 1, sinceLastMs = 0))
+        assertFalse(ScanJobRecord.due(processed = 100, total = 5000, lastPublished = 1, sinceLastMs = 0))
+        assertTrue(ScanJobRecord.due(processed = 101, total = 5000, lastPublished = 1, sinceLastMs = 0))
+        // A second since the last record, to the millisecond, and half the
+        // two seconds the theme lets go by between polls.
+        assertFalse(ScanJobRecord.due(processed = 2, total = 5000, lastPublished = 1, sinceLastMs = 999))
+        assertTrue(ScanJobRecord.due(processed = 2, total = 5000, lastPublished = 1, sinceLastMs = 1000))
+        assertEquals(1000L, ScanJobRecord.RECORD_INTERVAL_MS)
+    }
 
-            if (total < 100 || total >= 500) assertEquals(android, written, "$total files")
+    // A first scan, where a result is a file hashed and a lookup answered.
+    // The clock is the test's and moves by a fixed time for every result.
+    @Test fun `on a slow scan a record is written about once a second, on a large library and on a small one`() {
+        fun writtenAt(total: Int, msPerResult: Long): List<Int> {
+            var nowMs = 5_000_000L
+            val pace = ScanJobRecord.Pace { TimeUnit.MILLISECONDS.toNanos(nowMs) }
+            return (1..total).filter { nowMs += msPerResult; pace.due(it, total) }
         }
 
-        // 480 files: reported every 9, written every 18, and the last. Keeping
-        // the reports that are multiples of 10 would have kept one in ten of
-        // them, a record every 90 results.
-        assertEquals((18..468 step 18) + 480, writtenOf(480))
+        // 5000 files at 400 ms each. By count alone the record moved every
+        // hundred results, which is every 40 seconds. Every third result is
+        // 1.2 s after the one written before it, and the first to be a second
+        // or more.
+        val large = writtenAt(5000, 400)
+        assertEquals((1..4999 step 3) + 5000, large)
+        // 13 files at 300 ms each: 1.2 s apart again, and no oftener.
+        assertEquals(listOf(1, 5, 9, 13), writtenAt(13, 300))
+        // 13 files in 13 ms: the first, the one ten results on, and the last.
+        // Time adds nothing to a scan that is over before a second is.
+        assertEquals(listOf(1, 11, 13), writtenAt(13, 1))
+        // A result every three seconds is a record for each: none is held
+        // back to wait for a count.
+        assertEquals((1..40).toList(), writtenAt(40, 3_000))
+    }
+
+    // The same through the pipeline and into the file the theme reads. The
+    // clock moves half a second each time it is read, which the pace does
+    // once for every result: 30 files, none of them cached, at two a second.
+    // By count alone there were four records, at 1, 11, 21 and 30. There is
+    // one for every second result, a second apart.
+    @Test fun `a scan whose results are slow keeps its record moving`(): Unit = runBlocking {
+        repeat(30) { rom("snes", "g$it.sfc", "hash-$it") }
+        val clockMs = java.util.concurrent.atomic.AtomicLong(1_000)
+
+        val records = recordedScan("job1", ContentHasher(), MapLookup(catalogue),
+                                   nanoTime = { TimeUnit.MILLISECONDS.toNanos(clockMs.addAndGet(500)) }).records
+
+        val collected = records.filter { it.getString("message").startsWith("[") }
+            .map { it.getString("message").substringAfter('[').substringBefore('/').toInt() }
+        assertEquals((1..29 step 2) + 30, collected)
     }
 }

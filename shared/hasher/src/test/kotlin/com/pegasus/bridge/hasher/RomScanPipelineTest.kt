@@ -449,6 +449,51 @@ class RomScanPipelineTest {
         assertEquals(1.0, seen.last().fraction)
     }
 
+    // What a shell has to tell between the walk and the first result: how many
+    // files there are. Once, with the count, and before anything is reported
+    // as processed. The reports are the caller's last argument as they were,
+    // so a scan given only those is told no count and loses nothing.
+    @Test fun `the count of files is told once, before the first result`(): Unit = runBlocking {
+        repeat(5) { rom("nes", "Game$it.nes", "hash-smb") }
+        val told = mutableListOf<String>()
+        val s = pipeline(ContentHasher(), MapLookup(catalogue))
+            .scan(listOf(romRoot.absolutePath), onCounted = { told += "counted $it" }) { told += "result ${it.processed}" }
+
+        assertEquals(5, s.total)
+        assertEquals(listOf("counted 5") + (1..5).map { "result $it" }, told)
+    }
+
+    // No count of nothing: a library with no ROM in it goes from the walk to
+    // its end, and a shell that wrote "Checking 0 ROM files…" on the way would
+    // be saying it had work to do.
+    @Test fun `an empty library is not counted out`(): Unit = runBlocking {
+        val told = mutableListOf<Int>()
+        val s = pipeline(ContentHasher(), MapLookup(catalogue))
+            .scan(listOf(romRoot.absolutePath), onCounted = { told += it })
+
+        assertEquals(0, s.total)
+        assertEquals(emptyList<Int>(), told)
+    }
+
+    // The count is a record a shell writes, and a write can fail. It ends the
+    // scan as a failure anywhere else in it does: what was thrown reaches the
+    // caller, and the index is rebuilt on the way out, as it is whenever the
+    // roots have been walked.
+    @Test fun `a caller that cannot take the count ends the scan as any failure does`(): Unit = runBlocking {
+        rom("nes", "Game.nes", "hash-smb")
+        val h = ContentHasher()
+        paths.discoveryIndex.delete()
+
+        val thrown = assertFailsWith<java.io.IOException> {
+            pipeline(h, MapLookup(catalogue))
+                .scan(listOf(romRoot.absolutePath), onCounted = { throw java.io.IOException("read-only file system") })
+        }
+
+        assertEquals("read-only file system", thrown.message)
+        assertEquals(0, h.calls.get(), "a file was read after the scan had failed")
+        assertTrue(paths.discoveryIndex.isFile, "the index was not rebuilt")
+    }
+
     @Test fun `a missing root is ignored rather than failing`(): Unit = runBlocking {
         rom("nes", "Game.nes", "hash-smb")
         val s = pipeline(ContentHasher(), MapLookup(catalogue))

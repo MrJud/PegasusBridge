@@ -39,7 +39,20 @@ class RomScanPipeline(
      * depending on the module that parses it. The default is the built-in set,
      * which is what every existing caller already got.
      */
-    private val extensionsFor: (File) -> Set<String> = { RomScanner.ROM_EXTENSIONS }
+    private val extensionsFor: (File) -> Set<String> = { RomScanner.ROM_EXTENSIONS },
+    /**
+     * How many results go by between two reports of progress, for a library
+     * of [total] files. The last result is reported whatever this says.
+     *
+     * A fiftieth of the library unless the caller says otherwise, which is
+     * what the daemon wants: it publishes every report it is given, to memory
+     * and to a file, and a rescan of a few thousand cached files is over in a
+     * second or two. The Android service asks for every result and decides for
+     * itself which are worth a record, because its rule goes by the time since
+     * the last one as well, and a clock is no use to a caller that is only
+     * told of every hundredth result.
+     */
+    private val reportStep: (total: Int) -> Int = { (it / 50).coerceAtLeast(1) }
 ) {
 
     // Refused here rather than discovered mid-scan. With no hash workers nothing
@@ -173,8 +186,18 @@ class RomScanPipeline(
      */
     private class ScanAborted(val why: String, val kind: AbortCause) : Exception(why)
 
+    /**
+     * [onCounted] is told how many files the walk found, once, before any of
+     * them is read. It is not called for a library with none. The first
+     * result can be a long way from the walk, behind a first file to hash,
+     * which can be a disc image, and a first lookup to wait for; until then
+     * the count is the only thing there is to tell. A report with nothing
+     * processed would have said it too, and would have reached every caller
+     * of [onProgress] as a result with no file.
+     */
     suspend fun scan(
         roots: List<String>,
+        onCounted: (total: Int) -> Unit = {},
         onProgress: (Progress) -> Unit = {}
     ): Summary {
         paths.ensureAll()
@@ -213,6 +236,10 @@ class RomScanPipeline(
         var abortCause: AbortCause? = null
 
         try {
+            // In here and not straight after the walk, so that a caller whose
+            // record cannot be written ends the scan as any other failure
+            // does, with the index rebuilt on the way out.
+            onCounted(total)
             coroutineScope {
                 val feeder = launch(Dispatchers.IO) {
                     try {
@@ -303,7 +330,9 @@ class RomScanPipeline(
                     resultQueue.close()
                 }
 
-                val step = (total / 50).coerceAtLeast(1)
+                // At least 1, whatever the caller's rule comes to: the count of
+                // results is divided by it.
+                val step = reportStep(total).coerceAtLeast(1)
                 for (r in resultQueue) {
                     val job = r.job
                     val verdict = r.preRecorded

@@ -245,16 +245,30 @@ class HasherService : Service() {
             lookup        = ScanCollaborators.lookup(raUser, raApiKey, device),
             throttleMs    = ::thermalDelayMs,
             hashWorkers   = hashWorkers,
-            extensionsFor = RomScanExtensions.forScan
+            extensionsFor = RomScanExtensions.forScan,
+            // Every result, and not the fiftieth of the library the pipeline
+            // reports by when it is not told. Which of them get a record is
+            // decided below, and part of that is how long ago the last one
+            // was written: told only of every hundredth result of a large
+            // library, this could not write one in between however long the
+            // hundred took.
+            reportStep    = { 1 }
         )
 
-        // The pipeline reports more often than a record is worth writing. Only
-        // its collector calls back, one result at a time, so the count of the
-        // last record written needs no lock.
-        var published = 0
-        val summary = pipeline.scan(roots) { p ->
-            if (ScanJobRecord.due(p.processed, p.total, published)) {
-                published = p.processed
+        // Told of every result, which is far more often than a record is
+        // worth writing, and ScanJobRecord.Pace says which of them are. Only
+        // the pipeline's collector calls back, one result at a time, so what
+        // Pace keeps needs no lock.
+        val pace = ScanJobRecord.Pace()
+        val summary = pipeline.scan(roots, onCounted = { total ->
+            // The walk is over and the first result may be a while: a large
+            // file to hash, a lookup that is being retried. The record said
+            // "Scanning ROM folders…" all through that.
+            val record = ScanJobRecord.checking(jobId, total, startedAt)
+            writePending(jobId, record)
+            updateNotification(record.getString("message"), 0, 0)
+        }) { p ->
+            if (pace.due(p.processed, p.total)) {
                 val record = ScanJobRecord.running(jobId, p, startedAt)
                 writePending(jobId, record)
                 // What the popup shows, so the two cannot come to differ.

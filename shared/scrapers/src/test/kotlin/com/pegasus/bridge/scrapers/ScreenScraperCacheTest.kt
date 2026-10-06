@@ -293,6 +293,14 @@ class ScreenScraperCacheTest {
         val pool = Executors.newFixedThreadPool(8)
         val start = CountDownLatch(1)
         val errors = java.util.Collections.synchronizedList(mutableListOf<Throwable>())
+        // Kept for the last message: a question too many does not say where it came from.
+        val warnings = java.util.Collections.synchronizedList(mutableListOf<String>())
+        BridgeLog.current = object : BridgeLog {
+            override fun d(tag: String, msg: String) = Unit
+            override fun i(tag: String, msg: String) = Unit
+            override fun w(tag: String, msg: String, t: Throwable?) { warnings += msg }
+            override fun e(tag: String, msg: String, t: Throwable?) { warnings += msg }
+        }
 
         val futures = (1..240).map { i ->
             pool.submit {
@@ -306,8 +314,13 @@ class ScreenScraperCacheTest {
         pool.shutdown()
 
         assertTrue(errors.isEmpty(), "concurrent identification failed: ${errors.firstOrNull()}")
+        // A ROM asked about twice has been asked under two system ids, and there are
+        // two known ways to that. A first fetch of the system table that fails leaves a
+        // warning and a second fetch. The table read back empty while two callers
+        // wrote it left no warning, and each thread had fetched it for itself.
         assertEquals(files.size, jeuInfosCalls.get(),
-                     "240 requests over 40 ROMs should be 40 questions")
+                     "240 requests over 40 ROMs should be 40 questions; the system table was " +
+                     "fetched ${systemsCalls.get()} times, with these warnings: $warnings")
     }
 
     // The system table is one more thing the four requests of a game screen miss

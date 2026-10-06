@@ -220,7 +220,7 @@ class RomScanPipeline(
                     }
                 }
 
-                val producers = List(hashWorkers.coerceAtMost(Runtime.getRuntime().availableProcessors())) {
+                val producers = List(hashProducers(hashWorkers)) {
                     launch(Dispatchers.Default) {
                         for (file in fileQueue) {
                             if (!isActive) break
@@ -355,8 +355,8 @@ class RomScanPipeline(
                                                    "${r.meta.gameId}: ${VirtualGameId.describe(r.meta.gameId)}")
                         }
                         // A usable match needs a title, not just an id. Blank rather than
-                        // empty, as on Android: a title of spaces would be written here and
-                        // then distrusted by preloadMetadataCache, so the same ROM would be
+                        // empty: a title of spaces would be written here and then
+                        // distrusted by preloadMetadataCache, so the same ROM would be
                         // asked about and counted new every scan.
                         r.meta != null && r.meta.gameId > 0 && r.meta.title.isNotBlank() -> {
                             writeMetadata(job, r.meta); newEntries++
@@ -719,6 +719,16 @@ class RomScanPipeline(
     companion object {
         private const val TAG = "RomScanPipeline"
         const val DEFAULT_HASH_WORKERS = 4
+
+        /**
+         * How many files a scan built with [hashWorkers] reads and hashes at
+         * once: that many, or one for each core where the machine has fewer.
+         * [scan] starts this many producers, and a shell that tells somebody
+         * the count asks here, so that it says the one a scan runs with.
+         */
+        fun hashProducers(hashWorkers: Int): Int =
+            hashWorkers.coerceAtMost(Runtime.getRuntime().availableProcessors())
+
         // Matches RaHashLookup.MAX_PARALLEL: more workers than permits only
         // queues them behind the semaphore.
         const val DEFAULT_API_WORKERS  = 2

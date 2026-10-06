@@ -398,12 +398,11 @@ class ThemeContractTest {
     }
 
     // What a data root that stops taking writes in the middle of a scan leaves
-    // (CONTEXT.md §3): the record of the last result it took, which says
-    // running, with no error after it and no marker. The theme goes by the
-    // record for as long as it says running and does not ask for the marker.
-    // So the popup stays where it was, however often it polls, and a marker,
-    // had one been written, would end the scan only for a theme that is
-    // reloaded.
+    // (CONTEXT.md §3): the last record it took, which says running, with no
+    // error after it and no marker. The theme goes by the record for as long
+    // as it says running and does not ask for the marker. So the popup stays
+    // where it was, however often it polls, and a marker, had one been
+    // written, would end the scan only for a theme that is reloaded.
     @Test fun `a running record that nothing replaces reads as a scan under way, marker or none`() {
         val theme = androidTheme()
         leave("pending-running")
@@ -474,7 +473,7 @@ class ThemeContractTest {
     private val desktopKeys = setOf(
         "schemaVersion", "jobId", "verb", "status", "progress", "message", "startedAt", "updatedAt")
 
-    /** Beside [desktopKeys] from the first result on, and from then to the end. */
+    /** Beside [desktopKeys] from the first report on, and from then to the end. */
     private val desktopCounters = setOf("newEntries", "cachedHits", "skippedPlatforms")
 
     private val desktopResultKeys = setOf(
@@ -607,7 +606,7 @@ class ThemeContractTest {
         val id = "scan_1791233730000_4242"
 
         // Created, and no result yet. No message and no counters, where Android
-        // has "Scanning ROM folders…" and five zeros.
+        // has "Scanning ROM folders…" and seven zeros.
         val theme = desktopTheme(id)
         var body = job(id)
         assertEquals(desktopKeys, body.keySet())
@@ -841,7 +840,7 @@ class ThemeContractTest {
     // failed job, and its error is the sentence of Android's error-outage.json,
     // so an outage is told in the same words on both shells. What the desktop
     // keeps beside it is its own: the progress and the counters as the last
-    // result left them, and the result.
+    // report left them, and the result.
     @Test fun `a desktop scan the pipeline cut short reads as an error with the advice sentence`() {
         repeat(20) { rom("snes", "Game $it.sfc", "hash-$it") }
         hasher = ContentHasher()
@@ -874,7 +873,7 @@ class ThemeContractTest {
                      "Nothing was recorded as missing. " +
                      "Wait a few minutes and scan again — it will resume where it left off.",
                      body.getString("error"))
-        // Where the last result left them, and not the 1.0 of a job that finished.
+        // Where the last report left them, and not the 1.0 of a job that finished.
         assertEquals(processed / 20.0, body.getDouble("progress"))
         assertTrue(body.getString("message").startsWith("[$processed/20] "), body.getString("message"))
         assertEquals(0, body.getInt("newEntries"))

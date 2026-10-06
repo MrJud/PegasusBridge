@@ -52,8 +52,9 @@ class BridgeDaemon(
 ) {
 
     /**
-     * How many files a scan reads and hashes at once: the pipeline's own count
-     * unless `--hash-workers=N` gives another.
+     * How many files a scan is told to read and hash at once: the pipeline's
+     * own count unless `--hash-workers=N` gives another. On a machine with
+     * fewer cores a scan runs one for each ([RomScanPipeline.hashProducers]).
      *
      * Which count is quickest depends on what the library is kept on, and that
      * differs from one machine to the next and cannot be told from here.
@@ -253,9 +254,11 @@ class BridgeDaemon(
             if (daemon.managed) println("advertised to clients as port ${daemon.advertisePort}")
             println("data root: ${daemon.dataRoot}")
             println("endpoint file: ${DaemonPaths.endpointFile(daemon.dataRoot)}")
-            // The count in use, not the one asked for: the two differ when the
-            // flag was out of range or was not a number.
-            println("hash workers: ${daemon.hashWorkers}")
+            // The count in use, not the one asked for. The two differ when the
+            // flag was out of range or was not a number, and when it is more
+            // than the machine has cores: the pipeline starts no more producers
+            // than that, and this printed the count it was given.
+            println("hash workers: ${RomScanPipeline.hashProducers(daemon.hashWorkers)}")
 
             // Nothing else to do on the main thread; the server runs its own.
             Thread.currentThread().join()

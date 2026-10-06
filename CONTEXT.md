@@ -106,6 +106,8 @@ Each shell supplies what stands around it:
 Files are hashed 2 at a time on Android and 4 on the desktop. Either can be
 told otherwise, to time a library on its own storage: `hashWorkers=N` on the
 `pegasus-data://scan` URI (1–8), `--hash-workers=N` on the daemon (1–16).
+Neither hashes more files at once than the machine has cores, whatever the
+count, and the count each puts in its log or prints is the one it runs with.
 Lookups are paced the same whatever the count.
 
 ### The job record
@@ -169,11 +171,14 @@ would have: the notification up and down again, and the service stopped.
 
 On the desktop the record is the body of `GET /jobs/{id}`. The status values
 are the same, and a scan the pipeline stopped is an error with the same
-sentence. What differs: only `newEntries`, `cachedHits` and `skippedPlatforms`
-are published as counters; an error keeps the progress, message and counters
-the job had; a scan that returned, stopped or not, has a `result` object; the
-copy in `pending/` is deleted when the job ends; and the marker is a small JSON
-object.
+sentence. What differs: the message is empty until the first report and
+`[processed/total] file name` from then on, the end included — the desktop
+writes none of `Scanning ROM folders…`, `No ROMs found` and the sentence that
+begins `Done — `, and says what a scan found in `result`; only `newEntries`,
+`cachedHits` and `skippedPlatforms` are published as counters, and none before
+the first report; an error keeps the progress, message and counters the job
+had; a scan that returned, stopped or not, has a `result` object; the copy in
+`pending/` is deleted when the job ends; and the marker is a small JSON object.
 
 ### The discovery index
 

@@ -516,6 +516,18 @@ class RomScanPipelineTest {
         }
     }
 
+    // The count a shell prints or puts in its log. A scan starts one producer
+    // for each hash worker it was given, and no more than the machine has
+    // cores; the daemon and the Android service both said the count given,
+    // which on a machine with fewer cores is not the count a scan ran with.
+    @Test fun `the hash producers of a scan are the workers it was given, or the cores where those are fewer`() {
+        val cores = Runtime.getRuntime().availableProcessors()
+        assertEquals(1, RomScanPipeline.hashProducers(1))
+        assertEquals(cores, RomScanPipeline.hashProducers(cores))
+        assertEquals(cores, RomScanPipeline.hashProducers(cores + 1))
+        assertEquals(cores, RomScanPipeline.hashProducers(1000))
+    }
+
     private fun md5(text: String): String =
         java.security.MessageDigest.getInstance("MD5").digest(text.toByteArray())
             .joinToString("") { "%02x".format(it) }

@@ -220,8 +220,11 @@ class HasherService : Service() {
         writePending(jobId, ScanJobRecord.started(jobId, startedAt))
 
         // Said in the log, so that a timing can be put beside the count it was
-        // taken with, and a misspelt parameter shows as the default it got.
-        Log.i(TAG, "Scan $jobId: $hashWorkers hash workers")
+        // taken with, and a misspelt parameter shows as the default it got. The
+        // count is the one the pipeline starts: what the request came to, or
+        // one for each core on a device with fewer. It was the first of the
+        // two, whatever the device.
+        Log.i(TAG, "Scan $jobId: ${RomScanPipeline.hashProducers(hashWorkers)} hash workers")
         val pipeline = RomScanPipeline(
             paths         = Paths.bridge,
             hasher        = ArchiveAwareHasher(ScanCollaborators.hasher(), cacheDir),

@@ -397,6 +397,26 @@ class ThemeContractTest {
         assertEquals("", theme.activeJobId)
     }
 
+    // What a data root that stops taking writes in the middle of a scan leaves
+    // (CONTEXT.md §3): the record of the last result it took, which says
+    // running, with no error after it and no marker. The theme goes by the
+    // record for as long as it says running and does not ask for the marker.
+    // So the popup stays where it was, however often it polls, and a marker,
+    // had one been written, would end the scan only for a theme that is
+    // reloaded.
+    @Test fun `a running record that nothing replaces reads as a scan under way, marker or none`() {
+        val theme = androidTheme()
+        leave("pending-running")
+        repeat(10) { theme.readHasherProgress() }
+        assertEquals(View("running", 3, 10, 300, "g97c0.sfc", 10, 0), theme.view())
+        assertEquals("job1", theme.activeScanJobId())
+
+        leaveMarker()
+        theme.readHasherProgress()
+        assertEquals(View("running", 3, 10, 300, "g97c0.sfc", 10, 0), theme.view())
+        assertEquals("", theme.activeScanJobId())
+    }
+
     @Test fun `after a reload the theme returns to an android scan only while its record says running`() {
         fun returnsTo(record: String?, marker: Boolean = false): String {
             paths.pending("job1").delete(); paths.done("job1").delete()

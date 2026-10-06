@@ -148,7 +148,17 @@ class HasherService : Service() {
                 synchronized(lifecycle) {
                     isRunning = false
                     releaseWakeLock()
-                    Paths.markDone(jobId)
+                    // Caught, like the error record in the two catches above. On
+                    // a data root that is full or read-only this write fails as
+                    // the ones before it did, and thrown from here it went past
+                    // the two lines under it and out of the coroutine: the
+                    // notification stayed up, the service was not stopped, and
+                    // what leaves a coroutine uncaught kills the app.
+                    try {
+                        Paths.markDone(jobId)
+                    } catch (t: Throwable) {
+                        Log.e(TAG, "Scan $jobId: could not write the done marker", t)
+                    }
                     stopForeground(STOP_FOREGROUND_REMOVE)
                     // The newest start request, not this scan's. stopSelf(int)
                     // ignores any other id, so once a Cancel from the notification
@@ -252,9 +262,23 @@ class HasherService : Service() {
     // truncated first: a theme poll landing in that gap read an empty file,
     // took it for a finished job, and never showed the abort, the cancel or
     // the error this is the only record of.
+    //
+    // Nothing is thrown from here. This is called where a job is already
+    // ending: by the two catches that end a scan, by a scan the pipeline
+    // stopped, and for a start request that is turned away. When the data root
+    // is full or read-only this write fails too, as a rule after the one that
+    // ended the scan, and there is nobody left to hand that to. Thrown from a
+    // catch it left the coroutine, and from a start request it left
+    // onStartCommand before startForeground. It goes to the log, and the job
+    // ends without the record: see CONTEXT.md §3 for what the theme makes of
+    // that.
     private fun writeError(jobId: String, record: JSONObject) {
-        writePending(jobId, record)
-        Paths.markDone(jobId)
+        try {
+            writePending(jobId, record)
+            Paths.markDone(jobId)
+        } catch (t: Throwable) {
+            Log.e(TAG, "Scan $jobId: could not write the error record", t)
+        }
     }
 
     // ── Throttle ─────────────────────────────────────────────────────────

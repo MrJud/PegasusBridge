@@ -124,10 +124,48 @@ and leaves it there when the scan is over. The theme polls it:
   scan ends when it is cancelled, when credentials are missing, when the
   pipeline stops because RetroAchievements stopped answering or refused the
   key (the error then says what to do next), and when anything is thrown —
-  a final `_index.json` that cannot be written included, so a full or
-  read-only `/sdcard` shows as a failed scan.
+  a final `_index.json` that cannot be written included.
 
 `done/{jobId}.done` holds the text `done`, written after the record is whole.
+
+### When `/sdcard` is full or read-only
+
+The record is a file under the same root as everything else a scan writes, so
+a scan that a failed write ends may not be able to say so. Whichever write it
+was, the service ends the same way: it logs the failure, tries the error record
+and then the marker, logs each of those that fails too (`Scan failed`, `could
+not write the error record`, `could not write the done marker`, under the tag
+`HasherService`), releases the wake lock, takes the notification down and
+stops. Nothing is thrown out of it. What is left for the theme depends on which
+write failed first:
+
+- **The first record** — a volume mounted read-only, or one with no room even
+  for that. The scan ends there: no ROM is read and RetroAchievements is not
+  asked. Nothing of the job is in `pending/` or `done/`, and the theme takes a
+  job with no record for one that has finished, at its fifth poll (§2), with
+  nothing found. A full volume, unlike a read-only one, can keep an empty
+  `pending/{jobId}.json.tmp` and an empty `done/{jobId}.done`; the theme reads
+  an empty marker as a missing one.
+- **A write during the scan** — a `metadata/{gameId}.json` or a running record.
+  The scan ends as any that throws: the pipeline tries the index and the
+  ledger, then the service tries the error record. If that can be written, the
+  theme shows the scan as failed, with the message of the write that failed.
+  If it cannot, the last running record stays in `pending/`, with no marker
+  the theme can read, and the theme goes on showing a scan under way at that
+  `[processed/total]` for as long as the popup is open, and returns to it
+  after a reload: it does not look for the marker while the record says
+  `running`. The matches written before the failure are in `metadata/`, and
+  the next scan finds them cached.
+- **The final `_index.json`** — the ledger has been saved by then. The scan
+  ends as an error, which the theme shows or does not as for a write during
+  the scan; the record left when it does not is the one of the last file.
+- **The ledger** — logged, and that is all. It is written as a scan ends, and
+  the scan ends as it would have. The next one asks again about every file
+  that is not a match.
+
+A start request turned away for missing credentials writes an error record
+too. When that cannot be written it is logged, and the request ends as it
+would have: the notification up and down again, and the service stopped.
 
 On the desktop the record is the body of `GET /jobs/{id}`. The status values
 are the same, and a scan the pipeline stopped is an error with the same

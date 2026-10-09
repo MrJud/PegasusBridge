@@ -394,13 +394,18 @@ class GoldenHashTest {
 
         const val README = "readme.txt"
 
-        /** Where Gradle's test task says the committed library is; see hasher/build.gradle.kts. */
+        /**
+         * Where Gradle's test task says the library is: the committed one, unless
+         * it was started with -Ppegasus.nativeLibrary; see hasher/build.gradle.kts.
+         */
         const val LIBRARY_PROPERTY = "pegasus.bridge.nativeLibrary"
 
         /**
          * The librahasher in native/out, and no other: the one installDist ships
          * and the daemon loads. A library search could find an older build first
-         * and still pass, which is exactly what this must not do.
+         * and still pass, which is exactly what this must not do. CI runs these a
+         * second time on a library it has just built, which it names; that one
+         * is loaded by its path too.
          */
         val native: NativeRomHasher by lazy {
             val path = System.getProperty(LIBRARY_PROPERTY)
@@ -412,7 +417,7 @@ class GoldenHashTest {
             NativeRomHasher.resetForTests()
             NativeRomHasher.tryLoad(library)
                 ?: fail("could not load $library: ${NativeRomHasher.lastError()}. The committed " +
-                        "librahasher.so needs glibc 2.38 or newer; on an older system rebuild it " +
+                        "librahasher.so needs glibc 2.14 or newer; on an older system rebuild it " +
                         "with native/build.sh")
         }
 

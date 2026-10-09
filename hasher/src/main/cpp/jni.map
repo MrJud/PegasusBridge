@@ -1,0 +1,10 @@
+/*
+ * What the hasher's library lets the rest of a process see: the functions the
+ * JVM looks up by name, and nothing else. rcheevos declares its own functions
+ * for export, and md5_init or rc_hash_generate in the symbol table of a
+ * library is a name another library in the same process may already have.
+ */
+{
+    global: Java_*;
+    local: *;
+};

@@ -30,10 +30,23 @@ val nativeDir = file("$rootDir/native/out")
 
 val buildNative by tasks.registering(Exec::class) {
     val script = file("$rootDir/native/build.sh")
+    val cpp = file("$rootDir/../hasher/src/main/cpp")
+    val libraryName = System.mapLibraryName("rahasher")
     onlyIf { script.exists() && !org.gradle.internal.os.OperatingSystem.current().isWindows }
-    inputs.dir("$rootDir/native")
-    inputs.dir("$rootDir/../hasher/src/main/cpp/rcheevos/src/rhash")
-    outputs.dir(nativeDir)
+    // What the script reads, file by file, and the two files it writes. The
+    // whole of native/ used to be the input and native/out the output, one
+    // inside the other, so that the library the task had just written was a
+    // change to what it is built from. rc_compat.h is the one header the
+    // sources include from above their own folder.
+    inputs.file(script)
+    inputs.file("$rootDir/native/rahasher_jni.c")
+    inputs.file(File(cpp, "rahasher.sources"))
+    inputs.file(File(cpp, "jni.map"))
+    inputs.dir(File(cpp, "rcheevos/src/rhash"))
+    inputs.dir(File(cpp, "rcheevos/include"))
+    inputs.file(File(cpp, "rcheevos/src/rc_compat.h"))
+    outputs.files(File(nativeDir, libraryName),
+                  File(nativeDir, libraryName.substringBeforeLast('.') + ".manifest"))
     commandLine("bash", script.absolutePath)
     // build.sh needs a JDK for jni.h; Gradle's own is guaranteed to be one.
     environment("JAVA_HOME", System.getProperty("java.home"))

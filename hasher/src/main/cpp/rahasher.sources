@@ -1,0 +1,16 @@
+# The rcheevos sources the hasher is made of, one to a line, from this folder.
+# shared/native/build.sh compiles these and no others, beside its own JNI
+# file, and links with every symbol resolved: a name missing here is a link
+# error on the machine that builds, where it used to be a library that loaded
+# and ended the process at the first file of the console left out.
+#
+# What is not here, and why: hash_encrypted.c is the 3DS, switched off by
+# RC_HASH_NO_ENCRYPTED, and aes.c is used by nothing else. rc_compat.c and
+# rc_util.c are the helpers of the achievement runtime, of which hashing calls
+# none; rc_compat.c brought a mutex with it and so a newer C library.
+rcheevos/src/rhash/cdreader.c
+rcheevos/src/rhash/hash.c
+rcheevos/src/rhash/hash_disc.c
+rcheevos/src/rhash/hash_rom.c
+rcheevos/src/rhash/hash_zip.c
+rcheevos/src/rhash/md5.c

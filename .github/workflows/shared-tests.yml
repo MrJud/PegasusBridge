@@ -3,11 +3,20 @@
 # desktop with nothing in between. Beside them, once and with no JDK, the test of
 # install.sh, which points the Pegasus themes at the data root.
 #
-# Deliberately narrow: no Android build (it needs the SDK and NDK) and no native
-# one (native/build.sh and rcheevos). Those come later. The golden hashes in
-# :hasher do run native code, but the librahasher.so committed in native/out, not
-# a fresh build. It needs glibc 2.38; ubuntu-latest has 2.39, and on an older
-# image those tests fail and say so rather than skip.
+# Deliberately narrow: no Android build (it needs the SDK and NDK). That comes
+# later. The golden hashes in :hasher run native code, and in the `test` job it
+# is the librahasher.so committed in native/out, not a fresh build: the library
+# every checkout's tests load. It needs glibc 2.14 or newer, and on a system
+# where it will not load those tests fail and say so rather than skip. A check
+# in that job holds the binary to the sources beside it.
+#
+# The `native` job is the fresh build: native/build.sh with the image's own gcc,
+# then what the library asks of a system and shows to it, then rcheevos on
+# files made to crash it, each in a process of its own, and last the golden
+# hashes again on the library just built. The committed binary was made by one
+# compiler on one machine; this is where another compiler has its say. The
+# checks themselves are tested there too, on libraries and compilers made to
+# fail them: in a run where all is well none of them is seen to refuse.
 #
 # What it downloads: the Gradle distribution from services.gradle.org, the
 # Kotlin plugin from the Gradle plugin portal, every library from Maven Central
@@ -48,6 +57,17 @@ jobs:
           java-version: ${{ matrix.java }}
           cache: gradle
 
+      # The golden hashes below run on a binary taken from git. If the C beside
+      # it has changed since it was compiled they would pass on the old code,
+      # so this comes first, after its own tests. Neither compiles anything.
+      - name: The manifest check passes its own tests
+        working-directory: shared
+        run: ./tests/native_manifest_check_test.py
+
+      - name: The committed native library was built from the sources beside it
+        working-directory: shared
+        run: ./tests/native_manifest_check.py
+
       - name: Test
         working-directory: shared
         run: ./gradlew --no-daemon test
@@ -79,6 +99,74 @@ jobs:
           path: |
             shared/*/build/reports/tests/test/
             shared/*/build/test-results/test/*.xml
+
+  native:
+    # gcc, its two sanitizers and binutils are on the image; the JDK is for
+    # jni.h and for Gradle. Nothing here is written to the checkout: the
+    # library and the test programs go to the runner's temporary directory,
+    # so the committed library is still the committed one when it is checked.
+    name: native build
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: gradle
+
+      - name: Build the library and the test programs
+        working-directory: shared
+        run: ./native/build.sh "$RUNNER_TEMP/native" --tools="$RUNNER_TEMP/native-tools"
+
+      # Before the checks are believed: what each of them refuses.
+      - name: The checks of the native build pass their own tests
+        working-directory: shared
+        run: ./tests/native_checks_test.py "$RUNNER_TEMP/native-tools"
+
+      # The manifest this compiler wrote, held against the checkout it was
+      # written from: it has to name every source, whatever shape this gcc
+      # gives its list of what it read.
+      - name: The manifest of the library just built names what it was built from
+        working-directory: shared
+        run: ./tests/native_manifest_check.py "$RUNNER_TEMP/native/librahasher.manifest"
+
+      # Both libraries: the one in git is what the other job tests and what
+      # the sentence about glibc at the top of this file is about.
+      - name: Neither library needs a newer glibc or exports more than its one function
+        working-directory: shared
+        run: |
+          ./tests/native_lib_check.sh native/out/librahasher.so
+          ./tests/native_lib_check.sh "$RUNNER_TEMP/native/librahasher.so"
+
+      # Never inside Gradle: several of these files end rcheevos with a signal,
+      # and one leaves it reading until it is killed.
+      - name: Files made to hurt rcheevos, each in a process of its own
+        working-directory: shared
+        run: ./tests/native_repro_test.py "$RUNNER_TEMP/native-tools"
+
+      # The second line is what shows the first tested the library it names:
+      # the hasher logs the path it loaded from, and the test's results keep
+      # the log. Were the property's name to change on one side only, Gradle
+      # would take the old name without a word and the tests would pass on the
+      # committed library.
+      - name: The golden hashes on the library just built
+        working-directory: shared
+        run: |
+          ./gradlew --no-daemon :hasher:test -Ppegasus.nativeLibrary="$RUNNER_TEMP/native/librahasher.so"
+          grep -F "native hasher loaded from $RUNNER_TEMP/native/librahasher.so" \
+            hasher/build/test-results/test/TEST-com.pegasus.bridge.hasher.GoldenHashTest.xml
+
+      - name: Upload test reports
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-reports-native
+          path: |
+            shared/hasher/build/reports/tests/test/
+            shared/hasher/build/test-results/test/*.xml
 
   install:
     # Bash and coreutils are all it needs: it runs install.sh with a throwaway

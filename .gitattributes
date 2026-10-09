@@ -5,3 +5,15 @@ hasher/src/main/cpp/rcheevos/** -text
 
 # Windows batch files are CRLF by definition; normalising them churns the diff.
 *.bat -text
+
+# The hasher's library is committed with a manifest of SHA-256 sums of the
+# files it was compiled from, and the check works the sums out again from the
+# checkout. A checkout that rewrites line endings (core.autocrlf, which Git for
+# Windows turns on) would hand it files that are not the ones committed, and it
+# would say the library needs building again. Everything the library is made
+# from is in these two folders, so both are taken as they are, whole: a header
+# added beside the sources tomorrow is covered the day it is added. build.sh is
+# in the first for a second reason: bash does not run a script whose lines end
+# in CR.
+shared/native/** -text
+hasher/src/main/cpp/** -text

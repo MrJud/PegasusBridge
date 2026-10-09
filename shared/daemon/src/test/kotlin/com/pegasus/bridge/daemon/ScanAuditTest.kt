@@ -8,6 +8,7 @@ import com.pegasus.bridge.core.StderrLog
 import com.pegasus.bridge.hasher.GameMetadata
 import com.pegasus.bridge.hasher.HashOutcome
 import com.pegasus.bridge.hasher.HashResult
+import com.pegasus.bridge.hasher.LookupOutcome
 import com.pegasus.bridge.hasher.RaHashLookup
 import com.pegasus.bridge.hasher.RomHasher
 import com.pegasus.bridge.hasher.RomScanPipeline
@@ -415,12 +416,44 @@ class ScanAuditTest {
         assertEquals(1, ScanAudit.status(summary(3), rows = 4))
     }
 
+    // What the file of answers says, as the scan is to hear it. An id of 0 is
+    // an answer recorded, that RetroAchievements does not know the hash, and
+    // so is the answer for a hash the file has no line for. An id above a
+    // thousand million is a dump known and not playable, with the real game
+    // and the reason taken out of it, and whatever title its line has is not
+    // read: there is no game under that number for it to be the title of.
+    @Test fun `the oracle answers a game, a miss and a virtual id as what each is`() {
+        val oracle = File(root, "answers.tsv").apply {
+            writeText("hash\tgameId\tdate\tsource\ttitle\n" +
+                      "hash-game\t4242\t2026-10-09\ta test\tA Known Game\n" +
+                      "hash-untitled\t77\n" +
+                      "hash-miss\t0\t2026-10-09\ta test\n" +
+                      "hash-edge\t1000000000\n" +
+                      "hash-virtual\t1100001487\t2026-10-09\ta test\tA Title Nobody Reads\n")
+        }
+        val answers = ScanAudit.OracleLookup.read(oracle)
+        fun said(hash: String): LookupOutcome = runBlocking { answers.lookup(hash) }
+
+        assertEquals(5, answers.size)
+        assertEquals(LookupOutcome.Match(GameMetadata(gameId = 4242, title = "A Known Game")), said("hash-game"))
+        assertEquals(LookupOutcome.Match(GameMetadata(gameId = 77, title = "game 77")), said("hash-untitled"))
+        assertEquals(LookupOutcome.NotFound, said("hash-miss"))
+        assertEquals(LookupOutcome.NotFound, said("hash-nowhere"))
+        // The first base itself is a game's own id, as RAWeb has it.
+        assertEquals(LookupOutcome.Match(GameMetadata(gameId = 1_000_000_000, title = "game 1000000000")),
+                     said("hash-edge"))
+        assertEquals(LookupOutcome.IdOnly(1487, LookupOutcome.Compatibility.UNTESTED, virtualId = 1_100_001_487),
+                     said("hash-virtual"))
+    }
+
     // The scan stops on three things a lookup says of itself, and the audit's
     // lookup is around the real one: each has to come through it as it is.
     @Test fun `the counting lookup says of itself what the lookup inside says`() {
+        val seven = LookupOutcome.Match(GameMetadata(gameId = 7, title = "Seven"))
+        val noAnswer = LookupOutcome.Failed(LookupOutcome.Cause.OFFLINE, "nobody there")
         class Inside(override val consecutiveFailures: Int, override val authRejected: Boolean,
                      override val offline: Boolean) : RaHashLookup {
-            override suspend fun lookup(hash: String): GameMetadata? = GameMetadata(gameId = 7).takeIf { hash == "known" }
+            override suspend fun lookup(hash: String): LookupOutcome = if (hash == "known") seven else noAnswer
         }
         val quiet = ScanAudit.CountingLookup(Inside(0, authRejected = false, offline = false))
         assertEquals(listOf(0, false, false), listOf(quiet.consecutiveFailures, quiet.authRejected, quiet.offline))
@@ -431,8 +464,8 @@ class ScanAuditTest {
                          listOf(counting.consecutiveFailures, counting.authRejected, counting.offline))
         }
 
-        assertEquals(GameMetadata(gameId = 7), runBlocking { quiet.lookup("known") })
-        assertEquals(null, runBlocking { quiet.lookup("unknown") })
+        assertEquals<LookupOutcome>(seven, runBlocking { quiet.lookup("known") })
+        assertEquals<LookupOutcome>(noAnswer, runBlocking { quiet.lookup("unknown") })
         runBlocking { quiet.lookup("known") }
         assertEquals(listOf(true, true, false), listOf("known", "unknown", "never").map(quiet::asked))
         assertEquals(listOf(3, 2), listOf(quiet.calls, quiet.distinct))

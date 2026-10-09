@@ -45,9 +45,9 @@ class RomScanPipelineTest {
 
     private class MapLookup(private val map: Map<String, GameMetadata>) : RaHashLookup {
         val calls = AtomicInteger()
-        override suspend fun lookup(hash: String): GameMetadata? {
+        override suspend fun lookup(hash: String): LookupOutcome {
             calls.incrementAndGet()
-            return map[hash] ?: GameMetadata(gameId = 0)
+            return (map[hash] ?: GameMetadata(gameId = 0)).asOutcome()
         }
     }
 
@@ -93,7 +93,7 @@ class RomScanPipelineTest {
      */
     private class MixedLookup : RaHashLookup {
         val asked: MutableList<String> = java.util.Collections.synchronizedList(mutableListOf())
-        override suspend fun lookup(hash: String): GameMetadata? {
+        override suspend fun lookup(hash: String): LookupOutcome {
             asked += hash
             return when {
                 hash.startsWith("hash-match-") -> {
@@ -104,7 +104,7 @@ class RomScanPipelineTest {
                 hash == "hash-untitled" -> GameMetadata(gameId = 1487)
                 hash == "hash-silent"   -> null
                 else                    -> GameMetadata(gameId = 0)
-            }
+            }.asOutcome()
         }
     }
 
@@ -153,9 +153,9 @@ class RomScanPipelineTest {
         val rom = rom("nes", "Metroid (Europe) (Virtual Console).nes", "hash-phantom")
         val phantom = object : RaHashLookup {
             val calls = AtomicInteger()
-            override suspend fun lookup(hash: String): GameMetadata {
+            override suspend fun lookup(hash: String): LookupOutcome {
                 calls.incrementAndGet()
-                return GameMetadata(gameId = 1100001487)
+                return GameMetadata(gameId = 1100001487).asOutcome()
             }
         }
 
@@ -185,13 +185,14 @@ class RomScanPipelineTest {
         assertEquals(0, s2.unmatched)
     }
 
-    // A real id with a title of only spaces, which RaApiHashLookup answers null
-    // for but another lookup could return. Written, it would be distrusted by the
-    // next scan's cache, asked about again and counted new on every run.
+    // A real id with a title of only spaces, which RaApiHashLookup answers as a
+    // failure and no lookup can answer as a match: one will not be built from
+    // it. Written, it would be distrusted by the next scan's cache, asked about
+    // again and counted new on every run.
     @Test fun `a title of only spaces is not treated as a match either`(): Unit = runBlocking {
         rom("nes", "Metroid (Europe).nes", "hash-spaces")
         val spaces = object : RaHashLookup {
-            override suspend fun lookup(hash: String) = GameMetadata(gameId = 1487, title = "   ")
+            override suspend fun lookup(hash: String) = GameMetadata(gameId = 1487, title = "   ").asOutcome()
         }
 
         val s = pipeline(ContentHasher(), spaces).scan(listOf(romRoot.absolutePath))
@@ -270,9 +271,9 @@ class RomScanPipelineTest {
         // nowhere, and the files left where they are.
         val untitled = object : RaHashLookup {
             val calls = AtomicInteger()
-            override suspend fun lookup(hash: String): GameMetadata {
+            override suspend fun lookup(hash: String): LookupOutcome {
                 calls.incrementAndGet()
-                return GameMetadata(gameId = catalogue.getValue(hash).gameId)
+                return GameMetadata(gameId = catalogue.getValue(hash).gameId).asOutcome()
             }
         }
         val h2 = ContentHasher()
@@ -332,6 +333,30 @@ class RomScanPipelineTest {
         val l = MapLookup(catalogue)
         pipeline(ContentHasher(), l).scan(listOf(romRoot.absolutePath))
         assertEquals(1, l.calls.get(), "duplicate hashes must be de-duplicated")
+    }
+
+    // Only an answer is kept for the copies that come after. A lookup that
+    // failed is not one: kept, the request that went wrong once would be the
+    // last made for that hash in the scan, and every copy would end as a
+    // retry. One lookup at a time here, so that the second copy arrives when
+    // the first is over and not while it is still being asked about.
+    @Test fun `a hash whose lookup failed is asked about again for the next file that has it`(): Unit = runBlocking {
+        rom("nes", "Copy A.nes", "hash-smb")
+        rom("nes", "Copy B.nes", "hash-smb")
+        val failsOnce = object : RaHashLookup {
+            val calls = AtomicInteger()
+            override suspend fun lookup(hash: String): LookupOutcome =
+                if (calls.incrementAndGet() == 1) LookupOutcome.Failed(LookupOutcome.Cause.TRANSPORT, "timeout")
+                else LookupOutcome.Match(catalogue.getValue(hash))
+        }
+
+        val s = RomScanPipeline(paths, ContentHasher(), failsOnce, throttleMs = { 0L }, hashWorkers = 1, apiWorkers = 1)
+            .scan(listOf(romRoot.absolutePath))
+
+        assertEquals(2, failsOnce.calls.get(), "the copy that came after a failure was given the failure")
+        assertEquals(counts(new = 1, cached = 0, skipped = 0, unmatched = 0, incompatible = 0,
+                            hashFailed = 0, failedLookups = 1), s.counts())
+        assertEquals(mapOf(ScanLedger.State.API_RETRY to 1, ScanLedger.State.MATCHED to 1), s.states)
     }
 
     @Test fun `a file the hasher cannot read does not abort the scan`(): Unit = runBlocking {

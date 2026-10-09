@@ -82,8 +82,8 @@ class ScanAbortTest {
      */
     private class DeadLookup : RaHashLookup {
         val calls = AtomicInteger()
-        override suspend fun lookup(hash: String): GameMetadata? {
-            calls.incrementAndGet(); return null
+        override suspend fun lookup(hash: String): LookupOutcome {
+            calls.incrementAndGet(); return null.asOutcome()
         }
         override val consecutiveFailures: Int get() = calls.get()
     }
@@ -99,14 +99,14 @@ class ScanAbortTest {
     private class FailsAfter(private val n: Int) : RaHashLookup {
         private val seen = AtomicInteger()
         @Volatile var failures = 0; private set
-        override suspend fun lookup(hash: String): GameMetadata? {
+        override suspend fun lookup(hash: String): LookupOutcome {
             if (seen.incrementAndGet() <= n) {
                 failures = 0
                 val id = 1000 + (hash.substringAfter("hash-").toIntOrNull() ?: 0)
-                return GameMetadata(id, "Game $id", "NES", "/i.png", 10)
+                return GameMetadata(id, "Game $id", "NES", "/i.png", 10).asOutcome()
             }
             failures++
-            return null
+            return null.asOutcome()
         }
         override val consecutiveFailures: Int get() = failures
     }
@@ -200,7 +200,7 @@ class ScanAbortTest {
         repeat(30) { rom("nes", "Game$it.nes", "hash-$it") }
         val ok = object : RaHashLookup {
             override suspend fun lookup(hash: String) =
-                GameMetadata(1, "One", "NES", "/i.png", 5)
+                GameMetadata(1, "One", "NES", "/i.png", 5).asOutcome()
         }
 
         val s = withTimeout(20_000) {
@@ -225,7 +225,7 @@ class ScanAbortTest {
         rom("nes", "Known.nes", "hash-known")
         val knows = object : RaHashLookup {
             override suspend fun lookup(hash: String) =
-                GameMetadata(1446, "Super Mario Bros.", "NES", "/i.png", 76)
+                GameMetadata(1446, "Super Mario Bros.", "NES", "/i.png", 76).asOutcome()
         }
         RomScanPipeline(paths, ContentHasher(), knows, throttleMs = { 0L })
             .scan(listOf(romRoot.absolutePath))
@@ -235,11 +235,11 @@ class ScanAbortTest {
         val active = AtomicInteger()
         val quiet = object : RaHashLookup {
             override val consecutiveFailures: Int get() = failures.get()
-            override suspend fun lookup(hash: String): GameMetadata? {
+            override suspend fun lookup(hash: String): LookupOutcome {
                 active.incrementAndGet()
                 try {
                     failures.incrementAndGet()
-                    return null
+                    return null.asOutcome()
                 } finally {
                     active.decrementAndGet()
                 }
@@ -327,13 +327,13 @@ class ScanAbortTest {
     private class Unplugged(private val answersFirst: Int = 0) : RaHashLookup {
         private val seen = AtomicInteger()
         @Volatile private var down = false
-        override suspend fun lookup(hash: String): GameMetadata? {
+        override suspend fun lookup(hash: String): LookupOutcome {
             if (seen.incrementAndGet() <= answersFirst) {
                 val id = 1000 + (hash.substringAfter("hash-").toIntOrNull() ?: 0)
-                return GameMetadata(id, "Game $id", "NES", "/i.png", 10)
+                return GameMetadata(id, "Game $id", "NES", "/i.png", 10).asOutcome()
             }
             down = true
-            return null
+            return null.asOutcome()
         }
         override val offline: Boolean get() = down
     }
@@ -413,7 +413,7 @@ class ScanAbortTest {
     @Test fun `a scan with no connection is not told that the source stopped answering`(): Unit = runBlocking {
         repeat(13) { rom("nes", "Game$it.nes", "hash-$it") }
         val both = object : RaHashLookup {
-            override suspend fun lookup(hash: String): GameMetadata? = null
+            override suspend fun lookup(hash: String): LookupOutcome = null.asOutcome()
             override val consecutiveFailures: Int get() = RomScanPipeline.MAX_CONSECUTIVE_FAILURES
             override val offline: Boolean get() = true
         }
@@ -433,7 +433,7 @@ class ScanAbortTest {
     @Test fun `a scan whose key was refused is told so, with no connection as well`(): Unit = runBlocking {
         repeat(13) { rom("nes", "Game$it.nes", "hash-$it") }
         val both = object : RaHashLookup {
-            override suspend fun lookup(hash: String): GameMetadata? = null
+            override suspend fun lookup(hash: String): LookupOutcome = null.asOutcome()
             override val authRejected: Boolean get() = true
             override val offline: Boolean get() = true
         }
@@ -467,11 +467,11 @@ class ScanAbortTest {
         val anotherCollected = CompletableDeferred<Unit>()
         val lookup = object : RaHashLookup {
             @Volatile private var down = false
-            override suspend fun lookup(hash: String): GameMetadata? {
+            override suspend fun lookup(hash: String): LookupOutcome {
                 down = true
                 saidOffline.countDown()
                 anotherCollected.await()
-                return null
+                return null.asOutcome()
             }
             override val offline: Boolean get() = down
         }
@@ -593,10 +593,10 @@ class ScanAbortTest {
         val failures = AtomicInteger()
         val dead = object : RaHashLookup {
             override val consecutiveFailures: Int get() = failures.get()
-            override suspend fun lookup(hash: String): GameMetadata? {
+            override suspend fun lookup(hash: String): LookupOutcome {
                 stuck.await()
                 failures.incrementAndGet()
-                return null
+                return null.asOutcome()
             }
         }
 
@@ -633,10 +633,10 @@ class ScanAbortTest {
         val failures = AtomicInteger()
         val deaf = object : RaHashLookup {
             override val consecutiveFailures: Int get() = failures.get()
-            override suspend fun lookup(hash: String): GameMetadata? {
+            override suspend fun lookup(hash: String): LookupOutcome {
                 Thread.sleep(if (calls.incrementAndGet() > RomScanPipeline.MAX_CONSECUTIVE_FAILURES) 300 else 30)
                 failures.incrementAndGet()
-                return null
+                return null.asOutcome()
             }
         }
 
@@ -670,7 +670,7 @@ class ScanAbortTest {
         val calls = AtomicInteger()
         val active = AtomicInteger()
         val hangs = object : RaHashLookup {
-            override suspend fun lookup(hash: String): GameMetadata? {
+            override suspend fun lookup(hash: String): LookupOutcome {
                 calls.incrementAndGet()
                 active.incrementAndGet()
                 started.complete(Unit)
@@ -717,11 +717,11 @@ class ScanAbortTest {
         val hanging = CompletableDeferred<Unit>()
         val collected = CompletableDeferred<Unit>()
         val first = object : RaHashLookup {
-            override suspend fun lookup(hash: String): GameMetadata? = when (hash) {
+            override suspend fun lookup(hash: String): LookupOutcome = when (hash) {
                 "hash-hangs" -> { hanging.complete(Unit); awaitCancellation() }
                 "hash-known" -> GameMetadata(1446, "Super Mario Bros.", "NES", "/i.png", 76)
                 else         -> GameMetadata(gameId = 0)
-            }
+            }.asOutcome()
         }
 
         var ended: Throwable? = null
@@ -755,9 +755,9 @@ class ScanAbortTest {
         val hasher = ContentHasher()
         val asked: MutableList<String> = java.util.Collections.synchronizedList(mutableListOf())
         val second = object : RaHashLookup {
-            override suspend fun lookup(hash: String): GameMetadata {
+            override suspend fun lookup(hash: String): LookupOutcome {
                 asked += hash
-                return GameMetadata(gameId = 0)
+                return GameMetadata(gameId = 0).asOutcome()
             }
         }
         val s = RomScanPipeline(paths, hasher, second, throttleMs = { 0L })
@@ -780,8 +780,8 @@ class ScanAbortTest {
         // ledger should hold does not depend on which lookup ran first.
         val collected = CompletableDeferred<Unit>()
         val breaks = object : RaHashLookup {
-            override suspend fun lookup(hash: String): GameMetadata {
-                if (hash != "hash-breaks") return GameMetadata(gameId = 0)
+            override suspend fun lookup(hash: String): LookupOutcome {
+                if (hash != "hash-breaks") return GameMetadata(gameId = 0).asOutcome()
                 collected.await()
                 throw java.io.IOException("the source fell over")
             }
@@ -812,8 +812,8 @@ class ScanAbortTest {
 
         val collected = CompletableDeferred<Unit>()
         val breaks = object : RaHashLookup {
-            override suspend fun lookup(hash: String): GameMetadata {
-                if (hash != "hash-breaks") return GameMetadata(gameId = 0)
+            override suspend fun lookup(hash: String): LookupOutcome {
+                if (hash != "hash-breaks") return GameMetadata(gameId = 0).asOutcome()
                 collected.await()
                 throw java.io.IOException("the source fell over")
             }
@@ -858,9 +858,9 @@ class ScanAbortTest {
         val hasher = ContentHasher()
         val asked: MutableList<String> = java.util.Collections.synchronizedList(mutableListOf())
         val second = object : RaHashLookup {
-            override suspend fun lookup(hash: String): GameMetadata {
+            override suspend fun lookup(hash: String): LookupOutcome {
                 asked += hash
-                return GameMetadata(gameId = 0)
+                return GameMetadata(gameId = 0).asOutcome()
             }
         }
         val s = RomScanPipeline(paths, hasher, second, throttleMs = { 0L })
@@ -908,7 +908,7 @@ class ScanAbortTest {
 
     /** Says no to everything: an answer each time, which is what fills a ledger. */
     private class SaysNo : RaHashLookup {
-        override suspend fun lookup(hash: String) = GameMetadata(gameId = 0)
+        override suspend fun lookup(hash: String) = GameMetadata(gameId = 0).asOutcome()
     }
 
     private val storage get() = File(romRoot, "storage")
@@ -952,7 +952,7 @@ class ScanAbortTest {
 
         val hanging = CompletableDeferred<Unit>()
         val hangs = object : RaHashLookup {
-            override suspend fun lookup(hash: String): GameMetadata? {
+            override suspend fun lookup(hash: String): LookupOutcome {
                 hanging.complete(Unit); awaitCancellation()
             }
         }
@@ -973,9 +973,9 @@ class ScanAbortTest {
         val hasher = ContentHasher()
         val asked: MutableList<String> = java.util.Collections.synchronizedList(mutableListOf())
         val second = object : RaHashLookup {
-            override suspend fun lookup(hash: String): GameMetadata {
+            override suspend fun lookup(hash: String): LookupOutcome {
                 asked += hash
-                return GameMetadata(gameId = 0)
+                return GameMetadata(gameId = 0).asOutcome()
             }
         }
         val s = RomScanPipeline(paths, hasher, second, throttleMs = { 0L }).scan(roots)
@@ -992,7 +992,7 @@ class ScanAbortTest {
         aLibraryWhoseCardWentAfterItsScan()
 
         val breaks = object : RaHashLookup {
-            override suspend fun lookup(hash: String): GameMetadata =
+            override suspend fun lookup(hash: String): LookupOutcome =
                 throw java.io.IOException("the source fell over")
         }
         assertFailsWith<java.io.IOException> {

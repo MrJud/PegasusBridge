@@ -41,8 +41,8 @@ class BridgeRouterTest {
     }
     private class FixedLookup : RaHashLookup {
         override suspend fun lookup(hash: String) =
-            if (hash == "hash-smb") GameMetadata(1446, "Super Mario Bros.", "NES", "/i.png", 76)
-            else GameMetadata(gameId = 0)
+            (if (hash == "hash-smb") GameMetadata(1446, "Super Mario Bros.", "NES", "/i.png", 76)
+             else GameMetadata(gameId = 0)).asOutcome()
     }
 
     @BeforeTest fun setUp() {

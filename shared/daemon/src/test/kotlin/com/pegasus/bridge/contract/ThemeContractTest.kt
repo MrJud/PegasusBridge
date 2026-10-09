@@ -9,8 +9,10 @@ import com.pegasus.bridge.core.StderrLog
 import com.pegasus.bridge.daemon.BridgeRouter
 import com.pegasus.bridge.daemon.JobRegistry
 import com.pegasus.bridge.daemon.MicroHttpServer
+import com.pegasus.bridge.daemon.asOutcome
 import com.pegasus.bridge.hasher.GameMetadata
 import com.pegasus.bridge.hasher.HashResult
+import com.pegasus.bridge.hasher.LookupOutcome
 import com.pegasus.bridge.hasher.RaHashLookup
 import com.pegasus.bridge.hasher.RomHasher
 import com.pegasus.bridge.hasher.RomScanPipeline
@@ -502,9 +504,9 @@ class ThemeContractTest {
 
     private class MapLookup(private val map: Map<String, GameMetadata>) : RaHashLookup {
         val calls = AtomicInteger()
-        override suspend fun lookup(hash: String): GameMetadata {
+        override suspend fun lookup(hash: String): LookupOutcome {
             calls.incrementAndGet()
-            return map[hash] ?: GameMetadata(gameId = 0)
+            return (map[hash] ?: GameMetadata(gameId = 0)).asOutcome()
         }
     }
 
@@ -515,9 +517,9 @@ class ThemeContractTest {
         fun hold(hash: String): CompletableDeferred<Unit> =
             CompletableDeferred<Unit>().also { gates[hash] = it; held += it }
 
-        override suspend fun lookup(hash: String): GameMetadata? {
+        override suspend fun lookup(hash: String): LookupOutcome {
             gates[hash]?.await()
-            return answer(hash)
+            return answer(hash).asOutcome()
         }
     }
 
@@ -819,7 +821,7 @@ class ThemeContractTest {
         rom("snes", "Alpha.sfc", "hash-alpha")
         hasher = ContentHasher()
         lookup = object : RaHashLookup {
-            override suspend fun lookup(hash: String): GameMetadata? = throw IllegalStateException("the lookup broke")
+            override suspend fun lookup(hash: String): LookupOutcome = throw IllegalStateException("the lookup broke")
         }
         val id = "scan_1791233730000_4"
 
@@ -849,7 +851,7 @@ class ThemeContractTest {
         val gate = CompletableDeferred<Unit>().also { held += it }
         lookup = object : RaHashLookup {
             val calls = AtomicInteger()
-            override suspend fun lookup(hash: String): GameMetadata? { gate.await(); calls.incrementAndGet(); return null }
+            override suspend fun lookup(hash: String): LookupOutcome { gate.await(); calls.incrementAndGet(); return null.asOutcome() }
             override val consecutiveFailures: Int get() = calls.get()
         }
         val id = "scan_1791233730000_5"
@@ -896,7 +898,7 @@ class ThemeContractTest {
         hasher = ContentHasher()
         lookup = object : RaHashLookup {
             @Volatile var refused = false
-            override suspend fun lookup(hash: String): GameMetadata? { refused = true; return null }
+            override suspend fun lookup(hash: String): LookupOutcome { refused = true; return null.asOutcome() }
             override val authRejected: Boolean get() = refused
         }
         val id = "scan_1791233730000_8"
@@ -926,7 +928,7 @@ class ThemeContractTest {
         hasher = ContentHasher()
         lookup = object : RaHashLookup {
             @Volatile var refused = false
-            override suspend fun lookup(hash: String): GameMetadata? { refused = true; return null }
+            override suspend fun lookup(hash: String): LookupOutcome { refused = true; return null.asOutcome() }
             override val authRejected: Boolean get() = refused
         }
         val id = "scan_1791233730000_9"
@@ -955,7 +957,7 @@ class ThemeContractTest {
         val gate = CompletableDeferred<Unit>().also { held += it }
         lookup = object : RaHashLookup {
             @Volatile var down = false
-            override suspend fun lookup(hash: String): GameMetadata? { gate.await(); down = true; return null }
+            override suspend fun lookup(hash: String): LookupOutcome { gate.await(); down = true; return null.asOutcome() }
             override val offline: Boolean get() = down
         }
         val id = "scan_1791233730000_10"
@@ -1278,7 +1280,7 @@ class ThemeContractTest {
     /** Never answers, and says how many times in a row: what the pipeline stops a scan for. */
     private class SilentSource : RaHashLookup {
         private val calls = AtomicInteger()
-        override suspend fun lookup(hash: String): GameMetadata? { calls.incrementAndGet(); return null }
+        override suspend fun lookup(hash: String): LookupOutcome { calls.incrementAndGet(); return null.asOutcome() }
         override val consecutiveFailures: Int get() = calls.get()
     }
 
@@ -1403,7 +1405,7 @@ class ThemeContractTest {
         repeat(30) { rom("snes", "g$it.sfc", "hash-$it") }
         val refusing = object : RaHashLookup {
             @Volatile var refused = false
-            override suspend fun lookup(hash: String): GameMetadata? { refused = true; return null }
+            override suspend fun lookup(hash: String): LookupOutcome { refused = true; return null.asOutcome() }
             override val authRejected: Boolean get() = refused
         }
         val theme = androidTheme()
@@ -1433,7 +1435,7 @@ class ThemeContractTest {
     /** Finds the device without a connection at its first lookup, as the real one does when a request fails. */
     private class NoConnection : RaHashLookup {
         @Volatile private var down = false
-        override suspend fun lookup(hash: String): GameMetadata? { down = true; return null }
+        override suspend fun lookup(hash: String): LookupOutcome { down = true; return null.asOutcome() }
         override val offline: Boolean get() = down
     }
 
@@ -1588,14 +1590,14 @@ class ThemeContractTest {
             }
         }
         val answers = object : RaHashLookup {
-            override suspend fun lookup(hash: String): GameMetadata? = when (hash.substringBeforeLast('-')) {
+            override suspend fun lookup(hash: String): LookupOutcome = when (hash.substringBeforeLast('-')) {
                 "hash-match" -> (3000 + hash.substringAfterLast('-').toInt()).let { id ->
                     GameMetadata(id, "Game $id", "SNES/Super Famicom", "/Images/000001.png", 10)
                 }
                 "hash-virtual" -> GameMetadata(gameId = 1100001487)
                 "hash-silent" -> null
                 else -> GameMetadata(gameId = 0)
-            }
+            }.asOutcome()
         }
         repeat(12) { rom("snes", "kept$it.sfc", "hash-match-$it") }
         assertEquals(12, recordedScan("job1", hashes, answers).summary.newEntries)

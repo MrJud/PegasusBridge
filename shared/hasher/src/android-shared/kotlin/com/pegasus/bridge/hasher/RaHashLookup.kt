@@ -25,30 +25,22 @@ import kotlin.coroutines.resumeWithException
 /** Resolves a ROM hash to a RetroAchievements game. */
 interface RaHashLookup {
     /**
-     * One of four answers, which callers must keep apart:
+     * One of the four answers of [LookupOutcome], which callers must keep apart:
+     * a match, a hash RetroAchievements does not know, a dump it knows and does
+     * not consider playable, and a request that got no usable answer.
      *
-     * - null: the request never got a usable answer. Not "RetroAchievements does
-     *   not know this hash" — recording a failure as an answer writes a game off,
-     *   and an incremental rescan will never ask about it again.
-     * - gameId 0: RetroAchievements does not know the hash. A verdict.
-     * - a [VirtualGameId] with a blank title: it knows the hash, but only as a
-     *   dump it does not consider playable as it is — incompatible, untested, or
-     *   needing a patch. A verdict too, and not a match: there is no game to
-     *   describe under that number.
-     * - any other gameId, with its title: a match.
-     *
-     * A real id whose game could not be described is null, not the id alone: the
-     * title is what makes a match, and an answer that cannot give one is a
-     * failure of the source.
+     * A real id whose game could not be described is [LookupOutcome.Failed], not
+     * the id alone: the title is what makes a match, and an answer that cannot
+     * give one is a failure of the source.
      */
-    suspend fun lookup(hash: String): GameMetadata?
+    suspend fun lookup(hash: String): LookupOutcome
 
     /**
-     * Lookups in a row that ended in null, so a caller can stop a doomed scan.
-     * Counted once per lookup, however many requests it took, and cleared by any
-     * answer except a virtual id, which leaves it as it was: no description is
-     * asked for one, so it says nothing either way about whether descriptions
-     * still come back.
+     * Lookups in a row that ended in [LookupOutcome.Failed], so a caller can
+     * stop a doomed scan. Counted once per lookup, however many requests it
+     * took, and cleared by any answer except [LookupOutcome.IdOnly], which
+     * leaves it as it was: no description is asked for a virtual id, so it says
+     * nothing either way about whether descriptions still come back.
      */
     val consecutiveFailures: Int get() = 0
 
@@ -101,6 +93,19 @@ object VirtualGameId {
         gameId > UNTESTED_BASE       -> "game ${gameId - UNTESTED_BASE}, untested"
         gameId > INCOMPATIBLE_BASE   -> "game ${gameId - INCOMPATIBLE_BASE}, incompatible"
         else                         -> "game $gameId"
+    }
+
+    /**
+     * (1487, UNTESTED) for 1100001487: the real id and the reason, for code to
+     * read, or null for an id that is not virtual. The comparisons are those of
+     * [describe], strict as RAWeb's are, so a base itself belongs to the one
+     * below it and the lowest is a game's own id.
+     */
+    fun decode(gameId: Int): Pair<Int, LookupOutcome.Compatibility>? = when {
+        gameId > PATCH_REQUIRED_BASE -> gameId - PATCH_REQUIRED_BASE to LookupOutcome.Compatibility.PATCH_REQUIRED
+        gameId > UNTESTED_BASE       -> gameId - UNTESTED_BASE to LookupOutcome.Compatibility.UNTESTED
+        gameId > INCOMPATIBLE_BASE   -> gameId - INCOMPATIBLE_BASE to LookupOutcome.Compatibility.INCOMPATIBLE
+        else                         -> null
     }
 }
 
@@ -198,16 +203,22 @@ class RaApiHashLookup(
         lastRequestAt = System.nanoTime()
     }
 
-    override suspend fun lookup(hash: String): GameMetadata? = semaphore.withPermit {
-        val result = try {
-            when (val gameId = fetchGameId(hash)) {
-                null -> null
-                0    -> GameMetadata(gameId = 0)
-                // The id alone: the Web API has no game under it to describe. Of 143
-                // ROMs one library had that RA's hash list did not match, 65 came
-                // back as such ids, each costing a metadata request that answered [].
-                else -> if (VirtualGameId.isVirtual(gameId)) GameMetadata(gameId = gameId)
-                        else fetchMetadata(gameId)
+    override suspend fun lookup(hash: String): LookupOutcome = semaphore.withPermit {
+        val outcome = try {
+            when (val asked = fetchGameId(hash)) {
+                is Step.GaveUp -> asked.failed
+                is Step.Got -> {
+                    val gameId = asked.value
+                    val virtual = VirtualGameId.decode(gameId)
+                    when {
+                        gameId == 0 -> LookupOutcome.NotFound
+                        // The id alone: the Web API has no game under it to describe. Of 143
+                        // ROMs one library had that RA's hash list did not match, 65 came
+                        // back as such ids, each costing a metadata request that answered [].
+                        virtual != null -> LookupOutcome.IdOnly(virtual.first, virtual.second, virtualId = gameId)
+                        else -> fetchMetadata(gameId)
+                    }
+                }
             }
         } catch (c: CancellationException) {
             // CancellationException is an Exception, so the broad catch below used
@@ -216,23 +227,39 @@ class RaApiHashLookup(
             // scan whose source had gone down.
             throw c
         } catch (e: Exception) {
+            // For a fault in the lookup itself. What a request throws is caught
+            // where it is retried, and what a body's JSON throws where the body
+            // is read, so nothing the source does is known to arrive here. It
+            // is given as no answer, which is what it was counted as while a
+            // failure was a null, and nothing reads the kind yet: whoever first
+            // acts on a kind should ask whether this one wants its own.
             BridgeLog.e(TAG, "lookup failed for hash $hash: ${describe(e)}")
-            null
+            LookupOutcome.Failed(LookupOutcome.Cause.TRANSPORT, kind(e))
         }
-        when {
-            result == null -> failures.incrementAndGet()
+        when (outcome) {
+            is LookupOutcome.Failed -> failures.incrementAndGet()
             // Neither way. Clearing the count here let a broken metadata endpoint
             // hide behind a library's virtual ids, and counting it would let a run
             // of them stop a scan whose source is answering perfectly well.
-            VirtualGameId.isVirtual(result.gameId) -> Unit
-            else -> failures.set(0)
+            is LookupOutcome.IdOnly -> Unit
+            is LookupOutcome.Match, LookupOutcome.NotFound -> failures.set(0)
         }
-        result
+        outcome
     }
 
     /**
-     * The game id, 0 for a hash RA does not know, or null when the body is not
-     * an answer.
+     * What one request, or the part of a lookup made of it, came to: the thing
+     * it was after, or the failure the lookup ends with. The failure is made
+     * where it happens, which is the only place that knows what kind it was.
+     */
+    private sealed interface Step<out T> {
+        class Got<T>(val value: T) : Step<T>
+        class GaveUp(val failed: LookupOutcome.Failed) : Step<Nothing>
+    }
+
+    /**
+     * The game id, 0 for a hash RA does not know, or the failure when the body
+     * is not an answer.
      *
      * Only `Success: true` with a whole GameID counts. Most of what falls short used
      * to read as 0 — an HTML page served with 200 by a proxy or a maintenance
@@ -241,14 +268,31 @@ class RaApiHashLookup(
      * `Success: false` and `GameID: 0`; read loosely, that writes off every ROM in
      * the library at once.
      */
-    private suspend fun fetchGameId(hash: String): Int? {
-        val reply = getWithRetry("$base/dorequest.php?r=gameid&m=$hash")?.takeIf { it.ok } ?: return null
+    private suspend fun fetchGameId(hash: String): Step<Int> {
+        val reply = when (val got = getWithRetry("$base/dorequest.php?r=gameid&m=$hash")) {
+            is Step.GaveUp -> return got
+            is Step.Got -> got.value
+        }
+        if (!reply.ok) return gaveUp(LookupOutcome.Cause.REFUSED, "HTTP ${reply.code}")
         val body = reply.body.orEmpty()
         val obj = try { JSONObject(body) } catch (e: JSONException) { null }
         val id = obj?.takeIf { it.opt("Success") == true }?.let { wholeNumber(it, "GameID") }
-        if (id == null) BridgeLog.w(TAG, "no usable game id for hash $hash: ${excerpt(body)}")
-        return id
+        if (id != null) return Step.Got(id)
+        BridgeLog.w(TAG, "no usable game id for hash $hash: ${excerpt(body)}")
+        return gaveUp(if (saysNo(obj)) LookupOutcome.Cause.REFUSED else LookupOutcome.Cause.MALFORMED,
+                      "no usable game id")
     }
+
+    private fun gaveUp(cause: LookupOutcome.Cause, detail: String) =
+        Step.GaveUp(LookupOutcome.Failed(cause, detail))
+
+    /**
+     * A body that is an object with a `Success` that is not true: the source
+     * refusing. One that says nothing of the kind and cannot be used is only
+     * not an answer.
+     */
+    private fun saysNo(obj: JSONObject?): Boolean =
+        obj != null && obj.has("Success") && obj.opt("Success") != true
 
     /**
      * Uses `API_GetGameExtended.php`, not `API_GetGame.php`.
@@ -261,7 +305,7 @@ class RaApiHashLookup(
      * Only a real id is asked about, and RA hands one out only for a game it has,
      * so a body that does not describe that game — `[]`, a page that is not
      * JSON, another game's ID, no title, no achievement count, `Success: false` —
-     * is the endpoint failing, and comes back as null. It used to come back as
+     * is the endpoint failing, and comes back as a failure. It used to come back as
      * the id alone, which cleared the failure count: a metadata endpoint serving
      * a maintenance page with 200 went unnoticed through a whole library, every
      * match retried and none of it counted as failing.
@@ -273,30 +317,36 @@ class RaApiHashLookup(
      * checked at all. The 404 RAWeb gives for a banned user is about the user a
      * request names in `u`, which this one does not carry.
      */
-    private suspend fun fetchMetadata(gameId: Int): GameMetadata? {
+    private suspend fun fetchMetadata(gameId: Int): LookupOutcome {
         val url = "$base/API/API_GetGameExtended.php?z=$raUser&y=$raApiKey&i=$gameId"
-        val reply = getWithRetry(url) ?: return null
-        if (reply.code == 401) rejected = true
-        if (!reply.ok) return null
+        val reply = when (val got = getWithRetry(url)) {
+            is Step.GaveUp -> return got.failed
+            is Step.Got -> got.value
+        }
+        if (reply.code == 401) {
+            rejected = true
+            return LookupOutcome.Failed(LookupOutcome.Cause.AUTH, "HTTP 401")
+        }
+        if (!reply.ok) return LookupOutcome.Failed(LookupOutcome.Cause.REFUSED, "HTTP ${reply.code}")
         val body = reply.body.orEmpty()
         val obj = try { firstObject(body) } catch (e: JSONException) { null }
-        if (obj != null && obj.has("Success") && obj.opt("Success") != true) {
+        if (saysNo(obj)) {
             BridgeLog.w(TAG, "metadata for game $gameId refused: ${excerpt(body)}")
-            return null
+            return LookupOutcome.Failed(LookupOutcome.Cause.REFUSED, "metadata for game $gameId refused")
         }
         val title = (obj?.opt("Title") as? String)?.takeIf { it.isNotBlank() }
         val achievements = obj?.let { wholeNumber(it, "NumAchievements") }
         if (obj == null || wholeNumber(obj, "ID") != gameId || title == null || achievements == null) {
             BridgeLog.w(TAG, "no usable metadata for game $gameId: ${excerpt(body)}")
-            return null
+            return LookupOutcome.Failed(LookupOutcome.Cause.MALFORMED, "no usable metadata for game $gameId")
         }
-        return GameMetadata(
+        return LookupOutcome.Match(GameMetadata(
             gameId          = gameId,
             title           = title,
             consoleName     = obj.optString("ConsoleName"),
             imageIcon       = obj.optString("ImageIcon"),
             numAchievements = achievements
-        )
+        ))
     }
 
     /**
@@ -334,17 +384,37 @@ class RaApiHashLookup(
         return if (safe.length <= EXCERPT_CHARS) safe else safe.take(EXCERPT_CHARS) + "…"
     }
 
-    /** The exception's class and its message, through [excerpt], never the throwable itself. */
+    /**
+     * The exception's class and its message, through [excerpt], never the
+     * throwable itself. For the log and nowhere else: see [kind].
+     */
     private fun describe(e: Exception): String =
         e.message?.let { "${e.javaClass.simpleName}: ${excerpt(it)}" } ?: e.javaClass.simpleName
 
     /**
-     * A success, or the first refusal that asking again would not change, or null
-     * once every attempt has failed. The refusal is handed back rather than
-     * reduced to null because one of them, a 401, says the key is no good.
+     * The exception's class alone, which is what a [LookupOutcome.Failed]
+     * says of a request that brought nothing back. Not [describe]: the
+     * message of such an exception is where the request was going. A refused
+     * connection names the address and the port, a name that does not resolve
+     * is the whole of its message, and a connection dropped half-way quotes
+     * the URL. The log has all of that, on a line that names the host anyway;
+     * the outcome goes wherever a caller takes it, a ledger or a screen.
      */
-    private suspend fun getWithRetry(url: String): HttpReply? {
-        var lastFailure = "no attempt made"
+    private fun kind(e: Exception): String =
+        e.javaClass.simpleName.ifEmpty { e.javaClass.name.substringAfterLast('.') }
+
+    /**
+     * A success, or the first refusal that asking again would not change, or the
+     * failure once every attempt has failed: what the last of them was, a status
+     * or no answer at all. The refusal is handed back as the reply it is rather
+     * than as a failure because one of them, a 401, says the key is no good, and
+     * only the caller knows whether its request carried the key.
+     */
+    private suspend fun getWithRetry(url: String): Step<HttpReply> {
+        var last = LookupOutcome.Failed(LookupOutcome.Cause.TRANSPORT, "no attempt made")
+        // What the last attempt came to, in the words the log has for it: for
+        // a status the same as the failure's own, for an exception more.
+        var said = last.detail
         for (attempt in 0 until MAX_RETRIES) {
             try {
                 pace()
@@ -356,21 +426,24 @@ class RaApiHashLookup(
                 unreachable = false
                 try { device.answered() } catch (t: Throwable) { }
                 when {
-                    reply.ok -> return reply
+                    reply.ok -> return Step.Got(reply)
                     // 403 belongs here: it is what being refused for too many
                     // requests looks like, and treating it as fatal made the
                     // client give up on the first one.
-                    reply.code == 403 || reply.code == 429 || reply.code >= 500 ->
-                        lastFailure = "HTTP ${reply.code}"
+                    reply.code == 403 || reply.code == 429 || reply.code >= 500 -> {
+                        last = LookupOutcome.Failed(LookupOutcome.Cause.REFUSED, "HTTP ${reply.code}")
+                        said = last.detail
+                    }
                     else -> {
                         BridgeLog.e(TAG, "HTTP ${reply.code} for ${SafeUrl.redact(url)}")
-                        return reply
+                        return Step.Got(reply)
                     }
                 }
             } catch (c: CancellationException) {
                 throw c
             } catch (e: Exception) {
-                lastFailure = describe(e)
+                last = LookupOutcome.Failed(LookupOutcome.Cause.TRANSPORT, kind(e))
+                said = describe(e)
                 // Asked here and nowhere else: after a request that was made
                 // and brought back no answer at all. With no connection the
                 // attempts left would fail as this one did, and the back-off
@@ -380,8 +453,8 @@ class RaApiHashLookup(
                 if (unreachable) {
                     // Redacted as below, and for the same reason.
                     BridgeLog.e(TAG, "no internet connection: not asking again for " +
-                                     "${SafeUrl.redact(url)} ($lastFailure)")
-                    return null
+                                     "${SafeUrl.redact(url)} ($said)")
+                    return gaveUp(LookupOutcome.Cause.OFFLINE, last.detail)
                 }
             }
             // Not after the last attempt: nothing is left to wait for, and sleeping
@@ -392,8 +465,8 @@ class RaApiHashLookup(
         // and the desktop log is stderr or a journal that ends up in bug reports.
         // What survives — host, endpoint and the game id — is what makes the line
         // worth having; the key never was.
-        BridgeLog.e(TAG, "all retries exhausted for ${SafeUrl.redact(url)} ($lastFailure)")
-        return null
+        BridgeLog.e(TAG, "all retries exhausted for ${SafeUrl.redact(url)} ($said)")
+        return Step.GaveUp(last)
     }
 
     private class HttpReply(val code: Int, val body: String?) {

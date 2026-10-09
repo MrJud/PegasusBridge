@@ -61,16 +61,16 @@ class ScanLedgerTest {
     /** Says no to everything. A verdict, not a refusal. */
     private class SaysNo : RaHashLookup {
         val calls = AtomicInteger()
-        override suspend fun lookup(hash: String): GameMetadata? {
-            calls.incrementAndGet(); return GameMetadata(gameId = 0)
+        override suspend fun lookup(hash: String): LookupOutcome {
+            calls.incrementAndGet(); return GameMetadata(gameId = 0).asOutcome()
         }
     }
 
     /** Never answers. A refusal, not a verdict. */
     private class NeverAnswers : RaHashLookup {
         val calls = AtomicInteger()
-        override suspend fun lookup(hash: String): GameMetadata? {
-            calls.incrementAndGet(); return null
+        override suspend fun lookup(hash: String): LookupOutcome {
+            calls.incrementAndGet(); return null.asOutcome()
         }
     }
 
@@ -160,7 +160,7 @@ class ScanLedgerTest {
         val f = rom("nes", "Contra (USA).nes", "hash-ctra")
         val found = object : RaHashLookup {
             override suspend fun lookup(hash: String) =
-                GameMetadata(1447, "Contra", "NES", "/i.png", 40)
+                GameMetadata(1447, "Contra", "NES", "/i.png", 40).asOutcome()
         }
         val s = pipeline(ContentHasher(), found).scan(listOf(romRoot.absolutePath))
 
@@ -376,7 +376,7 @@ class ScanLedgerTest {
         rom("nes", "Contra (USA).nes", "hash-ctra")
         val found = object : RaHashLookup {
             override suspend fun lookup(hash: String) =
-                GameMetadata(1447, "Contra", "NES", "/i.png", 40)
+                GameMetadata(1447, "Contra", "NES", "/i.png", 40).asOutcome()
         }
         pipeline(ContentHasher(), found).scan(listOf(romRoot.absolutePath))
 

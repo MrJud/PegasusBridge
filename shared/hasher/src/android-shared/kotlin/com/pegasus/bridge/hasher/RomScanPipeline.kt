@@ -225,7 +225,7 @@ class RomScanPipeline(
         // real. The map used to hold results: a worker read it, released the lock and
         // then called the network, so a second worker could read the same absent hash
         // in that gap and call as well. The lock covered the map, never the decision.
-        val hashDedup    = mutableMapOf<String, CompletableDeferred<GameMetadata?>>()
+        val hashDedup    = mutableMapOf<String, CompletableDeferred<LookupOutcome>>()
 
         // One of the seven for every result, and no result in two: together they
         // are `processed`, at every report and at the end.
@@ -276,15 +276,15 @@ class RomScanPipeline(
                             // same lock, so exactly one worker owns the call and the others
                             // await it instead of racing it.
                             val hash = job.hash.hash
-                            var mine: CompletableDeferred<GameMetadata?>? = null
+                            var mine: CompletableDeferred<LookupOutcome>? = null
                             val pending = synchronized(hashDedup) {
-                                hashDedup[hash] ?: CompletableDeferred<GameMetadata?>().also {
+                                hashDedup[hash] ?: CompletableDeferred<LookupOutcome>().also {
                                     mine = it
                                     hashDedup[hash] = it
                                 }
                             }
 
-                            val meta: GameMetadata?
+                            val outcome: LookupOutcome
                             val owned = mine
                             if (owned != null) {
                                 // The owner settles its promise on every path. Not for an
@@ -297,7 +297,7 @@ class RomScanPipeline(
                                 // follower awaiting a promise nobody completes waits for
                                 // ever; tried with such a lookup, scan() never returned.
                                 // No lookup here throws one, so no test reaches this.
-                                meta = try {
+                                outcome = try {
                                     lookup.lookup(hash)
                                 } catch (t: Throwable) {
                                     synchronized(hashDedup) { hashDedup.remove(hash) }
@@ -307,17 +307,19 @@ class RomScanPipeline(
                                 // Only a real answer is worth remembering. A failure is
                                 // left uncached and unrecorded so the next scan asks
                                 // again — recording it would write the game off for good.
-                                if (meta == null) synchronized(hashDedup) { hashDedup.remove(hash) }
-                                owned.complete(meta)
+                                if (outcome is LookupOutcome.Failed) {
+                                    synchronized(hashDedup) { hashDedup.remove(hash) }
+                                }
+                                owned.complete(outcome)
                             } else {
                                 // Someone else is already asking. Note that a file arriving
                                 // while a failing lookup is still in flight now shares that
                                 // failure instead of repeating the call; one that arrives
                                 // after it has finished finds the entry gone and retries, as
                                 // before.
-                                meta = pending.await()
+                                outcome = pending.await()
                             }
-                            resultQueue.send(ResultJob(job, meta, failed = meta == null))
+                            resultQueue.send(ResultJob(job, outcome))
                         }
                     }
                 }
@@ -359,59 +361,56 @@ class RomScanPipeline(
                             ScanLedger.State.MATCHED   -> cached++
                             ScanLedger.State.API_RETRY -> failedLookups++
                         }
-                        // No answer at all. Recorded as a retry and never as a verdict:
-                        // caching a refusal as "this game has no achievements" is the
-                        // bug that cost a whole run, 85 answers of 913 requests.
-                        r.failed -> {
-                            failedLookups++
-                            ledger.record(canonical(job.file), ScanLedger.State.API_RETRY,
-                                          job.fileSize, job.lastModified, now,
-                                          detail = "the source did not answer")
-                        }
-                        // RA knows the dump, but only as one it does not consider playable
-                        // as it is: a Virtual Console Metroid comes back as 1100001487,
-                        // game 1487 untested. Not a match — the Web API has no game under
-                        // that number, and writing one produced a junk metadata file the
-                        // index discarded — but an answer all the same, and kept like a
-                        // miss. As API_RETRY, which is never cached, the file was read in
-                        // full and asked about again on every scan: 65 files and 130
-                        // requests a scan in one library, reported as a source that did
-                        // not answer.
-                        r.meta != null && VirtualGameId.isVirtual(r.meta.gameId) -> {
-                            incompatible++
-                            ledger.record(canonical(job.file), ScanLedger.State.NOT_FOUND,
-                                          job.fileSize, job.lastModified, now,
-                                          gameId = r.meta.gameId,
-                                          detail = "RetroAchievements knows this dump only by virtual id " +
-                                                   "${r.meta.gameId}: ${VirtualGameId.describe(r.meta.gameId)}")
-                        }
-                        // A usable match needs a title, not just an id. Blank rather than
-                        // empty: a title of spaces would be written here and then
-                        // distrusted by preloadMetadataCache, so the same ROM would be
-                        // asked about and counted new every scan.
-                        r.meta != null && r.meta.gameId > 0 && r.meta.title.isNotBlank() -> {
-                            writeMetadata(job, r.meta); newEntries++
-                            ledger.record(canonical(job.file), ScanLedger.State.MATCHED,
-                                          job.fileSize, job.lastModified, now,
-                                          gameId = r.meta.gameId)
-                        }
-                        // A real id with no title. RaApiHashLookup answers null for one
-                        // now, but the interface does not forbid it, and it is not a match
-                        // or a verdict either. Retried, not written off, and counted with
-                        // the lookups that got no answer: it is recorded as one of them.
-                        r.meta != null && r.meta.gameId > 0 -> {
-                            failedLookups++
-                            ledger.record(canonical(job.file), ScanLedger.State.API_RETRY,
-                                          job.fileSize, job.lastModified, now,
-                                          gameId = r.meta.gameId,
-                                          detail = "the source knows id ${r.meta.gameId} but gave no title")
-                        }
-                        // gameId 0: the source was asked and said no. A real verdict,
-                        // remembered until its TTL runs out.
-                        else -> {
-                            unmatched++
-                            ledger.record(canonical(job.file), ScanLedger.State.NOT_FOUND,
-                                          job.fileSize, job.lastModified, now)
+                        // What the lookup said of the hash. Every answer it has is named
+                        // here, so that one added to it does not compile until it has
+                        // been given a count and a record.
+                        else -> when (val outcome = r.outcome) {
+                            // No answer at all. Recorded as a retry and never as a verdict:
+                            // caching a refusal as "this game has no achievements" is the
+                            // bug that cost a whole run, 85 answers of 913 requests. A real
+                            // id that came with no title is one of these as well: neither a
+                            // match nor a verdict, and no lookup can hand it over as either.
+                            //
+                            // Null is a result that says nothing of itself, which nothing
+                            // here sends. Were one sent, it would be asked about again, and
+                            // not written off as a miss.
+                            is LookupOutcome.Failed, null -> {
+                                failedLookups++
+                                ledger.record(canonical(job.file), ScanLedger.State.API_RETRY,
+                                              job.fileSize, job.lastModified, now,
+                                              detail = "the source did not answer")
+                            }
+                            // RA knows the dump, but only as one it does not consider playable
+                            // as it is: a Virtual Console Metroid comes back as 1100001487,
+                            // game 1487 untested. Not a match — the Web API has no game under
+                            // that number, and writing one produced a junk metadata file the
+                            // index discarded — but an answer all the same, and kept like a
+                            // miss. As API_RETRY, which is never cached, the file was read in
+                            // full and asked about again on every scan: 65 files and 130
+                            // requests a scan in one library, reported as a source that did
+                            // not answer.
+                            is LookupOutcome.IdOnly -> {
+                                incompatible++
+                                ledger.record(canonical(job.file), ScanLedger.State.NOT_FOUND,
+                                              job.fileSize, job.lastModified, now,
+                                              gameId = outcome.virtualId,
+                                              detail = "RetroAchievements knows this dump only by virtual " +
+                                                       "id ${outcome.virtualId}: " +
+                                                       VirtualGameId.describe(outcome.virtualId))
+                            }
+                            is LookupOutcome.Match -> {
+                                writeMetadata(job, outcome.game); newEntries++
+                                ledger.record(canonical(job.file), ScanLedger.State.MATCHED,
+                                              job.fileSize, job.lastModified, now,
+                                              gameId = outcome.game.gameId)
+                            }
+                            // The source was asked and said no. A real verdict, remembered
+                            // until its TTL runs out.
+                            LookupOutcome.NotFound -> {
+                                unmatched++
+                                ledger.record(canonical(job.file), ScanLedger.State.NOT_FOUND,
+                                              job.fileSize, job.lastModified, now)
+                            }
                         }
                     }
                     processed++
@@ -444,7 +443,7 @@ class RomScanPipeline(
                     // no failed lookup in its counts and the file that had failed
                     // in no ledger, since what is still queued at an abort is
                     // dropped.
-                    if (r.failed && lookup.offline) {
+                    if (r.outcome is LookupOutcome.Failed && lookup.offline) {
                         throw ScanAborted("no internet connection " +
                                           "($processed of $total processed)", AbortCause.OFFLINE)
                     }
@@ -556,7 +555,7 @@ class RomScanPipeline(
             ledger.record(path, ScanLedger.State.UNSUPPORTED, size, modified, now,
                           detail = "RetroAchievements does not cover $platform")
             resultQueue.send(ResultJob(HashJob(file, "", HashResult("", 0), rawPlatform, 0, 0),
-                                       null, skipped = true))
+                                       skipped = true))
             return
         }
 
@@ -574,7 +573,7 @@ class RomScanPipeline(
             ledger.record(path, ScanLedger.State.MATCHED, size, modified, now)
             resultQueue.send(ResultJob(
                 HashJob(file, cacheKey, HashResult(known.hash, 0), rawPlatform, size, modified),
-                null, cached = true))
+                cached = true))
             return
         }
 
@@ -588,7 +587,7 @@ class RomScanPipeline(
             ledger.count(path, settled)
             resultQueue.send(ResultJob(
                 HashJob(file, cacheKey, HashResult("", 0), rawPlatform, size, modified),
-                null, preRecorded = settled.state,
+                preRecorded = settled.state,
                 virtualId = VirtualGameId.isVirtual(settled.gameId)))
             return
         }
@@ -626,7 +625,7 @@ class RomScanPipeline(
                               detail = outcome.candidates.joinToString(", "))
                 resultQueue.send(ResultJob(
                     HashJob(file, cacheKey, HashResult("", 0), rawPlatform, size, modified),
-                    null, preRecorded = ScanLedger.State.AMBIGUOUS_ARCHIVE))
+                    preRecorded = ScanLedger.State.AMBIGUOUS_ARCHIVE))
             }
             is HashOutcome.Failed -> {
                 // A file that may be fixed is retried; one the hasher knows it cannot
@@ -636,7 +635,7 @@ class RomScanPipeline(
                 ledger.record(path, state, size, modified, now, detail = outcome.reason)
                 resultQueue.send(ResultJob(
                     HashJob(file, cacheKey, HashResult("", 0), rawPlatform, size, modified),
-                    null, preRecorded = state))
+                    preRecorded = state))
             }
             is HashOutcome.Ok -> {
                 throttleMs().takeIf { it > 0 }?.let { delay(it) }
@@ -751,9 +750,13 @@ class RomScanPipeline(
         val platform: String, val fileSize: Long, val lastModified: Long
     )
     private data class ResultJob(
-        val job: HashJob, val meta: GameMetadata?,
+        val job: HashJob,
+        /**
+         * What the lookup said of the file's hash. Null for a file whose hash
+         * was never put to it, for which one of the three below says why.
+         */
+        val outcome: LookupOutcome? = null,
         val cached: Boolean = false, val skipped: Boolean = false,
-        val failed: Boolean = false,  // never got an answer — not the same as "unknown"
         /**
          * The verdict the producer already wrote for this file, or found standing
          * from an earlier scan. The collector records nothing for it and only

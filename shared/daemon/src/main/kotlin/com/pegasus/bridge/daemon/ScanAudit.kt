@@ -8,6 +8,7 @@ import com.pegasus.bridge.hasher.DeviceConnection
 import com.pegasus.bridge.hasher.GameMetadata
 import com.pegasus.bridge.hasher.HashOutcome
 import com.pegasus.bridge.hasher.HashResult
+import com.pegasus.bridge.hasher.LookupOutcome
 import com.pegasus.bridge.hasher.NativeRomHasher
 import com.pegasus.bridge.hasher.RETROACHIEVEMENTS_URL
 import com.pegasus.bridge.hasher.RaApiHashLookup
@@ -15,6 +16,7 @@ import com.pegasus.bridge.hasher.RaHashLookup
 import com.pegasus.bridge.hasher.RomHasher
 import com.pegasus.bridge.hasher.RomScanPipeline
 import com.pegasus.bridge.hasher.ScanLedger
+import com.pegasus.bridge.hasher.VirtualGameId
 import kotlinx.coroutines.runBlocking
 import org.json.JSONObject
 import java.io.File
@@ -413,22 +415,23 @@ object ScanAudit {
      * A hash the file does not have is answered as one RetroAchievements
      * does not know. That is the only answer that lets the scan go on to its
      * end and keeps the file's row, and the table says where its answers
-     * came from. An id above a thousand million is handed back as the
-     * [com.pegasus.bridge.hasher.VirtualGameId] it is.
+     * came from. An id of 0 is that answer written down, and an id above a
+     * thousand million is handed back as the [VirtualGameId] it is.
      *
-     * A real id is given a title even where the file has none: the pipeline
-     * takes an id without one for a lookup that failed.
+     * A real id is given a title even where the file has none: a match has
+     * to have one, and an id without is a lookup that failed.
      */
-    internal class OracleLookup(private val answers: Map<String, GameMetadata>) : RaHashLookup {
+    internal class OracleLookup(private val answers: Map<String, LookupOutcome>) : RaHashLookup {
 
         val size: Int get() = answers.size
 
-        override suspend fun lookup(hash: String): GameMetadata = answers[hash] ?: GameMetadata(gameId = 0)
+        override suspend fun lookup(hash: String): LookupOutcome = answers[hash] ?: LookupOutcome.NotFound
 
         companion object {
             /** Throws, naming the line, on one that is not an answer: an oracle half read is a wrong one. */
             fun read(file: File): OracleLookup {
-                val answers = LinkedHashMap<String, GameMetadata>()
+                val answers = LinkedHashMap<String, LookupOutcome>()
+                val ids = HashMap<String, Int>()
                 file.readLines().forEachIndexed { index, line ->
                     if (line.isBlank() || line.startsWith("#")) return@forEachIndexed
                     val cells = line.split('\t')
@@ -438,10 +441,16 @@ object ScanAudit {
                     require(hash.isNotEmpty() && gameId != null) {
                         "line ${index + 1} is not a hash and a game id: $line"
                     }
+                    val known = ids.put(hash, gameId)
+                    require(known == null || known == gameId) {
+                        "line ${index + 1} gives $hash a second game, $gameId after $known"
+                    }
                     val title = cells.getOrNull(4)?.trim().orEmpty().ifEmpty { "game $gameId" }
-                    val known = answers.put(hash, GameMetadata(gameId = gameId, title = title))
-                    require(known == null || known.gameId == gameId) {
-                        "line ${index + 1} gives $hash a second game, $gameId after ${known?.gameId}"
+                    val virtual = VirtualGameId.decode(gameId)
+                    answers[hash] = when {
+                        gameId == 0     -> LookupOutcome.NotFound
+                        virtual != null -> LookupOutcome.IdOnly(virtual.first, virtual.second, virtualId = gameId)
+                        else            -> LookupOutcome.Match(GameMetadata(gameId = gameId, title = title))
                     }
                 }
                 return OracleLookup(answers)
@@ -457,7 +466,7 @@ object ScanAudit {
     internal class CountingLookup(private val inner: RaHashLookup) : RaHashLookup {
         private val askedAbout = ConcurrentHashMap<String, AtomicInteger>()
 
-        override suspend fun lookup(hash: String): GameMetadata? {
+        override suspend fun lookup(hash: String): LookupOutcome {
             askedAbout.computeIfAbsent(hash) { AtomicInteger() }.incrementAndGet()
             return inner.lookup(hash)
         }

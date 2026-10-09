@@ -64,6 +64,13 @@ jobs:
         working-directory: shared
         run: ./tests/check_test_counts.py
 
+      # The script that reads an audit's table and compares two of them is
+      # what a change to hashing is judged with on a real library. It runs on
+      # nobody's library here, only on the small tables its tests write.
+      - name: The audit report passes its own tests
+        working-directory: shared
+        run: ./tools/audit_report_test.py
+
       - name: Upload test reports
         if: failure()
         uses: actions/upload-artifact@v4

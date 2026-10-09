@@ -44,3 +44,35 @@ tasks.named<Sync>("installDist") {
     dependsOn(buildNative)
     from(nativeDir) { into("lib/native") }
 }
+
+/**
+ * Runs one scan as the daemon would and writes a row for every file (ScanAudit):
+ *
+ *     ./gradlew :daemon:audit -PauditArgs='--audit=<folder> --out=<file.tsv> [...]'
+ *
+ * It does not depend on buildNative, and that is the point of having it. An
+ * audit is how one build's hashes are compared with another's, and the library
+ * it measures has to be the one that is committed in native/out and that the
+ * tests load. installDist compiles a new one over it first, so a daemon
+ * installed for the purpose would measure a library nobody has committed, and
+ * leave the tracked file changed behind it.
+ *
+ * The arguments are cut where a space is followed by `--`, and nowhere else: a
+ * folder of a library may well have a space in its name. Paths that are not
+ * absolute start from shared/.
+ */
+tasks.register<JavaExec>("audit") {
+    group = "verification"
+    description = "Scans the folders in -PauditArgs as the daemon would and writes one row per file."
+    classpath = sourceSets["main"].runtimeClasspath
+    mainClass.set(application.mainClass)
+    workingDir = rootDir
+    environment("PEGASUS_BRIDGE_NATIVE", File(nativeDir, System.mapLibraryName("rahasher")).absolutePath)
+    args((findProperty("auditArgs") as String?).orEmpty().trim()
+        .split(Regex("\\s+(?=--)")).filter { it.isNotEmpty() })
+    doFirst {
+        require(args.orEmpty().any { it.startsWith("--audit=") }) {
+            "nothing to audit: pass -PauditArgs='--audit=<folder> --out=<file.tsv>'"
+        }
+    }
+}

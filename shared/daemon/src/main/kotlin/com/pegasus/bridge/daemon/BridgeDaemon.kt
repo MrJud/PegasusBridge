@@ -9,12 +9,14 @@ import com.pegasus.bridge.hasher.DeviceConnection
 import com.pegasus.bridge.hasher.NativeRomHasher
 import com.pegasus.bridge.hasher.RETROACHIEVEMENTS_URL
 import com.pegasus.bridge.hasher.RaApiHashLookup
+import com.pegasus.bridge.hasher.RaHashLookup
 import com.pegasus.bridge.hasher.RomHasher
 import com.pegasus.bridge.hasher.RomScanPipeline
 import com.pegasus.bridge.hasher.RomScanner
 import com.pegasus.bridge.pegasus.MetadataFile
 import org.json.JSONObject
 import java.io.File
+import kotlin.system.exitProcess
 
 /**
  * The desktop daemon: a resident process serving the Bridge HTTP API on
@@ -101,18 +103,12 @@ class BridgeDaemon(
         val scanPipeline: (() -> RomScanPipeline)? = hasher?.let {
             {
                 val ra = config.load().ra
-                RomScanPipeline(
+                buildScanPipeline(
                     paths,
                     ArchiveAwareHasher(it, File(dataRoot, "tmp")),
                     RaApiHashLookup(ra?.user.orEmpty(), ra?.apiKey.orEmpty(), raBaseUrl,
                                     DeviceConnection(deviceOffline)),
-                    hashWorkers = hashWorkers,
-                    // A collection states which extensions it contains, and the
-                    // scanner's built-in list is only a default. They disagree
-                    // more often than is comfortable — every collection in the
-                    // library this was developed against declares one the list
-                    // has never heard of — and the collection is the authority.
-                    extensionsFor = ::collectionExtensions
+                    hashWorkers
                 )
             }
         }
@@ -194,21 +190,6 @@ class BridgeDaemon(
     }
 
     /**
-     * What counts as a ROM in [dir]: the built-in set, plus whatever the
-     * collection's own metadata file declares.
-     *
-     * A union rather than a replacement. A collection that forgets to list `zip`
-     * should not thereby lose its archives, and one that adds a spelling of its
-     * own should not need the Bridge to be rebuilt to see it.
-     */
-    private fun collectionExtensions(dir: File): Set<String> {
-        val declared = runCatching { MetadataFile.readCollection(dir)?.extensions }
-            .getOrNull().orEmpty()
-        return if (declared.isEmpty()) RomScanner.ROM_EXTENSIONS
-               else RomScanner.ROM_EXTENSIONS + declared
-    }
-
-    /**
      * Publishes the port so a client can find the daemon.
      *
      * This is the only file left in the contract: a theme reads it once to learn
@@ -235,10 +216,54 @@ class BridgeDaemon(
         private const val TAG = "BridgeDaemon"
         const val MAX_HASH_WORKERS = 16
 
-        private fun nativeHasher(): RomHasher? =
+        // Internal, with the function below, for [ScanAudit]: the scan it
+        // reports on has to be the one a daemon runs, down to the library it
+        // loads.
+        internal fun nativeHasher(): RomHasher? =
             DaemonPaths.nativeLibraryCandidates()
                 .firstNotNullOfOrNull { NativeRomHasher.tryLoad(it) }
                 ?: NativeRomHasher.tryLoad()
+
+        /**
+         * The pipeline a scan of this daemon runs, around the hasher and the
+         * lookup it is given.
+         *
+         * Here and not where [start] needs it, so that [ScanAudit] is handed
+         * the same one. An audit that built a pipeline of its own would go on
+         * measuring the scan of the day it was written: an argument added to
+         * the daemon's would not reach it, and nothing would say that the two
+         * had come apart.
+         */
+        internal fun buildScanPipeline(
+            paths: BridgePaths,
+            hasher: RomHasher,
+            lookup: RaHashLookup,
+            hashWorkers: Int
+        ): RomScanPipeline = RomScanPipeline(
+            paths, hasher, lookup,
+            hashWorkers = hashWorkers,
+            // A collection states which extensions it contains, and the
+            // scanner's built-in list is only a default. They disagree
+            // more often than is comfortable — every collection in the
+            // library this was developed against declares one the list
+            // has never heard of — and the collection is the authority.
+            extensionsFor = ::collectionExtensions
+        )
+
+        /**
+         * What counts as a ROM in [dir]: the built-in set, plus whatever the
+         * collection's own metadata file declares.
+         *
+         * A union rather than a replacement. A collection that forgets to list `zip`
+         * should not thereby lose its archives, and one that adds a spelling of its
+         * own should not need the Bridge to be rebuilt to see it.
+         */
+        private fun collectionExtensions(dir: File): Set<String> {
+            val declared = runCatching { MetadataFile.readCollection(dir)?.extensions }
+                .getOrNull().orEmpty()
+            return if (declared.isEmpty()) RomScanner.ROM_EXTENSIONS
+                   else RomScanner.ROM_EXTENSIONS + declared
+        }
 
         /**
          * The daemon the command line asks for, not yet started.
@@ -266,6 +291,11 @@ class BridgeDaemon(
 
         @JvmStatic
         fun main(args: Array<String>) {
+            // An audit is one scan, run to its end and written down: no server,
+            // no endpoint file, and a data root of its own that it deletes. So
+            // it is turned to before a daemon is made of the arguments.
+            if (args.any { it.startsWith(ScanAudit.FLAG) }) exitProcess(ScanAudit.run(args))
+
             val daemon = fromArgs(args)
             val bound = daemon.start()
             println("PegasusBridge daemon listening on http://127.0.0.1:$bound")

@@ -13,17 +13,21 @@ import java.util.concurrent.ThreadPoolExecutor
 import java.util.concurrent.TimeUnit
 
 /**
- * A very small HTTP/1.1 server, bound to loopback only.
+ * A very small HTTP/1.1 server, bound to loopback only, that turns away every
+ * request a browser makes ([CrossSiteGuard]).
  *
  * Hand-written rather than `com.sun.net.httpserver` because that package is not
- * part of the Android API, and the whole point of the HTTP contract is that the
- * *same* server runs on desktop and on Android. Nothing here is general-purpose:
- * it serves a handful of local endpoints returning JSON, so it always closes the
- * connection and never negotiates encodings.
+ * part of the Android API, and the server was written to be able to run there
+ * as well. It does not: the Android app is asked through intents and has no
+ * HTTP server, so this one runs in the desktop daemon only. Nothing here is
+ * general-purpose: it serves a handful of local endpoints returning JSON, so it
+ * always closes the connection and never negotiates encodings.
  */
 class MicroHttpServer(
     private val requestedPort: Int = 0,
     private val workers: Int = 8,
+    /** Milliseconds that only go forward, for [logRefusal]. A test gives its own. */
+    private val clock: () -> Long = { System.nanoTime() / 1_000_000 },
     private val handler: (Request) -> Response
 ) {
 
@@ -46,6 +50,7 @@ class MicroHttpServer(
         companion object {
             fun json(body: String) = Response(200, body)
             fun badRequest(message: String) = error(400, message)
+            fun forbidden(message: String) = error(403, message)
             fun notFound(message: String = "unknown endpoint") = error(404, message)
             fun serverError(message: String) = error(500, message)
 
@@ -73,6 +78,12 @@ class MicroHttpServer(
     private var server: ServerSocket? = null
     private var pool: ThreadPoolExecutor? = null
     @Volatile private var running = false
+
+    // What [logRefusal] has written and left unwritten since the minute began.
+    private val refusalLock = Any()
+    private var refusalMinuteStart = clock()
+    private var refusalsLogged = 0
+    private var refusalsCounted = 0
 
     /** The port actually bound. Meaningful only after [start]. */
     var port: Int = 0
@@ -119,7 +130,12 @@ class MicroHttpServer(
                     write(sock.getOutputStream(), Response.badRequest("malformed request"))
                     return
                 }
-                val response = try {
+                // Before the handler and in place of it: several routes write on
+                // a GET, so a request refused after its handler ran is not refused.
+                val refusal = CrossSiteGuard.refusal(request.headers)
+                val response = if (refusal != null) {
+                    refused(request, refusal)
+                } else try {
                     handler(request)
                 } catch (t: Throwable) {
                     BridgeLog.e(TAG, "handler threw for ${request.path}", t)
@@ -131,6 +147,61 @@ class MicroHttpServer(
             }
         }
     }
+
+    /**
+     * The answer to a request [CrossSiteGuard] turned away, and the one line
+     * that is kept of it.
+     *
+     * The path and not the query: `/credentials` takes its keys there. At the
+     * lowest level, because each is something that did not happen. The body is
+     * the JSON every other error has, so that a theme that is ever refused
+     * shows the reason and not "no response from bridge daemon".
+     */
+    private fun refused(request: Request, refusal: CrossSiteGuard.Refusal): Response {
+        logRefusal("refused ${printable(request.method)} ${printable(request.path)}: " +
+            "${printable(refusal.header)}: ${printable(refusal.value)}")
+        return Response.forbidden(refusal.message)
+    }
+
+    /**
+     * Writes the line of a refusal, for the first [MAX_REFUSALS_LOGGED] of a
+     * minute, and counts the rest.
+     *
+     * A page can have its browser send these as fast as it likes, and the
+     * lowest level does not keep them out of anything: the daemon's log prints
+     * every level, so on the desktop each line is in the journal. The count is
+     * written with the first refusal of a later minute, and the line that is
+     * the last of its minute says so, in case no later one comes.
+     */
+    private fun logRefusal(line: String) {
+        var unwritten = 0
+        var last = false
+        synchronized(refusalLock) {
+            val now = clock()
+            if (now - refusalMinuteStart >= REFUSAL_MINUTE_MS) {
+                unwritten = refusalsCounted
+                refusalMinuteStart = now
+                refusalsLogged = 0
+                refusalsCounted = 0
+            }
+            if (refusalsLogged == MAX_REFUSALS_LOGGED) {
+                refusalsCounted++
+                return
+            }
+            last = ++refusalsLogged == MAX_REFUSALS_LOGGED
+        }
+        if (unwritten > 0) BridgeLog.d(TAG, "refused $unwritten more before this, counted and not written")
+        BridgeLog.d(TAG, if (last) "$line (no more are written this minute, only counted)" else line)
+    }
+
+    /**
+     * What a stranger sent, made fit for a line of the log: a header's name or
+     * value, a method and a path can each hold an escape sequence or run to
+     * eight thousand bytes.
+     */
+    private fun printable(s: String): String =
+        s.take(MAX_LOGGED).map { if (it in ' '..'~') it else '?' }.joinToString("") +
+            (if (s.length > MAX_LOGGED) "..." else "")
 
     private fun parse(input: BufferedInputStream): Request? {
         val requestLine = readLine(input) ?: return null
@@ -144,8 +215,16 @@ class MicroHttpServer(
             val line = readLine(input) ?: return null
             if (line.isEmpty()) break
             val idx = line.indexOf(':')
-            if (idx > 0) headers[line.substring(0, idx).trim().lowercase()] =
-                line.substring(idx + 1).trim()
+            if (idx <= 0) continue
+            val name = line.substring(0, idx).trim().lowercase()
+            // Two Hosts are no request at all (RFC 9112 says 400), and the map
+            // would keep the second: one the guard refuses, then one it takes.
+            if (name == "host" && name in headers) return null
+            // The blanks HTTP allows round a value are the space and the tab.
+            // trim() takes more with them, a no-break space and the control
+            // characters among them, and "127.0.0.1" followed by one of those
+            // would reach the guard as the name it lets through.
+            headers[name] = line.substring(idx + 1).trim(' ', '\t')
         }
 
         val body = headers["content-length"]?.toIntOrNull()?.takeIf { it > 0 }?.let { len ->
@@ -201,8 +280,18 @@ class MicroHttpServer(
                 .append(reason(response.status)).append("\r\n")
             append("Content-Type: ").append(response.contentType).append("\r\n")
             append("Content-Length: ").append(bytes.size).append("\r\n")
-            // The frontend is a QML XMLHttpRequest, which may present an origin.
-            append("Access-Control-Allow-Origin: *\r\n")
+            // No Access-Control-Allow-Origin, to anybody. It is the header that
+            // lets a page of another origin read an answer, and the frontend is
+            // a QML XMLHttpRequest, which presents no origin and reads the
+            // answer without asking for the header. An OPTIONS preflight gets
+            // no permission either, whatever its status says.
+            //
+            // And the two that say so outright, for a browser that got a
+            // request past the guard: the answer is not to be handed to a page
+            // of another origin as a picture or a script, and is not to be
+            // taken for anything but the JSON it says it is.
+            append("Cross-Origin-Resource-Policy: same-origin\r\n")
+            append("X-Content-Type-Options: nosniff\r\n")
             append("Cache-Control: no-store\r\n")
             append("Connection: close\r\n\r\n")
         }
@@ -212,7 +301,7 @@ class MicroHttpServer(
     }
 
     private fun reason(status: Int) = when (status) {
-        200 -> "OK"; 400 -> "Bad Request"; 404 -> "Not Found"
+        200 -> "OK"; 400 -> "Bad Request"; 403 -> "Forbidden"; 404 -> "Not Found"
         405 -> "Method Not Allowed"; 500 -> "Internal Server Error"
         else -> "OK"
     }
@@ -222,5 +311,8 @@ class MicroHttpServer(
         const val READ_TIMEOUT_MS = 15_000
         const val MAX_LINE = 8_192
         const val MAX_BODY_BYTES = 1 shl 20
+        const val MAX_LOGGED = 120
+        const val MAX_REFUSALS_LOGGED = 20
+        const val REFUSAL_MINUTE_MS = 60_000L
     }
 }

@@ -226,6 +226,16 @@ asks, never as a bulk scanner.
 Desktop: HTTP on loopback. The daemon writes its port to
 `<dataRoot>/daemon.json`; read that, then speak HTTP.
 
+The daemon is for programs on the machine, not for web pages, and not for a
+browser at all. A request is answered `403` before any endpoint sees it when its
+`Host` is not `127.0.0.1`, `localhost` or `[::1]`, or when it carries a header
+only a browser writes: an `Origin`, or any header whose name begins `Sec-`
+(`Sec-Fetch-Site` is on everything a current browser sends). So an address
+opened in a browser is refused too; ask with curl. No answer carries
+`Access-Control-Allow-Origin`. A QML `XMLHttpRequest` and curl send none of
+those headers, so a theme has nothing to do, and must not add one. This is not
+authentication: any local process can still call the daemon.
+
 Android: `pegasus-data://<verb>?…` intents, with results written as JSON under
 `<dataRoot>`.
 
@@ -524,7 +534,16 @@ systemctl --user status pegasus-bridge-proxy.socket   # on-demand install
 journalctl --user -u pegasus-bridge -f
 ```
 
-`<dataRoot>/daemon.json` must exist and its port must answer `/health`.
+`<dataRoot>/daemon.json` must exist and its port must answer `/health`:
+
+```bash
+curl http://127.0.0.1:<port>/health
+```
+
+**`403`, "refused: …".** The request named the daemon by something other than
+`127.0.0.1`, `localhost` or `[::1]`, or came from a browser: the daemon answers
+curl and the theme, and not an address opened in a browser tab. The daemon's
+log says which header it went by.
 
 **The daemon is healthy and the theme still shows nothing.** Then the theme
 never found the data root, and it has no way to tell you so: every request is

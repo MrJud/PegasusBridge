@@ -287,6 +287,55 @@ class BridgeRouterTest {
         assertFalse(File(n64, "zz-pegasusbridge.metadata.pegasus.txt").exists())
     }
 
+    // ── a page of another site ──────────────────────────────────────────────
+
+    /**
+     * The request that was sent to a daemon in a sandbox before the server
+     * looked at where a request came from: `/emulators/apply`, as a browser
+     * sends it for a page of another site. It was answered 200 and the file was
+     * there, with a command Pegasus runs when a game is started.
+     *
+     * A page's picture or fetch, a name rebound to this machine, and the three
+     * ways Chrome 155 still got the file written while `Sec-Fetch-Site: none`
+     * and an `Origin` on this machine were served: a prefetch, a redirect from
+     * a site the person opened, a WebSocket from a page on another port. Then
+     * the same request with none of a browser's headers, as the theme sends
+     * it, which has to go on writing.
+     */
+    @Test fun `a page of another site cannot plant a launch command`() {
+        val nes = File(romRoot, "nes").apply { mkdirs() }
+        File(nes, "Super Mario Bros.nes").writeText("rom")
+        val overlay = File(nes, "zz-pegasusbridge.metadata.pegasus.txt")
+        val request = "/emulators/apply?directory=${nes.absolutePath}&launch=planted%20%7Bfile.path%7D"
+
+        val asked = listOf(
+            listOf("Origin" to "https://attacker.invalid"),
+            listOf("Sec-Fetch-Site" to "cross-site"),
+            listOf("Host" to "attacker.invalid:${server.port}"),
+            listOf("Sec-Purpose" to "prefetch", "Sec-Fetch-Site" to "none", "Sec-Fetch-Mode" to "navigate",
+                   "Sec-Fetch-Dest" to "document"),
+            listOf("Sec-Fetch-Site" to "none", "Sec-Fetch-Mode" to "navigate", "Sec-Fetch-User" to "?1",
+                   "Sec-Fetch-Dest" to "document"),
+            listOf("Connection" to "Upgrade", "Upgrade" to "websocket", "Origin" to "http://localhost:3000",
+                   "Sec-WebSocket-Version" to "13", "Sec-WebSocket-Key" to "QSDwO7KamAKEh6Zj7szF+A=="))
+        for (headers in asked) {
+            client.newCall(Request.Builder().url(url(request))
+                .apply { headers.forEach { (name, value) -> header(name, value) } }.build())
+                .execute().use { r ->
+                    assertEquals(403, r.code, "$headers")
+                    assertEquals(null, r.header("Access-Control-Allow-Origin"), "$headers")
+                }
+            assertFalse(overlay.exists(), "$headers: the overlay was written")
+            assertEquals(listOf("Super Mario Bros.nes"), nes.list()!!.toList(), "$headers")
+        }
+
+        get(request).use { r ->
+            assertEquals(200, r.code)
+            assertEquals("ok", JSONObject(r.body!!.string()).getString("status"))
+        }
+        assertTrue(overlay.readText().contains("launch: planted {file.path}"), overlay.readText())
+    }
+
     // ── choosing an emulator ────────────────────────────────────────────────
 
     /**

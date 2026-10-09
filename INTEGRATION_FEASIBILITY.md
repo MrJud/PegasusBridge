@@ -184,6 +184,12 @@ relay. The desktop daemon already runs an HTTP server bound to loopback, which
 is precisely what the PKCE redirect needs, so the OAuth callback costs one extra
 route rather than a browser-embedding problem.
 
+One extra route and one exception. The daemon refuses every request a browser
+makes (CONTEXT.md, "Requests from a web page"), and the callback is exactly
+that: a navigation the provider's page starts. The route will have to be let
+through the guard by name, and take nothing but a `code` beside a `state` the
+daemon itself gave out for that one sign-in.
+
 The honest caveats:
 
 - **Premium or nothing** for play/pause/skip. On a free account the integration

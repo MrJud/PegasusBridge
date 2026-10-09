@@ -474,6 +474,141 @@ A ROM scan keeps connections flowing, so it never idles out mid-run. Closing
 Pegasus during a scan does stop it — and costs little, because a rescan is
 incremental.
 
+### Requests from a web page
+
+Listening on 127.0.0.1 keeps other machines out. It does nothing about a web
+page open in a browser on the same machine: the browser is a local process and
+sends a GET to loopback for any page that asks, as a picture, a script, a frame
+or a `fetch`. Every route answers a GET and several of them write —
+`/emulators/apply` puts a `launch:` command in a file Pegasus later runs — and
+with `--on-demand` the port is a fixed one, 38700 unless another was asked for.
+Until this was looked at the server checked nothing and put
+`Access-Control-Allow-Origin: *` on every answer, so a page could also *read*:
+`/health` gives the data root and other routes list collections and
+directories, enough to then plant a command in one. A request to
+`/emulators/apply` with `Origin: https://attacker.invalid` and a foreign `Host`
+was answered 200 and the file was written.
+
+`CrossSiteGuard` now refuses every request a browser makes, which it knows by
+the headers a browser writes and a page's script cannot write, change or take
+away. `MicroHttpServer` asks it before the handler and instead of it:
+
+| header | served | refused | what it catches |
+| --- | --- | --- | --- |
+| `Host` | absent; `127.0.0.1`, `localhost`, `[::1]`, any port | any other name, `0.0.0.0`, empty; twice in one request is a 400 | DNS rebinding: a page that points its own name at 127.0.0.1 is same-origin to the browser, which on plain http under that name adds none of the headers below, and its name is still in `Host` |
+| `Origin` | absent | present, whatever it names: another site, `null`, this machine | a fetch to another origin, a form that posts, every WebSocket handshake |
+| any name that begins `Sec-` | absent | present, whatever it says | `Sec-Fetch-Site` and its kin are on every request a current browser makes to this address but a WebSocket handshake, which has `Sec-WebSocket-Key`; a prefetch has `Sec-Purpose` too |
+
+A refusal is a 403 with the JSON error body every other error has (so a theme
+that is ever refused shows the reason rather than "no response"), and a line of
+the log: method, path, the header and its value, each cut to 120 printable ASCII
+characters. Never the query, where `/credentials` takes its keys. The line is at
+the lowest level, which keeps it out of nothing: the daemon prints every level,
+so it is in the journal. A page can have these sent as fast as its browser
+will, so twenty a minute are written and the rest counted, the count written
+with the first refusal of a later minute.
+
+**The daemon's callers send none of these headers**, which is what lets every
+request that has one be refused. A QML `XMLHttpRequest` was pointed at a
+listener that prints what it receives, from Qt 5.15.19 (`qml` and `qmlscene`;
+5.15 is what Pegasus is built on) and from Qt 6.12.0, synchronous and
+asynchronous. All of it:
+
+```
+GET /health HTTP/1.1
+Host: 127.0.0.1:23871
+Connection: Keep-Alive
+Accept-Encoding: gzip, deflate          (Qt 6: zstd, br, gzip, deflate)
+Accept-Language: it-IT,en,*
+User-Agent: Mozilla/5.0
+```
+
+No `Origin`, no `Sec-Fetch-Site`, no `Referer`. curl sends `Host`, `User-Agent`
+and `Accept`. So the rules cost the daemon's own callers nothing — and for the
+same reason they stop no process on this machine, which sends what it likes.
+
+**No value of a browser's headers is served**, though two of them look safe.
+`Sec-Fetch-Site: none` is what a browser says of an address the person typed,
+and an `Origin` on this machine looks like a neighbour. A daemon that served
+both was put in front of Chrome 155, and `/emulators/apply` wrote its file three
+ways:
+
+- A page of another site with a speculation rule naming the daemon's URL. The
+  browser prefetched it, nobody having clicked anything, as `Sec-Purpose:
+  prefetch`, `Sec-Fetch-Site: none`, `Sec-Fetch-Mode: navigate`.
+- An address of another site given to the browser, as a person types one or
+  opens a bookmark, which answered 302 with the daemon's URL in `Location`. The
+  redirect was followed as `Sec-Fetch-Site: none`, `Sec-Fetch-User: ?1`. `none`
+  says who started the request, not who chose where it ends.
+- A page served from another port of this machine opening a WebSocket to the
+  daemon. The handshake is a GET with `Upgrade: websocket`,
+  `Origin: http://localhost:<that port>` and no `Sec-Fetch-Site` at all, and the
+  handler ran on the GET.
+
+All three are refused now, and so is the person who opens the daemon's address
+in a browser: the 403 says to use curl, and by arriving shows the daemon is up.
+The daemon serves no page, so `same-origin` and an origin of its own have
+nobody to belong to.
+
+- **No `Host` passes.** An HTTP/1.0 client sends none and a browser always sends
+  one, so a request without it is not the one the rule is looking for.
+- **Any port in `Host`.** Under socket activation the theme talks to the port
+  systemd holds and `systemd-socket-proxyd` passes the bytes on unchanged, so
+  `Host` names a port the daemon never opened. Tried with the proxy itself in
+  front of a daemon: the theme's `BridgeApi.js` found it through `daemon.json`,
+  read and wrote; the refusals were refused through it as well.
+- **`0.0.0.0` is refused by name.** Linux delivers a connection to it to the
+  socket bound on 127.0.0.1, and `Host` then says `0.0.0.0:<port>`.
+- **Two `Host`s are a 400**, as RFC 9112 has it. The parser keeps one value for
+  a name, the last, and a refused name followed by an allowed one was served.
+- **Only a space or a tab is taken off a value.** `127.0.0.1` followed by a
+  no-break space or a control character was trimmed into the allowed name.
+- **No `Access-Control-Allow-Origin` at all**, rather than one that echoes an
+  allowed origin. A QML `XMLHttpRequest` does not ask for it: it read the
+  listener's answers, which carried none. With no such header no page of another
+  origin can read an answer, and an `OPTIONS` preflight is approved for nobody.
+  Every answer also carries `Cross-Origin-Resource-Policy: same-origin` and
+  `X-Content-Type-Options: nosniff`, for the browser that gets a request
+  through: it may not hand the answer to another origin's page as a picture or
+  a script.
+- **The whole `Sec-` prefix, not a list.** It is the prefix kept for headers a
+  page's script may not set, so the next one a browser invents is refused
+  before anyone here has heard of it. `Upgrade` is not asked: `Origin` and
+  `Sec-WebSocket-Key` already refuse a browser's WebSocket, and clients that are
+  not browsers send `Upgrade: h2c`.
+
+Chrome 155, headless, on pages served from `localhost` and from another port of
+127.0.0.1, every way tried of making it ask the daemon for `/emulators/apply`: a
+picture, a frame, a `no-cors` and a `cors` fetch, a beacon, a link prefetch, a
+script that sets `location`, the speculation rule (prefetch and prerender), the
+redirect, the WebSocket, and the daemon's address given to the browser itself.
+Each request carried `Origin` or a `Sec-` header, was answered 403 and wrote
+nothing. Under a name mapped to 127.0.0.1 the same browser sent no `Sec-` header
+and no `Origin`, only that name in `Host`, and was refused on it.
+
+What this does **not** do:
+
+- **A browser too old to send `Sec-Fetch-Site`** (Chrome before 76, Firefox
+  before 90, Safari before 16.4; none of them was tried), on a request that
+  carries no `Origin` — an `<img>`, a link, a form that GETs, a prefetch — is
+  not recognised, and while writes are GETs it can be a write. Rebinding is
+  still caught, by `Host`, and a WebSocket by `Origin`.
+- **Only Chrome was tried.** That every current browser holds
+  `http://127.0.0.1` and `http://localhost` trustworthy, and so sends
+  `Sec-Fetch-Site` to them, is taken from the specification. One that did not
+  would be the old browser above.
+- **Any local process can call the daemon.** Nothing here is authentication.
+- **Nobody can look at `/health` in a browser.** curl answers the same question.
+- **A sign-in that ends on the daemon** (the Spotify callback of
+  `INTEGRATION_FEASIBILITY.md`) arrives as a browser's navigation from another
+  site and is refused like any other. Its route will need an exception of its
+  own in the guard, held to a one-time `state` value the daemon gave out.
+- The router does not look at the method, so a request that passes is served
+  whatever its verb.
+
+Not done here: a token the theme would have to present, moving the writes to
+POST. The Android app has no HTTP server and none of this applies to it.
+
 ## 8. Writing into the user's library
 
 Two of the daemon's endpoint groups reach outside `<dataRoot>` and into the

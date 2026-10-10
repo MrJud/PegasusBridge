@@ -430,8 +430,8 @@ class BridgeRouter(
                     .put("reason", summary.reason)
                     // What happened to every file, not only the ones that matched.
                     // "37 indexed of 900" is not an answer to "why is this game
-                    // missing"; MATCHED/NOT_FOUND/HASH_FAILED/API_RETRY/UNSUPPORTED/
-                    // AMBIGUOUS_ARCHIVE is.
+                    // missing"; how many files ended in each state is, by every
+                    // name of ScanLedger.State that a file of this scan came to.
                     .put("states", JSONObject().also { s ->
                         summary.states.forEach { (state, n) -> s.put(state.name, n) }
                     })

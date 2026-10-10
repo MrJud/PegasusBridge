@@ -177,6 +177,29 @@ that a number in the recipe is still raised by hand, `HashRecipe.RULES`, with
 two beside it for one corner each: `PLACEHOLDERS` and `CONTAINERS`. The scan
 logs the line the numbers are made from, and an audit's table begins with it.
 
+Every file a scan processes ends in one of eleven states (`ScanLedger.State`),
+which is what the ledger keeps for it and what the daemon's result counts
+under `states`. Each is counted in one of the seven counters of the job
+record, and stands for a time before the file is looked at again, while its
+size, its date and its number are what they were:
+
+| state | what it says of the file | counter | stands for |
+| --- | --- | --- | --- |
+| `MATCHED` | the source answered with a game | `newEntries`, or `cachedHits` when found unchanged | as long as the file does |
+| `NOT_FOUND` | the source was asked, and has no game for the hash | `unmatched` | 14 days |
+| `KNOWN_UNSUPPORTED` | the source knows the dump and does not let it count: untested, incompatible, or in need of a patch | `incompatible` | 30 days |
+| `API_RETRY` | the source did not answer | `failedLookups` | never kept |
+| `UNSUPPORTED` | its collection is of a console nobody can hash for | `skippedPlatforms` | 90 days, and decided again at every scan |
+| `PLACEHOLDER` | an empty file, or a few lines of text under a ROM's name | `skippedPlatforms` | as long as the file does |
+| `UNSUPPORTED_FORMAT` | the collection can be hashed and this file cannot: a format nobody reads, a file that is no game | `hashFailed` | 90 days, and decided again at every scan where the name says it |
+| `NO_PLAYABLE_ENTRY` | an archive that opened and holds no game of its collection | `hashFailed` | 30 days |
+| `AMBIGUOUS_ARCHIVE` | an archive in which several entries could each be the game | `hashFailed` | 7 days |
+| `UNHASHABLE` | the console of its collection read the file and refused it, or its archive or its disc's sheet is one nothing can be made of | `hashFailed` | 30 days |
+| `HASH_FAILED` | the file could not be read, or not this time | `hashFailed` | never kept |
+
+The three that cost a request are the first three, and `API_RETRY` is the one
+that cost one and got nothing for it. The other seven never reach the source.
+
 Files are hashed 2 at a time on Android and 4 on the desktop. Either can be
 told otherwise, to time a library on its own storage: `hashWorkers=N` on the
 `pegasus-data://scan` URI (1–8), `--hash-workers=N` on the daemon (1–16).
@@ -411,7 +434,7 @@ GameDatabase.qml call sites (`Scraper.searchSGDB(...)`, etc.) are unchanged — 
 
 The theme no longer matches games. `RAFuzzyMatch.js` (236 lines) and
 `RAConsoleMap.js` (169 lines) are deleted; ROM-filename parsing, fuzzy scoring
-and the 137-entry console table live only in the Bridge, reached through
+and the console table live only in the Bridge, reached through
 `/ra/match` and `/ra/consoles` (`match-ra` / `ra-consoles` on Android).
 
 What the theme keeps is memoisation, under its own key format (`_memoKey`),
@@ -502,6 +525,51 @@ adb install -r app-debug.apk
 ```
 
 After install, on first run the theme creates `/sdcard/PegasusData/*` subdirs (or the Bridge does on its first verb invocation via `Paths.ensureAll()`).
+
+### The hasher's library
+
+One C file and six of rcheevos' are the hasher, named in
+`hasher/src/main/cpp/rahasher.sources`, and three builds compile that list:
+
+- **Android** — CMake, with the app, for each ABI.
+- **Linux** — `shared/native/build.sh`, into `shared/native/out/librahasher.so`,
+  which is **committed**, with `librahasher.manifest` beside it: the SHA-256 of
+  the library and of every file it was compiled from, the flags and the
+  compiler. The tests and the daemon load that file. A commit that changes the
+  C has to carry the library built again, and
+  `shared/tests/native_manifest_check.py` fails one that does not;
+  `native_lib_check.sh` holds what the library exports and the oldest glibc it
+  loads on. `:daemon:installDist` and `package.sh` build it in place, so
+  neither is to be left having changed the tracked file by accident.
+- **Windows** — the same script with `--target=windows`, or run in Git Bash,
+  builds `rahasher.dll` with mingw-w64. It is not committed. It has been built
+  and its imports and exports read (`native_lib_check.sh` reads a DLL too, and
+  refuses one that calls a `printf_s` function, which ends the process on a
+  message too long). **Nothing has loaded it**: the `windows` job of
+  `shared-tests.yml` builds it on `windows-latest` and runs the hasher's tests
+  against it, and that job has not run yet.
+
+CI's `native` job builds a fresh Linux library and runs the tests on that as
+well as on the committed one, and runs `shared/tests/native_repro_test.py`:
+files made to hurt rcheevos, each in a process of its own under a timeout, on
+a plain build and on one with the address and undefined-behaviour sanitizers.
+`hasher/src/main/cpp/rcheevos-patches/PATCHES.md` says what each local patch is
+for and which of those rows hold it.
+
+### Auditing a scan
+
+`./gradlew :daemon:audit -PauditArgs='--audit=<folder> --out=<file.tsv>'`, from
+`shared/`, runs one scan as the daemon would, into a data root of its own, and
+writes a row for every file: its collection, state, console, hash and whether
+the source was asked (`ScanAudit`). It makes no request unless given
+`--lookup`; `--oracle=<file>` answers from hashes recorded earlier.
+`shared/tools/audit_report.py` reads the table, counts it by collection and
+state, compares it with the table of another build row by row, and looks for
+hashes that are wrong whatever the source would say (a descriptor hashed as
+its own text, a file hashed by its name outside an arcade collection, any hash
+in a collection that has no algorithm, a Game Boy hash for a file that is not
+one). It is how a change to hashing is judged on a real library before it is
+merged.
 
 ---
 

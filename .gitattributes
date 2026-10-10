@@ -6,6 +6,19 @@ hasher/src/main/cpp/rcheevos/** -text
 # Windows batch files are CRLF by definition; normalising them churns the diff.
 *.bat -text
 
+# A script has to reach every checkout with the line ends it was written with.
+# Git for Windows turns core.autocrlf on unless told otherwise, and a checkout
+# made that way hands bash a package.sh, a gradlew and the tests' scripts whose
+# lines end in CR, which it does not run: the first `./package.sh` in Git Bash
+# fails on a carriage return. The CI job on Windows gets round it by turning
+# autocrlf off before it checks out, and a person does not know to.
+#
+# Above the two folders below on purpose: a later line wins, and what is under
+# those folders is taken as it is, whole, whatever it is called.
+*.sh text eol=lf
+*.py text eol=lf
+gradlew text eol=lf
+
 # The hasher's library is committed with a manifest of SHA-256 sums of the
 # files it was compiled from, and the check works the sums out again from the
 # checkout. A checkout that rewrites line endings (core.autocrlf, which Git for

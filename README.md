@@ -22,7 +22,7 @@ theme sees is the same on both, so a theme written against it works on either.
 | --- | --- |
 | Linux (x86_64) | working, verified end to end |
 | Android (arm64, API 26+) | working, verified on device |
-| Windows | not started |
+| Windows | not released and never run: the hasher's `rahasher.dll` builds with mingw-w64, and a CI job is there to load it that has not run yet |
 
 ---
 
@@ -469,6 +469,45 @@ cd ..
 `assembleRelease` produces an **unsigned** APK unless you supply a keystore.
 Create one yourself and put the details in `local.properties` (git-ignored) —
 see the comment at the top of `app/build.gradle.kts`.
+
+### The hasher's native library
+
+The desktop's `librahasher.so` is committed, in `shared/native/out/`, with a
+manifest beside it of everything it was compiled from. The tests load that
+file, so a change to the C under `hasher/src/main/cpp` has to come with the
+library built again, in the same commit:
+
+```bash
+cd shared
+JAVA_HOME=<a JDK 21> ./native/build.sh      # writes native/out/librahasher.so and its manifest
+./tests/native_manifest_check.py            # fails when the library is older than its sources
+./tests/native_lib_check.sh native/out/librahasher.so
+./tests/vendored_check.py                   # rcheevos is upstream plus the patches listed, and nothing else
+./tests/native_repro_test.py                # files made to hurt rcheevos, on a plain and a sanitized build
+```
+
+It needs gcc. `./native/build.sh <dir> --target=windows` builds `rahasher.dll`
+with `x86_64-w64-mingw32-gcc`, on Linux as well as in Git Bash on Windows; a
+DLL is not committed. CI builds a fresh library in its `native` job and tests
+it, and loads the DLL in its `windows` job, which is the one place the DLL has
+anything load it.
+
+### Auditing a scan
+
+To see what a change to hashing does to a real library, scan it before and
+after and compare the two tables. The audit runs the scan as the daemon
+would, into a data root of its own, asks nobody unless told to, and writes a
+row for every file:
+
+```bash
+cd shared
+./gradlew :daemon:audit -PauditArgs='--audit=<library folder> --out=<file.tsv>'
+./tools/audit_report.py <file.tsv> --baseline <the table from before>
+```
+
+The report counts the files by collection and state, names every file whose
+verdict moved, and looks for hashes that cannot be right whatever
+RetroAchievements would say of them.
 
 ### One copy of what both shells run
 

@@ -44,3 +44,9 @@ replay_pid*.log
 # The packaged daemon: a jlink runtime plus the jars, ~150 MB, rebuilt by
 # package.sh whenever it is needed.
 shared/dist/
+
+# The hasher's library for Windows. native/build.sh writes it here where it is
+# run on Windows, with its manifest; the one for Linux beside it is committed,
+# and this one is built where it is needed.
+shared/native/out/rahasher.dll
+shared/native/out/rahasher.manifest

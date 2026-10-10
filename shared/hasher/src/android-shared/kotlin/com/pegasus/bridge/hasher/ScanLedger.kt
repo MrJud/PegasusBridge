@@ -56,9 +56,10 @@ class ScanLedger(private val file: File, private val recipe: HashRecipe = HashRe
         /** Several entries could each be the ROM; a person has to look. */
         AMBIGUOUS_ARCHIVE,
         /**
-         * The hasher knew before trying that it cannot hash this file — a disc
-         * descriptor inside an archive, whose tracks are not extracted. Not a
-         * broken file and not a miss: the same answer until the hasher changes.
+         * The hasher knew before trying that it cannot hash this file: a disc
+         * inside an archive whose sheet is one rcheevos does not read, or
+         * names a track the archive does not hold. Not a broken file and not
+         * a miss: the same answer until the hasher changes.
          *
          * Also a file called `.zip` or `.7z` that does not open as one. That
          * one is broken, and stays so until it is another file.

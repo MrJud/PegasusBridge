@@ -178,4 +178,15 @@ object ArchiveSelector {
 
         return Selection.Ambiguous(playable.sortedByDescending { it.size })
     }
+
+    /**
+     * The same for an archive in [collection], whose entries are held to one
+     * list: that of the short name, or of the folder's name where the folder
+     * says more of what it holds ([CollectionRef.hasherPlatform]). A folder
+     * `gamegear` of a collection that calls itself `mastersystem` holds Game
+     * Gear cartridges, and by the short name's list a zipped one has nothing
+     * playable in it.
+     */
+    fun select(entries: List<Entry>, archiveName: String, collection: CollectionRef): Selection =
+        select(entries, archiveName, collection.hasherPlatform)
 }

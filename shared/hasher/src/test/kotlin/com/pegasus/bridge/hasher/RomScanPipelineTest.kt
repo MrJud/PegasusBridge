@@ -854,6 +854,58 @@ class RomScanPipelineTest {
         assertEquals(0, l.calls.get(), "the source was asked")
     }
 
+    // An archive that gives nothing to hash was hashed as the file it is,
+    // and to rcheevos a zip or a 7z it is told nothing about is an arcade
+    // set: the hash is the MD5 of its name. So a download cut short, a patch
+    // kept beside the game it is for, and a packed disc image zipped once
+    // more were each asked about under a hash of a file name, and each
+    // answer, no, was kept as a game the database lacks. None of them is
+    // asked about now, and each is kept as what it is, so that the next scan
+    // does not open it again.
+    @Test fun `an archive with nothing playable is never asked about`(): Unit = runBlocking {
+        val corrupt = rom("nes", "Lantern Keep (USA).zip", "the start of a download")
+        val patch = zip("ps2", "Other Game (Europe) [patch].zip",
+                        "Other Game (Europe).7z" to "x".repeat(4096), "how to apply.txt" to "x")
+        val packed = zip("ps2", "Third Game (Japan).zip", "Third Game (Japan).chd" to "x".repeat(4096))
+        val tmp = Files.createTempDirectory("hasher-tmp").toFile()
+        val expected = counts(new = 0, cached = 0, skipped = 0, unmatched = 0, incompatible = 0,
+                              hashFailed = 3, failedLookups = 0)
+        val states = mapOf(ScanLedger.State.UNHASHABLE to 1, ScanLedger.State.NO_PLAYABLE_ENTRY to 1,
+                           ScanLedger.State.UNSUPPORTED_FORMAT to 1)
+        try {
+            val h = ContentHasher()
+            val s = RomScanPipeline(paths, ArchiveAwareHasher(h, tmp), NeverAsked(), throttleMs = { 0L })
+                .scan(listOf(romRoot.absolutePath))
+
+            assertEquals(3, s.total)
+            assertEquals(expected, s.counts())
+            assertEquals(states, s.states)
+            assertEquals(0, h.calls.get(), "an archive, or something out of one, was handed to rcheevos")
+            fun kept(f: File) = ledgerEntry(f).let { it.getString("state") to it.getString("detail") }
+            assertEquals("UNHASHABLE", kept(corrupt).first)
+            assertTrue(kept(corrupt).second.startsWith("not a readable archive: "), kept(corrupt).second)
+            assertEquals("NO_PLAYABLE_ENTRY" to "nothing in the archive is a game of this collection: " +
+                                                "Other Game (Europe).7z", kept(patch))
+            assertEquals("UNSUPPORTED_FORMAT" to "'Third Game (Japan).chd' in the archive: " +
+                                                 ".chd is a format this build has no reader for", kept(packed))
+
+            // And on a rescan each is found standing: counted where it was,
+            // with no archive opened. A hasher that fails the scan when it is
+            // handed anything stands in for the one that would open them.
+            val untouched = object : RomHasher {
+                override fun hash(path: String): HashResult? = throw AssertionError("$path was read again")
+                override fun hashDetailed(path: String, collection: CollectionRef): HashOutcome =
+                    throw AssertionError("$path was opened again")
+            }
+            val s2 = pipeline(untouched, NeverAsked()).scan(listOf(romRoot.absolutePath))
+
+            assertEquals(expected, s2.counts())
+            assertEquals(states, s2.states)
+        } finally {
+            tmp.deleteRecursively()
+        }
+    }
+
     // Several files sharing a hash should cost one network call, not one each.
     @Test fun `identical hashes are looked up once`(): Unit = runBlocking {
         rom("nes", "Copy A.nes", "hash-smb")
@@ -905,7 +957,9 @@ class RomScanPipelineTest {
      * one virtual id, three files that give no hash (one unreadable, a zip with
      * two ROMs in it, a zip whose ROM is a disc descriptor), five under a
      * platform RetroAchievements does not cover, and two lookups that brought
-     * nothing usable back (one unanswered, one a real id with no title).
+     * nothing usable back (one unanswered, one a real id with no title). And
+     * a fourth file that gives no hash, added when it became an answer of its
+     * own: a zip with no ROM in it.
      *
      * Scanned twice. The first scan asks about every hash. The second finds the
      * matches in their metadata and the verdicts in the ledger, and has to put
@@ -914,7 +968,7 @@ class RomScanPipelineTest {
      * and the two lookups are made.
      *
      * While the counts were four, the first scan here gave 4 new, 5 skipped and
-     * 1 failed lookup: ten of its 21 files.
+     * 1 failed lookup: ten of what were then its 21 files.
      */
     @Test fun `every file is in exactly one of seven counts, on a first scan and on a rescan`(): Unit = runBlocking {
         repeat(4) { rom("nes", "Match $it.nes", "hash-match-$it") }
@@ -923,6 +977,7 @@ class RomScanPipelineTest {
         rom("nes", "Broken.nes", "UNHASHABLE")
         zip("nes", "Two Games.zip", "first.nes" to "hash-first", "second.nes" to "hash-second")
         zip("psx", "Disc.zip", "Disc.cue" to "FILE \"Disc.bin\" BINARY", "Disc.bin" to "x".repeat(4096))
+        zip("nes", "Patch.zip", "Patch.ips" to "x".repeat(64), "readme.txt" to "x")
         repeat(5) { rom("switch", "Game $it.nes", "hash-switch-$it") }
         rom("nes", "Silent.nes", "hash-silent")
         rom("nes", "Untitled.nes", "hash-untitled")
@@ -938,33 +993,33 @@ class RomScanPipelineTest {
             ScanLedger.State.MATCHED to 4, ScanLedger.State.NOT_FOUND to 6,
             ScanLedger.State.KNOWN_UNSUPPORTED to 1,
             ScanLedger.State.HASH_FAILED to 1, ScanLedger.State.AMBIGUOUS_ARCHIVE to 1,
-            ScanLedger.State.UNHASHABLE to 1, ScanLedger.State.UNSUPPORTED to 5,
-            ScanLedger.State.API_RETRY to 2)
+            ScanLedger.State.UNHASHABLE to 1, ScanLedger.State.NO_PLAYABLE_ENTRY to 1,
+            ScanLedger.State.UNSUPPORTED to 5, ScanLedger.State.API_RETRY to 2)
 
         val l1 = MixedLookup()
         val (s1, seen1) = scan(ContentHasher(), l1)
 
-        assertEquals(21, s1.total)
-        assertEquals(21, s1.processed)
+        assertEquals(22, s1.total)
+        assertEquals(22, s1.processed)
         assertEquals(counts(new = 4, cached = 0, skipped = 5, unmatched = 6, incompatible = 1,
-                            hashFailed = 3, failedLookups = 2), s1.counts())
+                            hashFailed = 4, failedLookups = 2), s1.counts())
         assertEquals(states, s1.states)
         assertEquals(13, l1.asked.size, "asked: ${l1.asked}")
 
         val h2 = ContentHasher(); val l2 = MixedLookup()
         val (s2, seen2) = scan(h2, l2)
 
-        assertEquals(21, s2.processed)
+        assertEquals(22, s2.processed)
         assertEquals(counts(new = 0, cached = 4, skipped = 5, unmatched = 6, incompatible = 1,
-                            hashFailed = 3, failedLookups = 2), s2.counts())
+                            hashFailed = 4, failedLookups = 2), s2.counts())
         assertEquals(states, s2.states)
         assertEquals(listOf("hash-silent", "hash-untitled"), l2.asked.sorted(),
                      "a file whose verdict was standing was asked about again")
         assertEquals(3, h2.calls.get(), "only the unreadable file and the two retries are read again")
 
-        // With 21 files there is a report for every one of them.
+        // With 22 files there is a report for every one of them.
         for ((s, seen) in listOf(s1 to seen1, s2 to seen2)) {
-            assertEquals((1..21).toList(), seen.map { it.processed })
+            assertEquals((1..22).toList(), seen.map { it.processed })
             for (p in seen) assertEquals(p.processed, p.counts().values.sum(), "at ${p.processed}: ${p.counts()}")
             assertEquals(s.counts(), seen.last().counts(), "the last report and the summary disagree")
         }

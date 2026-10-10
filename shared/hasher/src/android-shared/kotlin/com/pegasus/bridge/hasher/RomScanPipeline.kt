@@ -147,9 +147,9 @@ class RomScanPipeline(
         val incompatible: Int = 0,
         /**
          * Files that gave no hash to ask about: unreadable, an archive with
-         * several entries that could each be the ROM, one the hasher knows it
-         * cannot hash, or one of a format that is not read at all and was not
-         * opened. [states] keeps the four apart.
+         * several entries that could each be the ROM or with none that is, one
+         * the hasher knows it cannot hash, or one of a format that is not read
+         * at all and was not opened. [states] keeps the five apart.
          */
         val hashFailed: Int = 0,
         /**
@@ -367,6 +367,7 @@ class RomScanPipeline(
                             ScanLedger.State.HASH_FAILED,
                             ScanLedger.State.UNHASHABLE,
                             ScanLedger.State.UNSUPPORTED_FORMAT,
+                            ScanLedger.State.NO_PLAYABLE_ENTRY,
                             ScanLedger.State.AMBIGUOUS_ARCHIVE -> hashFailed++
                             // Neither arrives this way: a match is found through its
                             // metadata or hashed again, and a retry is never left
@@ -583,8 +584,8 @@ class RomScanPipeline(
         // gaps as somebody remembered them: an Amiga disk or a CD-i image
         // was hashed as whatever its extension suggested, and asked about.
         //
-        // The plans that say how to hash a file are not acted on yet: every
-        // file that gets past here is handed to the hasher as before.
+        // The plans that say how to hash a file are the hasher's to follow:
+        // every file that gets past here is handed to it with its collection.
         val row = RcConsoles.resolve(collection.shortName, collection.dirName)
         when (val plan = ConsoleChoice.choose(row, file.extension, size, insideArchive = false)) {
             // The collection: nobody can hash for its console, whatever the
@@ -686,6 +687,23 @@ class RomScanPipeline(
                 resultQueue.send(ResultJob(
                     HashJob(file, cacheKey, HashResult("", 0), rawPlatform, size, modified),
                     preRecorded = state))
+            }
+            // The two answers of an archive that was opened and gave nothing to
+            // hash. Neither has a hash to ask about, and each is kept: the
+            // archive will hold the same at the next scan.
+            is HashOutcome.NoPlayableEntry -> {
+                ledger.record(path, ScanLedger.State.NO_PLAYABLE_ENTRY, size, modified, now,
+                              detail = outcome.reason)
+                resultQueue.send(ResultJob(
+                    HashJob(file, cacheKey, HashResult("", 0), rawPlatform, size, modified),
+                    preRecorded = ScanLedger.State.NO_PLAYABLE_ENTRY))
+            }
+            is HashOutcome.UnsupportedFormat -> {
+                ledger.record(path, ScanLedger.State.UNSUPPORTED_FORMAT, size, modified, now,
+                              detail = outcome.reason)
+                resultQueue.send(ResultJob(
+                    HashJob(file, cacheKey, HashResult("", 0), rawPlatform, size, modified),
+                    preRecorded = ScanLedger.State.UNSUPPORTED_FORMAT))
             }
             is HashOutcome.Ok -> {
                 throttleMs().takeIf { it > 0 }?.let { delay(it) }

@@ -53,6 +53,9 @@ class ScanLedger(private val file: File) {
          * The hasher knew before trying that it cannot hash this file — a disc
          * descriptor inside an archive, whose tracks are not extracted. Not a
          * broken file and not a miss: the same answer until the hasher changes.
+         *
+         * Also a file called `.zip` or `.7z` that does not open as one. That
+         * one is broken, and stays so until it is another file.
          */
         UNHASHABLE,
         /**
@@ -72,8 +75,19 @@ class ScanLedger(private val file: File) {
          * file's name and its collection, so no I/O was done. Handed to
          * rcheevos, such a file gave the hash of its container, and was
          * asked about and kept as a game the database lacks.
+         *
+         * Also an archive whose one entry for the collection is such a
+         * file. That much I/O was done: the archive was listed.
          */
-        UNSUPPORTED_FORMAT;
+        UNSUPPORTED_FORMAT,
+        /**
+         * An archive that opened, and holds nothing that is a game of its
+         * collection: a patch, the artwork of a set, the files of an
+         * emulator. The entries it does hold are in the detail. It was
+         * hashed as the file it is, which to rcheevos is the MD5 of its
+         * name, and that was asked about and kept as a miss.
+         */
+        NO_PLAYABLE_ENTRY;
 
         /**
          * Whether this outcome may be trusted on a later run at all.
@@ -116,7 +130,13 @@ class ScanLedger(private val file: File) {
          * A format nobody reads keeps for a season, as an unsupported
          * platform does and for its reason: it is decided again on every
          * scan, before any I/O, and the lists it is decided from move with
-         * a build and not with the days.
+         * a build and not with the days. The one reached by listing an
+         * archive is not decided again and does stand for the season.
+         *
+         * An archive with no game in it keeps for a month, as a file the
+         * hasher cannot hash does. What would change the answer is another
+         * archive under the same name, which its size and date give away,
+         * or a longer list of what its platform runs, which is a new build.
          *
          * Meaningless for anything [cacheable] is false for.
          */
@@ -128,6 +148,7 @@ class ScanLedger(private val file: File) {
             UNHASHABLE        -> 30L * 24 * 60 * 60
             KNOWN_UNSUPPORTED -> 30L * 24 * 60 * 60
             UNSUPPORTED_FORMAT -> 90L * 24 * 60 * 60
+            NO_PLAYABLE_ENTRY -> 30L * 24 * 60 * 60
             HASH_FAILED, API_RETRY -> 0
         }
     }

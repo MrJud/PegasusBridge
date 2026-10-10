@@ -232,13 +232,110 @@ class PlainHashTest {
         assertEquals(0, native.calls)
     }
 
+    // It was hashed as it lay, on the reasoning that an extension is a claim
+    // and a renamed ROM a real game. But what rcheevos is handed is still
+    // called `.7z` or `.zip`, and it hashes the name of such a file as an
+    // arcade set's: the answer was never the ROM's.
     @Test
-    fun `a ROM misnamed as an archive still gets its own hashes`() {
-        // The extraction fails and the file is hashed as-is; the plain hashes
-        // must describe that same fallback content.
-        val rom = File(dir, "notreally.7z").apply { writeText("abc") }
-        val r = ArchiveAwareHasher(FixedHasher(), tempDir).hash(rom.absolutePath)!!
-        assertEquals(abcMd5, r.fileMd5)
+    fun `a ROM misnamed as an archive is refused, not hashed as a container`() {
+        for (name in listOf("notreally.7z", "notreally.zip")) {
+            val rom = File(dir, name).apply { writeText("abc") }
+            val native = FixedHasher()
+            val outcome = ArchiveAwareHasher(native, tempDir).hashDetailed(rom.absolutePath, "nes")
+            assertTrue(outcome is HashOutcome.Failed && !outcome.retryable &&
+                       outcome.reason.startsWith("not a readable archive: "), "$name: $outcome")
+            assertEquals(0, native.calls, "$name was handed to rcheevos")
+            assertNull(ArchiveAwareHasher(native, tempDir).hash(rom.absolutePath), "$name through hash(path)")
+        }
+    }
+
+    // A file that would not open is another matter from an archive that
+    // would not: nothing of it has been seen. One the scan is not allowed to
+    // read, or one on a card taken out a moment ago, may be as good a game
+    // as any, and kept as a file that cannot be hashed it was not looked at
+    // again for a month.
+    @Test
+    fun `an archive that could not be opened at all is tried again`() {
+        val locked = zip("Locked.zip", "Locked.nes" to "abc".toByteArray())
+        if (!locked.setReadable(false, false) || runCatching { locked.inputStream().close() }.isSuccess) {
+            println("PlainHashTest: no file could be made unreadable here, so none was tried")
+            return
+        }
+        val native = FixedHasher()
+        val outcome = ArchiveAwareHasher(native, tempDir).hashDetailed(locked.absolutePath, "nes")
+        assertTrue(outcome is HashOutcome.Failed && outcome.retryable &&
+                   outcome.reason.startsWith("the archive could not be opened: "), "$outcome")
+        assertEquals(0, native.calls, "it was handed to rcheevos")
+    }
+
+    // An archive that opens and has no game in it for its platform was the
+    // other file hashed as a container. It is its own answer now, and says
+    // what the archive does hold.
+    @Test
+    fun `an archive with no game in it says what it holds and is not hashed`() {
+        val native = FixedHasher()
+        val hasher = ArchiveAwareHasher(native, tempDir)
+
+        val patch = zip("patch.zip", "fix/patch.7z" to "abc".toByteArray(), "notes.txt" to "abc".toByteArray())
+        assertEquals(HashOutcome.NoPlayableEntry("nothing in the archive is a game of this collection: patch.7z"),
+                     hasher.hashDetailed(patch.absolutePath, "ps2"))
+
+        val many = zip("many.zip", *(1..7).map { "chip$it.rom" to "abc".toByteArray() }.toTypedArray())
+        assertEquals(HashOutcome.NoPlayableEntry("nothing in the archive is a game of this collection: " +
+                                                 "chip1.rom, chip2.rom, chip3.rom, chip4.rom, chip5.rom, and 2 more"),
+                     hasher.hashDetailed(many.absolutePath, "nes"))
+
+        // Only a readme, and nothing at all.
+        val readme = zip("readme.zip", "readme.txt" to "abc".toByteArray())
+        assertEquals(HashOutcome.NoPlayableEntry("nothing in the archive is a game of this collection: readme.txt"),
+                     hasher.hashDetailed(readme.absolutePath, "nes"))
+        val empty = zip("empty.zip")
+        assertEquals(HashOutcome.NoPlayableEntry("the archive holds no file"),
+                     hasher.hashDetailed(empty.absolutePath, "nes"))
+
+        assertEquals(0, native.calls)
+        assertFalse(tempDir.exists(), "an entry was copied out")
+    }
+
+    // The entry an archive holds for its platform is planned for by its own
+    // name, as a file lying loose is. A packed disc image that has been
+    // zipped as well was copied out and handed over, and what came back was
+    // the hash of the image's container.
+    @Test
+    fun `an entry of a format nobody reads is not copied out`() {
+        val native = FixedHasher()
+        val hasher = ArchiveAwareHasher(native, tempDir)
+
+        val packed = zip("Disc.zip", "Disc.chd" to "abc".toByteArray(), "readme.txt" to "abc".toByteArray())
+        assertEquals(HashOutcome.UnsupportedFormat("'Disc.chd' in the archive: " +
+                                                   ".chd is a format this build has no reader for"),
+                     hasher.hashDetailed(packed.absolutePath, "ps2"))
+        val converted = zip("Other.zip", "Other.cso" to "abc".toByteArray())
+        assertEquals(HashOutcome.UnsupportedFormat("'Other.cso' in the archive: .cso is a format rcheevos does not read"),
+                     hasher.hashDetailed(converted.absolutePath, "psp"))
+
+        assertEquals(0, native.calls)
+        assertFalse(tempDir.exists(), "an entry was copied out")
+    }
+
+    // A caller that is not a scan and hands over a file a scan would have
+    // turned away gets the same answer, and the file is not read.
+    @Test
+    fun `a file or a collection nobody can hash is refused by the hasher too`() {
+        val native = FixedHasher()
+        val hasher = ArchiveAwareHasher(native, tempDir)
+        val wrong = listOf(
+            Triple("ps2", "Disc.chd", ".chd is a format this build has no reader for"),
+            Triple("arcade", "chip.bin", "an arcade set is a .zip or a .7z, and this is a .bin"),
+            Triple("switch", "Game.zip", "RetroAchievements has no console for switch"),
+            Triple("amiga", "Disk.adf", "rcheevos has no hashing algorithm for RC_CONSOLE_AMIGA (id 35)")
+        ).mapNotNull { (platform, name, reason) ->
+            val file = File(dir, name).apply { writeText("abc") }
+            val outcome = hasher.hashDetailed(file.absolutePath, platform)
+            if (outcome == HashOutcome.UnsupportedFormat(reason)) null else "$platform/$name: $outcome"
+        }
+        assertEquals(emptyList(), wrong)
+        assertEquals(0, native.calls)
     }
 
     @Test

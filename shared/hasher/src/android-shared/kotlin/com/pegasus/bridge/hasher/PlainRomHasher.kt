@@ -21,9 +21,11 @@ import java.io.File
  *
  * The ROM **inside** the archive, never the container: a scraper asked about a zip's MD5
  * matches nothing, because the databases (No-Intro, Redump) list the ROM. Same rule and
- * same reason as [ArchiveAwareHasher], and the same fallback — a failed extraction
- * hashes the file as it lies, because an extension is a claim rather than a fact and a
- * plain ROM named `.7z` is common enough that refusing it loses real games.
+ * same reason as [ArchiveAwareHasher]. The fallback is this one's alone now: a failed
+ * extraction hashes the file as it lies, because an extension is a claim rather than a
+ * fact and a plain ROM named `.7z` is common enough that refusing it loses real games.
+ * [ArchiveAwareHasher] had it too and gave it up, because what rcheevos makes of a file
+ * called `.7z` is the MD5 of its name. A plain digest of the bytes has no such trap.
  *
  * The **name** is the archive's, though, not the entry's: it is what MAME identifies a
  * romset by, and [FileHashes.name] is what a `romnom` lookup sends.

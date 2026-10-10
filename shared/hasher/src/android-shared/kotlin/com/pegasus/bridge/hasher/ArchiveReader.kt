@@ -55,10 +55,11 @@ object ArchiveReader {
          * The file could not be read as the archive its extension claims.
          *
          * Two quite different causes, deliberately not separated: a truly corrupt
-         * archive, and a plain ROM somebody renamed `.7z`. Both are handled the
-         * same way — hash the file as it lies — because an extension is a claim
-         * rather than a fact, and refusing renamed ROMs loses real games while the
-         * fallback can only ever produce a miss.
+         * archive, and a plain ROM somebody renamed `.7z`. What is done about
+         * either is the caller's affair. [PlainRomHasher] digests the file as it
+         * lies, because an extension is a claim rather than a fact. For rcheevos
+         * the file is not hashed at all ([ArchiveAwareHasher]): handed a file
+         * called `.7z` it hashes the name, whatever the bytes are.
          */
         data class Unreadable(val reason: String) : Opened
     }

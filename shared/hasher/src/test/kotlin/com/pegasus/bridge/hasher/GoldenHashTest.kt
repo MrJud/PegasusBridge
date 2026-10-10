@@ -11,6 +11,7 @@ import kotlin.test.AfterTest
 import kotlin.test.BeforeTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertIs
 import kotlin.test.fail
 
@@ -170,8 +171,6 @@ class GoldenHashTest {
                     "${rom.name}: expected $expected, got ${r.hash}|${r.consoleId}"
                 r.fileMd5 != md5(rom.bytes) ->
                     "${rom.name}: the file MD5 ${r.fileMd5} is not the ROM's"
-                r.containerFallback ->
-                    "${rom.name}: the container was hashed, not the ROM"
                 inArchive && r.archiveEntry != rom.name ->
                     "${rom.name}: the entry recorded is '${r.archiveEntry}'"
                 else -> null
@@ -182,57 +181,91 @@ class GoldenHashTest {
                  wrong.joinToString("\n") { "  $it" })
     }
 
+    // -------------------------------------------------------------- arcade
+    //
+    // RetroAchievements knows an arcade game by the name of its set and not by
+    // what is in it: for mslug.zip rcheevos hashes "mslug" (rc_hash_arcade,
+    // hash_rom.c). The archive hasher used to open the set like any other
+    // zip. "arcade" has no list of what it runs, so every BIOS image a
+    // non-merged set carries looked like a ROM and the set was an archive
+    // nobody could decide; and a set with one `.bin` among its chips had that
+    // chip copied out and hashed whole as a Mega Drive cartridge, an answer
+    // that looks like any other. Both were pinned here as known gaps.
+    @Test
+    fun `an arcade set is hashed by its name, unopened`() {
+        val bios = listOf("asia-s3.rom", "vs-bios.rom", "uni-bios_4_0.rom", "japan-j3.bin", "sp1-j3.bin")
+        val chips = listOf("201-p1.p1", "201-s1.s1", "201-m1.m1", "201-v1.v1", "201-v2.v2",
+                           "201-c1.c1", "201-c2.c2", "000-lo.lo", "sfix.sfix", "sm1.sm1", "sp-s2.sp1")
+        val entries = (chips + bios).mapIndexed { i, entry -> entry to noise(1024, seed = 100 + i) }.toTypedArray()
+        assertEquals(MSLUG, md5("mslug".toByteArray()))
+        assertEquals(DOLPHIN, md5("dolphin".toByteArray()))
+
+        // A set with the BIOS images in it, as a zip and as a 7z.
+        val zipped = zip(File(dir, "arcade/mslug.zip"), *entries)
+        val sevenZipped = sevenZ(File(dir, "arcade/mslug.7z"), *entries)
+        // The set whose one `.bin` was taken for a cartridge.
+        val single = zip(File(dir, "atomiswave/dolphin.zip"),
+                         "ax0401p01.ic18" to noise(2048, seed = 201),
+                         "ax0401m01.ic11" to noise(2048, seed = 202),
+                         "ax0401f01.bin" to noise(4, seed = 200))
+        // Bytes that are no archive at all: opened, this one would be refused.
+        val noArchive = File(dir, "mame/mslug.zip").apply { parentFile.mkdirs(); writeBytes(noise(4096, seed = 203)) }
+        // FBNeo runs the cartridges of some consoles as sets kept in a folder
+        // named for the console, and rcheevos puts that folder into the hash.
+        val inConsoleFolder = zip(File(dir, "arcade/nes/foo.zip"), "foo.prg" to noise(64, seed = 204))
+
+        val rows = mutableListOf(
+            Triple(zipped, "arcade", MSLUG),
+            Triple(sevenZipped, "arcade", MSLUG),
+            Triple(single, "atomiswave", DOLPHIN),
+            Triple(noArchive, "mame", MSLUG),
+            Triple(inConsoleFolder, "arcade", md5("nes_foo".toByteArray())))
+
+        // The folder in the hash is the one in the path the scan came by. A
+        // set reached through a link called arcade, to a folder that happens
+        // to be called nes, is in arcade: followed to where it lies, the path
+        // would name nes and the hash would be of "nes_mslug".
+        val linked = File(dir, "nes/mslug.zip").apply { parentFile.mkdirs(); writeBytes(zipped.readBytes()) }
+        val link = File(dir, "linked/arcade")
+        val viaLink = try {
+            link.parentFile.mkdirs()
+            Files.createSymbolicLink(link.toPath(), linked.parentFile.toPath())
+            File(link, "mslug.zip")
+        } catch (e: Exception) {
+            println("GoldenHashTest: no symbolic link could be made here (${e.javaClass.simpleName}), so none was followed")
+            null
+        }
+        if (viaLink != null) {
+            assertEquals(linked.canonicalPath, viaLink.canonicalPath, "the link leads to the folder nes")
+            rows += Triple(viaLink, "arcade", MSLUG)
+        }
+
+        val wrong = rows.mapNotNull { (set, platform, expected) ->
+            val where = set.relativeTo(dir).path
+            val outcome = hasher.hashDetailed(set.absolutePath, platform)
+            val r = (outcome as? HashOutcome.Ok)?.result
+                ?: return@mapNotNull "$where: expected $expected|27, got $outcome"
+            when {
+                "${r.hash}|${r.consoleId}" != "$expected|27" -> "$where: expected $expected|27, got ${r.hash}|${r.consoleId}"
+                // Nothing was taken out of it, and the digests beside the
+                // hash are the archive's own.
+                r.archiveEntry.isNotEmpty() -> "$where: the entry '${r.archiveEntry}' was taken out"
+                r.fileMd5 != md5(set.readBytes()) -> "$where: the file MD5 ${r.fileMd5} is not the archive's"
+                else -> null
+            }
+        }
+        if (wrong.isNotEmpty()) fail("arcade sets not hashed by their names:\n" + wrong.joinToString("\n") { "  $it" })
+        assertFalse(File(dir, "tmp").exists(), "an entry of a set was copied out")
+    }
+
     // ------------------------------------------------- known gaps (phase 2)
     //
-    // These pin what happens today, which is wrong, and say what is right. They
-    // assert today's behaviour rather than being @Disabled. check_test_counts.py
+    // This pins what happens today, which is wrong, and says what is right. It
+    // asserts today's behaviour rather than being @Disabled. check_test_counts.py
     // would count a disabled test as run just the same, but only an asserting one
     // notices the fix: it turns red, and whoever made the fix rewrites it as a
     // golden row instead of leaving a disabled test behind to describe a bug that
     // is gone.
-
-    // RetroAchievements knows an arcade game by its romset name, not its contents:
-    // for mslug.zip rcheevos hashes "mslug" (rc_hash_arcade, hash_rom.c), and the
-    // native library handed the unopened zip says exactly that. ArchiveAwareHasher
-    // opens the set instead, and "arcade" has no extension list in ArchiveSelector,
-    // so the Neo Geo BIOS files a non-merged set carries all look like ROMs.
-    // Correct: md5("mslug")|27, from the zip as it is.
-    @Test
-    fun `known gap (phase 2) - an arcade set zip is opened instead of hashed by its name`() {
-        val bios = listOf("asia-s3.rom", "vs-bios.rom", "uni-bios_4_0.rom", "japan-j3.bin", "sp1-j3.bin")
-        val chips = listOf("201-p1.p1", "201-s1.s1", "201-m1.m1", "201-v1.v1", "201-v2.v2",
-                           "201-c1.c1", "201-c2.c2", "000-lo.lo", "sfix.sfix", "sm1.sm1", "sp-s2.sp1")
-        val set = zip(File(dir, "arcade/mslug.zip"),
-                      *(chips + bios).mapIndexed { i, entry -> entry to noise(1024, seed = 100 + i) }.toTypedArray())
-
-        // The right answer exists: rcheevos itself, given the zip unopened.
-        assertEquals(MSLUG, md5("mslug".toByteArray()))
-        assertEquals(HashResult(MSLUG, 27), native.hash(set.absolutePath))
-
-        // Today: the set is opened, and every BIOS image is a candidate.
-        val outcome = assertIs<HashOutcome.AmbiguousArchive>(hasher.hashDetailed(set.absolutePath, "arcade"))
-        assertEquals(bios.toSet(), outcome.candidates.toSet())
-    }
-
-    // The same gap with only one ROM-like entry, which is worse: the set's one
-    // `.bin` is extracted and hashed whole as a Mega Drive cartridge, an answer
-    // that looks like any other and is recorded as a game RetroAchievements does
-    // not have. Correct: md5("dolphin")|27, from the zip as it is.
-    @Test
-    fun `known gap (phase 2) - an arcade set with a single bin is hashed as a cartridge`() {
-        val bin = noise(4, seed = 200)
-        val set = zip(File(dir, "atomiswave/dolphin.zip"),
-                      "ax0401p01.ic18" to noise(2048, seed = 201),
-                      "ax0401m01.ic11" to noise(2048, seed = 202),
-                      "ax0401f01.bin" to bin)
-
-        assertEquals(DOLPHIN, md5("dolphin".toByteArray()))
-        assertEquals(HashResult(DOLPHIN, 27), native.hash(set.absolutePath))
-
-        val r = assertIs<HashOutcome.Ok>(hasher.hashDetailed(set.absolutePath, "atomiswave")).result
-        assertEquals("${md5(bin)}|1", "${r.hash}|${r.consoleId}")
-        assertEquals("ax0401f01.bin", r.archiveEntry)
-    }
 
     // A disc is its descriptor plus the tracks the descriptor names, and rcheevos
     // reads the tracks from beside it. ArchiveSelector rightly picks the `.cue` as

@@ -1,6 +1,7 @@
 package com.pegasus.bridge.hasher
 
 import com.pegasus.bridge.core.BridgeLog
+import com.pegasus.bridge.core.RcConsoles
 import java.io.File
 
 /**
@@ -16,16 +17,7 @@ data class HashResult(
     val fileMd5: String = "",
     val fileCrc32: String = "",
     /** Which entry inside an archive these describe, or empty for a plain file. */
-    val archiveEntry: String = "",
-    /**
-     * True when the digests describe the **container**, because it could not be
-     * read as an archive at all.
-     *
-     * A caller that looks a hash up in a ROM database wants to know: a container
-     * digest matches nothing there, so a miss on one says nothing about whether
-     * the database has the game.
-     */
-    val containerFallback: Boolean = false
+    val archiveEntry: String = ""
 )
 
 /**
@@ -60,6 +52,27 @@ sealed interface HashOutcome {
      * fixed.
      */
     data class Failed(val reason: String, val retryable: Boolean = true) : HashOutcome
+
+    /**
+     * The archive was opened and listed, and nothing in it is a game of the
+     * collection: a patch and its notes, the artwork of a set, the files of
+     * an emulator.
+     *
+     * Such an archive used to be hashed as it lay, and what rcheevos makes
+     * of a zip it is told nothing about is the MD5 of its name. That is a
+     * hash like any other to look at. It was asked about, and the answer,
+     * no, was kept as a game the database lacks.
+     */
+    data class NoPlayableEntry(val reason: String) : HashOutcome
+
+    /**
+     * The file is one nobody hashes, for the collection it is in: known
+     * from its name, or from the name of the one entry an archive holds for
+     * the collection, a packed disc image inside a zip. Nothing was handed
+     * to rcheevos, and nothing will be until the lists it was decided from
+     * change.
+     */
+    data class UnsupportedFormat(val reason: String) : HashOutcome
 }
 
 /**
@@ -131,14 +144,25 @@ interface RomHasher {
 }
 
 /**
- * Wraps a [RomHasher] with archive support: zip and 7z are extracted to a temp
- * file first, because the native hasher works on plain files.
+ * Wraps a [RomHasher] with what a file's collection says of it: an arcade
+ * set is hashed by its name and left shut, and any other zip or 7z is opened
+ * for the one entry that is the game, which is copied out first, because the
+ * native hasher works on plain files.
  *
- * Which entry is extracted is [ArchiveSelector]'s decision — by what the
- * platform can run, then by the entry named after the archive. The rule it
- * replaced, "the largest entry", is right for one ROM plus a readme and silently
- * wrong for a bonus disc, an included patch or a `.cue`/`.bin` pair, where the
- * biggest file is the data track and the descriptor is what has to be hashed.
+ * What is done with a file is [ConsoleChoice]'s decision, from the row of
+ * its collection and its name. Which entry of an archive is copied out is
+ * [ArchiveSelector]'s, by what the platform can run, then by the entry named
+ * after the archive. The rule that one replaced, "the largest entry", is
+ * right for one ROM plus a readme and silently wrong for a bonus disc, an
+ * included patch or a `.cue`/`.bin` pair, where the biggest file is the data
+ * track and the descriptor is what has to be hashed.
+ *
+ * An archive is never hashed as the file it is. It was, whenever it could
+ * not be opened or held nothing for its platform, on the reasoning that this
+ * could cost a miss and never a wrong match. But rcheevos takes a zip or a
+ * 7z it is told nothing about for an arcade set and hashes its name, so the
+ * answer was the MD5 of a file name, with console 27: asked about, refused,
+ * and kept for a fortnight as a game the database lacks.
  */
 class ArchiveAwareHasher(
     private val delegate: RomHasher,
@@ -153,40 +177,136 @@ class ArchiveAwareHasher(
     /** The delegate's: taking an archive apart changes nothing of what hashes its entry. */
     override val engine: String get() = delegate.engine
 
-    override fun hashDetailed(path: String, platform: String): HashOutcome {
+    /**
+     * For a caller with a name and no collection: the name is taken for the
+     * collection's, kept in a folder called the same, with nothing declared.
+     */
+    override fun hashDetailed(path: String, platform: String): HashOutcome =
+        hashDetailed(path, CollectionRef.inferred(platform))
+
+    /**
+     * [path] is used as it came, and that matters for one kind of file. An
+     * arcade set's hash is made of its name, and for some folders of the
+     * folder's name too, and rcheevos reads both off the path it is handed:
+     * a path followed through a link to where the file really lies could
+     * name another folder, and give another hash.
+     */
+    override fun hashDetailed(path: String, collection: CollectionRef): HashOutcome {
         val file = File(path)
         if (!file.isFile) return HashOutcome.Failed("no such file")
 
-        if (!ArchiveReader.isArchive(file)) return plain(file)
+        val row = RcConsoles.resolve(collection.shortName, collection.dirName)
+        return when (val plan = ConsoleChoice.choose(row, file.extension, file.length(), insideArchive = false)) {
+            // A scan has turned both away before it gets here, without a
+            // look at the file. These are for a caller that has not.
+            is ConsoleChoice.Plan.Unsupported -> HashOutcome.UnsupportedFormat(plan.reason)
+            is ConsoleChoice.Plan.UnsupportedFormat -> HashOutcome.UnsupportedFormat(plan.reason)
+            ConsoleChoice.Plan.ArcadeSet -> arcadeSet(path, file)
+            ConsoleChoice.Plan.OpenArchive -> archive(file, collection, row)
+            // The console a plan names is not handed on yet: a file that is
+            // no archive is hashed as rcheevos takes its extension, as before.
+            ConsoleChoice.Plan.ResolvePlaylist, is ConsoleChoice.Plan.Hash, ConsoleChoice.Plan.Guess -> plain(file)
+        }
+    }
 
-        return ArchiveReader.open(file) { opened ->
+    /**
+     * An arcade game is known to RetroAchievements by the name of its set,
+     * and its hash is the MD5 of that name (rc_hash_arcade): console 27
+     * reads the path and never the file. Opened like any other archive, a
+     * set showed its chips and BIOS images, each of which could have been
+     * the ROM, or the one of them with an extension a cartridge has, which
+     * was then hashed as a cartridge.
+     *
+     * The digests beside the hash are the archive's own. Nothing matches a
+     * set by them, but a file whose metadata has no MD5 is taken for one
+     * scanned before there were any, and read again on every scan.
+     */
+    private fun arcadeSet(path: String, set: File): HashOutcome =
+        when (val outcome = delegate.hashForConsole(path, ARCADE)) {
+            is HashOutcome.Ok -> HashOutcome.Ok(withPlainHashes(outcome.result, set))
+            is HashOutcome.Failed -> couldNotRead(set.name, outcome)
+            else -> outcome
+        }
+
+    private fun archive(file: File, collection: CollectionRef, row: RcConsoles.Row?): HashOutcome =
+        ArchiveReader.open(file) { opened ->
             when (opened) {
-                // A file that cannot be read as the archive its extension claims is
-                // hashed as it lies. An extension is a claim, not a fact, and a plain
-                // ROM renamed `.7z` is common enough that refusing it loses real games;
-                // the fallback cannot produce a wrong match, only a miss. It is marked,
-                // so a scraper lookup can decline to trust a container digest.
+                // Not the archive its name says it is: a download cut short,
+                // or some other file renamed. Neither is hashed as it lies,
+                // and neither will open at the next scan unless the file is
+                // another by then, which its size or its date will say.
+                //
+                // Unless it was the file that would not open, and not the
+                // archive in it: one the scan is not allowed to read, or
+                // one on a card that has just gone. That says nothing of
+                // what the file is, and it is tried again.
                 is ArchiveReader.Opened.Unreadable -> {
-                    BridgeLog.w(TAG, "${file.name} is not a readable archive (${opened.reason}); " +
-                                     "hashing the file itself")
-                    plain(file, containerFallback = true)
+                    BridgeLog.w(TAG, "${file.name} is not a readable archive (${opened.reason})")
+                    if (opens(file)) HashOutcome.Failed("not a readable archive: ${opened.reason}", retryable = false)
+                    else HashOutcome.Failed("the archive could not be opened: ${opened.reason}")
                 }
                 is ArchiveReader.Opened.Entries ->
-                    when (val pick = ArchiveSelector.select(opened.entries, file.name, platform)) {
-                        is ArchiveSelector.Selection.One ->
-                            if (pick.entry.extension in ArchiveSelector.DESCRIPTOR_EXTENSIONS)
-                                descriptorAlone(file, pick.entry)
-                            else extracted(file, opened, pick.entry)
+                    when (val pick = ArchiveSelector.select(opened.entries, file.name, collection)) {
+                        is ArchiveSelector.Selection.One -> chosen(file, opened, pick.entry, row)
                         is ArchiveSelector.Selection.Ambiguous ->
                             HashOutcome.AmbiguousArchive(pick.candidates.map { it.name })
                         is ArchiveSelector.Selection.NoPlayableEntry ->
-                            // Nothing inside is playable on this platform. The container
-                            // itself is the last thing left to describe, and saying so is
-                            // more useful than refusing outright.
-                            plain(file, containerFallback = true)
+                            HashOutcome.NoPlayableEntry(nothingPlayable(pick.entries))
                     }
             }
         }
+
+    /**
+     * The one entry that is the game. A descriptor is asked for first, and
+     * only an entry that is none is planned for by its own name. The other
+     * way round a `.ccd` or a `.toc`, which are descriptors and are also
+     * formats rcheevos does not read, would be turned away as a format, and
+     * a playlist would be followed to files that were not taken out with it.
+     */
+    private fun chosen(
+        archive: File,
+        opened: ArchiveReader.Opened.Entries,
+        entry: ArchiveSelector.Entry,
+        row: RcConsoles.Row?
+    ): HashOutcome {
+        if (entry.extension in ArchiveSelector.DESCRIPTOR_EXTENSIONS) return descriptorAlone(archive, entry)
+        return when (val plan = ConsoleChoice.choose(row, entry.extension, entry.size, insideArchive = true)) {
+            // A packed disc image, say, zipped once more: copied out and
+            // handed over it would come back as the hash of its container.
+            is ConsoleChoice.Plan.UnsupportedFormat ->
+                HashOutcome.UnsupportedFormat("'${entry.name}' in the archive: ${plan.reason}")
+            is ConsoleChoice.Plan.Unsupported ->
+                HashOutcome.UnsupportedFormat(plan.reason)
+            is ConsoleChoice.Plan.Hash, ConsoleChoice.Plan.Guess -> extracted(archive, opened, entry)
+            // No entry gets one of these today: an archive or an arcade set
+            // inside an archive is refused as a format, and a playlist is a
+            // descriptor. Said in full so that a plan added to the list does
+            // not compile until it has been given an answer here.
+            ConsoleChoice.Plan.ArcadeSet, ConsoleChoice.Plan.OpenArchive, ConsoleChoice.Plan.ResolvePlaylist ->
+                HashOutcome.UnsupportedFormat("'${entry.name}' in the archive is not a file to hash")
+        }
+    }
+
+    /** What an archive with no game in it does hold, for whoever reads the ledger. */
+    private fun nothingPlayable(entries: List<ArchiveSelector.Entry>): String {
+        val names = entries.filter { !it.isDirectory }.map { it.baseName }
+        if (names.isEmpty()) return "the archive holds no file"
+        val shown = names.take(NAMES_SHOWN).joinToString(", ")
+        val more = names.size - NAMES_SHOWN
+        return "nothing in the archive is a game of this collection: $shown" +
+               if (more > 0) ", and $more more" else ""
+    }
+
+    /**
+     * Whether [file] can be opened for reading at all. One that cannot has
+     * shown nothing of itself, so whatever was made of it is no verdict on
+     * the file: it is a failure to try again, and not one to keep.
+     */
+    private fun opens(file: File): Boolean = try {
+        file.inputStream().close()
+        true
+    } catch (e: Exception) {
+        false
     }
 
     /**
@@ -212,8 +332,8 @@ class ArchiveAwareHasher(
      * Copies [entry] out for rcheevos, which only reads plain files, digesting it
      * on the way so the copy is never read back.
      *
-     * A cancellation passes straight through — it is not a reason to hash the
-     * container instead — and the copy is deleted whichever way this ends.
+     * A cancellation passes straight through, and the copy is deleted
+     * whichever way this ends.
      */
     private fun extracted(
         archive: File,
@@ -240,7 +360,7 @@ class ArchiveAwareHasher(
             val result = when (val outcome = delegate.hashForConsole(rom.absolutePath, 0)) {
                 is HashOutcome.Ok -> outcome.result
                 is HashOutcome.Failed -> return couldNotRead("'${entry.name}'", outcome)
-                is HashOutcome.AmbiguousArchive -> return outcome
+                else -> return outcome
             }
             return HashOutcome.Ok(result.copy(
                 fileMd5 = digests.md5, fileCrc32 = digests.crc32, archiveEntry = entry.name))
@@ -254,13 +374,13 @@ class ArchiveAwareHasher(
     }
 
     /** [romFile] is whatever the delegate is given, so the digests describe the ROM. */
-    private fun plain(romFile: File, containerFallback: Boolean = false): HashOutcome {
+    private fun plain(romFile: File): HashOutcome {
         val result = when (val outcome = delegate.hashForConsole(romFile.absolutePath, 0)) {
             is HashOutcome.Ok -> outcome.result
             is HashOutcome.Failed -> return couldNotRead(romFile.name, outcome)
-            is HashOutcome.AmbiguousArchive -> return outcome
+            else -> return outcome
         }
-        return HashOutcome.Ok(withPlainHashes(result, romFile).copy(containerFallback = containerFallback))
+        return HashOutcome.Ok(withPlainHashes(result, romFile))
     }
 
     /**
@@ -286,6 +406,12 @@ class ArchiveAwareHasher(
 
     companion object {
         private const val TAG = "ArchiveAwareHasher"
+
+        /** RC_CONSOLE_ARCADE. */
+        private const val ARCADE = 27
+
+        /** How many of an archive's entries a reason names before it counts the rest. */
+        private const val NAMES_SHOWN = 5
 
         /** The reason a disc descriptor chosen out of an archive is not hashed. */
         const val DESCRIPTOR_IN_ARCHIVE = "disc descriptor inside an archive: its tracks are not extracted yet"

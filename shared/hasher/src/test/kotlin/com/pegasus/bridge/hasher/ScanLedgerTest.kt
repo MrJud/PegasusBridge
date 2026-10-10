@@ -453,6 +453,28 @@ class ScanLedgerTest {
         assertNull(read.canSkip(path, 10, 20, now = 1000 + ninetyDays + 1))
     }
 
+    // Kept for thirty days, as a file the hasher cannot hash is, and not
+    // tried again at every scan as a file that failed is.
+    @Test fun `an archive with no game in it is a verdict kept for a month`() {
+        val file = File(paths.cache, ScanLedger.FILE_NAME).apply { parentFile.mkdirs() }
+        val path = "/roms/ps2/Patch.zip"
+        val thirtyDays = 30L * 24 * 60 * 60
+        assertTrue(ScanLedger.State.NO_PLAYABLE_ENTRY.cacheable)
+        assertEquals(ScanLedger.State.UNHASHABLE.retryAfterSeconds, ScanLedger.State.NO_PLAYABLE_ENTRY.retryAfterSeconds)
+        ScanLedger(file).apply {
+            record(path, ScanLedger.State.NO_PLAYABLE_ENTRY, 10, 20, now = 1000,
+                   detail = "nothing in the archive is a game of this collection: patch.7z")
+            save { f, text -> BridgePaths.writeAtomic(f, text) }
+        }
+
+        val read = ScanLedger(file)
+        val kept = read.canSkip(path, 10, 20, now = 1000 + thirtyDays)
+        assertEquals(ScanLedger.State.NO_PLAYABLE_ENTRY, kept?.state)
+        assertEquals("nothing in the archive is a game of this collection: patch.7z", kept?.detail)
+        assertNull(read.canSkip(path, 10, 20, now = 1000 + thirtyDays + 1))
+        assertNull(read.canSkip(path, 11, 20, now = 1000), "another archive under the same name")
+    }
+
     // A cache hit already means the file matched; the ledger must agree rather
     // than reporting it as never having been looked at.
     @Test fun `a cached match is still counted as matched`(): Unit = runBlocking {

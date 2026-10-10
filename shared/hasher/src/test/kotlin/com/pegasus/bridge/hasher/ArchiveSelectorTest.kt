@@ -123,6 +123,29 @@ class ArchiveSelectorTest {
         assertEquals("Game.rom", pick.name)
     }
 
+    // A scan hands over the collection an archive is in, and the list its
+    // entries are held to is the short name's, or the folder's where the
+    // folder is named for one console of the family the short name stands
+    // for. By the short name alone a zipped Game Gear cartridge in a folder
+    // `gamegear` of a collection `mastersystem` has nothing playable in it.
+    @Test fun `an archive in a collection is held to the list of what its folder holds`() {
+        fun ref(shortName: String, dirName: String) =
+            CollectionRef(shortName, shortName, dirName, directory = null, declaredExtensions = emptySet())
+        val entries = listOf(e("readme.txt", 500), e("Lantern Keep (USA).gg", 128 * 1024))
+        fun picked(shortName: String, dirName: String): String =
+            when (val s = ArchiveSelector.select(entries, "Lantern Keep (USA).zip", ref(shortName, dirName))) {
+                is ArchiveSelector.Selection.One -> s.entry.name
+                else -> s.javaClass.simpleName
+            }
+
+        assertEquals("Lantern Keep (USA).gg", picked("mastersystem", "gamegear"), "the folder narrows the short name")
+        assertEquals("NoPlayableEntry", picked("mastersystem", "mastersystem"), "a Master System collection")
+        assertEquals("NoPlayableEntry", picked("mastersystem", "Sega 8-bit"), "a folder that says nothing")
+        assertEquals("Lantern Keep (USA).gg", picked("gamegear", "Handhelds"), "the short name alone")
+        assertEquals("Lantern Keep (USA).gg", picked("sega8", "gamegear"), "a short name nobody knows, in a folder that is")
+        assertEquals("NoPlayableEntry", picked("nes", "gamegear"), "a short name that knows better than the folder")
+    }
+
     // Every key in the platform table has to be in normalised form or it can never
     // be reached: `normalizePlatform` folds `megadrive` onto `genesis`, so an entry
     // filed under the former would be dead code that reads as coverage.

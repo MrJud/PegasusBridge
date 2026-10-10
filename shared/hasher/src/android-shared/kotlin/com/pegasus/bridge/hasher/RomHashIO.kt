@@ -133,10 +133,11 @@ object RomHashIO {
      * Rethrows [t] when it is a cancellation, or what an interrupt looks like from
      * inside IO.
      *
-     * Every hasher catches Throwable around an archive, and answers by hashing the
-     * container instead. A 7z is read through a FileChannel, which an interrupt
-     * closes, so a cancelled scan arrives there as ClosedByInterruptException —
-     * an IOException — and would have been "handled" by reading the whole
+     * Every hasher catches Throwable around an archive, and answers with a
+     * failure of the file, or by digesting the container instead. A 7z is read
+     * through a FileChannel, which an interrupt closes, so a cancelled scan
+     * arrives there as ClosedByInterruptException — an IOException — and would
+     * have been "handled" as a broken archive, or by reading the whole
      * container it had just been told to stop reading.
      */
     fun rethrowIfCancelled(t: Throwable) {

@@ -97,7 +97,7 @@ class JunkTest(Tables):
 
     def only(self, rule, rows, junk):
         """`rows` break `rule` in the files `junk` names, and no other rule at all."""
-        status, out, _ = self.run_report(self.table("t.tsv", rows))
+        status, out, _ = self.run_report(self.table("t.tsv", rows), "--all")
         self.assertEqual(status, 0)
         for other in report.JUNK_MEANS:
             count, listed = self.junk_line(out, other)
@@ -166,8 +166,8 @@ class JunkTest(Tables):
 
     def test_j3_a_hash_in_a_collection_that_has_no_algorithm(self):
         nowhere = sorted(report.NO_ALGORITHM)
-        self.assertEqual(nowhere, ["3ds", "amiga", "bbcmicro", "cdimono1", "chailove", "n3ds",
-                                   "ps3", "psvita", "switch", "vita", "wiiu"])
+        self.assertEqual(nowhere, ["3ds", "amiga", "android", "bbcmicro", "cdi", "cdimono1", "cdtv", "chailove",
+                                   "ios", "n3ds", "pc", "ps3", "psvita", "switch", "vita", "wiiu", "windows"])
         rows = [row(f"{name}/Game.rom", hash=md5(name), console="1") for name in nowhere]
         rows += [
             # The folder's spelling is the collection's own business.
@@ -283,6 +283,28 @@ class CompareTest(Tables):
                 self.assertIn(f"  the two runs were not made alike, # {name}: {run[name]} there, {value} here\n", out)
                 self.assertEqual(out.count("not made alike"), 1, out)
 
+    # What a build judges a file by is its recipe, the first line of its
+    # table. Two tables that do not share it are of two builds that may
+    # answer differently for one file, and the comparison says so and prints
+    # both, where it used to print neither: the rows that changed were all
+    # there was to tell that the builds differ.
+    def test_two_builds_of_another_recipe_are_said_to_be(self):
+        old = "rules=5;rc=12.5.0+pb6;sel=5dbc3d88"
+        new = "rules=6;rc=12.5.0+pb6;sel=5dbc3d88"
+        before = self.table("before.tsv", self.BEFORE, comments=(("recipe", old), ("root", ROOT)))
+        after = self.table("after.tsv", self.BEFORE, comments=(("recipe", new), ("root", ROOT)))
+        status, out, _ = self.run_report(after, "--baseline", before, "--max-changed", "0")
+        self.assertEqual(status, 0, out)
+        self.assertIn("  the two builds do not judge a file by the same recipe:\n"
+                      f"    there  {old}\n    here   {new}\n", out)
+        self.assertNotIn("not made alike", out)
+
+        _, out, _ = self.run_report(before, "--baseline", before)
+        self.assertNotIn("recipe", out)
+        # A table from before the line was written has none.
+        _, out, _ = self.run_report(after, "--baseline", self.table("bare.tsv", self.BEFORE))
+        self.assertIn(f"    there  not given\n    here   {new}\n", out)
+
     def test_a_line_one_run_has_more_of_is_a_difference_and_their_order_is_not(self):
         two = (("root", ROOT), ("root", "/library/more"), ("skip-larger-than", "1000"))
         before = self.table("before.tsv", self.BEFORE, comments=two)
@@ -393,25 +415,39 @@ class ReportTest(Tables):
         row("switch/Game.nsp", state="UNSUPPORTED", platform=""),
         row("Loose.zip", state="AMBIGUOUS_ARCHIVE"),
         row("psx/New.chd", state="UNSUPPORTED_FORMAT"),
+        row("snes/Later.sfc", state="A_STATE_OF_A_LATER_BUILD"),
     ]
 
     def test_files_are_counted_by_the_folder_under_the_root_and_by_state(self):
         status, out, _ = self.run_report(self.table("t.tsv", self.ROWS))
         self.assertEqual(status, 0)
-        self.assertIn("t.tsv: 7 files\n", out)
+        self.assertIn("t.tsv: 8 files\n", out)
         table = [line.split() for line in out.split("\n\n")[1].splitlines()]
         # The states the ledger has today in their own order, and one it does
         # not have yet after them.
         self.assertEqual(table[0], ["collection", "files", "MATCHED", "NOT_FOUND", "UNSUPPORTED",
-                                    "AMBIGUOUS_ARCHIVE", "HASH_FAILED", "UNSUPPORTED_FORMAT"])
+                                    "AMBIGUOUS_ARCHIVE", "UNSUPPORTED_FORMAT", "HASH_FAILED",
+                                    "A_STATE_OF_A_LATER_BUILD"])
         self.assertEqual(table[1:], [
-            ["psx", "2", "0", "0", "0", "0", "1", "1"],
+            ["psx", "2", "0", "0", "0", "0", "1", "1", "0"],
             # A file in the root itself is under the root's own name.
-            ["roms", "1", "0", "0", "0", "1", "0", "0"],
-            ["snes", "3", "1", "2", "0", "0", "0", "0"],
-            ["switch", "1", "0", "0", "1", "0", "0", "0"],
-            ["total", "7", "1", "2", "1", "1", "1", "1"],
+            ["roms", "1", "0", "0", "0", "1", "0", "0", "0"],
+            ["snes", "4", "1", "2", "0", "0", "0", "0", "1"],
+            ["switch", "1", "0", "0", "1", "0", "0", "0", "0"],
+            ["total", "8", "1", "2", "1", "1", "1", "1", "1"],
         ])
+
+    def test_every_state_of_the_ledger_has_its_place_in_the_order(self):
+        # What ScanLedger.State has, which a test of the hasher holds this
+        # list to. Read in three groups: what the source was asked and said,
+        # what was passed over unread, what gave no hash.
+        self.assertEqual(report.STATE_ORDER,
+                         ["MATCHED", "NOT_FOUND", "KNOWN_UNSUPPORTED", "API_RETRY",
+                          "UNSUPPORTED", "PLACEHOLDER",
+                          "AMBIGUOUS_ARCHIVE", "NO_PLAYABLE_ENTRY", "UNSUPPORTED_FORMAT", "UNHASHABLE", "HASH_FAILED"])
+        rows = [row(f"snes/{n}.sfc", state=state) for n, state in enumerate(reversed(report.STATE_ORDER))]
+        _, out, _ = self.run_report(self.table("t.tsv", rows))
+        self.assertEqual(out.split("\n\n")[1].splitlines()[0].split()[2:], report.STATE_ORDER)
 
     def test_with_no_root_named_a_file_is_counted_under_its_own_folder(self):
         status, out, _ = self.run_report(self.table("t.tsv", self.ROWS, comments=()))

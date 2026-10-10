@@ -58,7 +58,10 @@ not compared as rows are. The ones that say how a run was made are read all
 the same, the roots, the two kinds of skip and where the answers came from,
 and a comparison says which of them the two runs do not share, and says when
 the baseline's scan stopped early: every changed row such a pair shows is
-otherwise put down to the build.
+otherwise put down to the build. The `# recipe` line is what the build judges a
+file by (HashRecipe.kt), and where the two tables do not have the same one the
+comparison prints both, so that a changed row can be held against the part of
+the line that moved.
 
 ORACLE. A file of answers already known: hash, game id, then date, source and
 title, with tabs between (the format `--oracle=` of the audit reads). With it,
@@ -84,19 +87,29 @@ COLUMNS = ["path", "platform", "dirName", "extension", "size", "state", "console
            "hash", "fileMd5", "archiveEntry", "detail", "asked", "ms"]
 COMPARED = ["platform", "state", "console", "hash", "fileMd5", "archiveEntry", "asked"]
 
-# The states of the ledger, in the order a person wants to read them: what was
-# identified, what was asked about, what could not be hashed. A state this
-# list does not have, which a later build may add, goes after them by name.
+# The states of the ledger (ScanLedger.State), every one, in the order a person
+# wants to read them: what was identified, what was asked about, what was
+# passed over, what could not be hashed. A state this list does not have,
+# which a later build may add, goes after them by name.
 STATE_ORDER = ["MATCHED", "NOT_FOUND", "KNOWN_UNSUPPORTED", "API_RETRY", "UNSUPPORTED",
-               "AMBIGUOUS_ARCHIVE", "UNHASHABLE", "HASH_FAILED"]
+               "PLACEHOLDER", "AMBIGUOUS_ARCHIVE", "NO_PLAYABLE_ENTRY", "UNSUPPORTED_FORMAT",
+               "UNHASHABLE", "HASH_FAILED"]
 
 DESCRIPTORS = {"cue", "gdi", "m3u", "ccd", "toc"}
-# Collections whose files rcheevos is right to hash by name.
+# The two lists below are the console table's (RcConsoles.ROWS in the Bridge's
+# core), by every name a row goes by, spelt as platform_key spells a name. They
+# are copies, since this script reads no Kotlin, and AuditReportListsTest in
+# the hasher's tests reads this file and fails when either is not the table's:
+# a row added there and not here is a collection rule J2 or J3 does not know.
+#
+# Collections whose files rcheevos is right to hash by name: the arcade rows.
 ARCADE = {"arcade", "mame", "fbneo", "fba", "atomiswave", "neogeo", "naomi",
           "cps1", "cps2", "cps3"}
-# Collections rcheevos has no algorithm for, or RetroAchievements no games.
-NO_ALGORITHM = {"amiga", "cdimono1", "bbcmicro", "chailove", "n3ds", "3ds",
-                "ps3", "switch", "psvita", "vita", "wiiu"}
+# Collections rcheevos has no algorithm for, or RetroAchievements no console:
+# the rows that are not hashable.
+NO_ALGORITHM = {"amiga", "cdimono1", "cdi", "wiiu", "3ds", "n3ds", "ps3",
+                "switch", "psvita", "vita", "bbcmicro", "chailove", "cdtv",
+                "pc", "windows", "android", "ios"}
 GAME_BOY = "4"
 GAME_BOY_EXTENSIONS = {"gb", "gbc"}
 
@@ -415,6 +428,13 @@ def main(argv):
             if there != here:
                 print(f"  the two runs were not made alike, # {name}: "
                       f"{', '.join(there) or 'not given'} there, {', '.join(here) or 'not given'} here")
+        # What each build judges a file by. A table of a build from before
+        # the line was written has none, which is a difference too.
+        there, here = said(told, "recipe"), said(comments, "recipe")
+        if there != here:
+            print("  the two builds do not judge a file by the same recipe:")
+            print(f"    there  {', '.join(there) or 'not given'}")
+            print(f"    here   {', '.join(here) or 'not given'}")
         print(f"  only here {len(added):>5}")
         print_list(added, args.all)
         print(f"  only there {len(removed):>4}")

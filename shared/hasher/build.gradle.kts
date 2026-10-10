@@ -47,6 +47,14 @@ tasks.named<Test>("test") {
     inputs.files(library).withPropertyName("nativeLibrary").withPathSensitivity(PathSensitivity.NONE)
     systemProperty("pegasus.bridge.nativeLibrary", library.absolutePath)
 
+    // AuditReportListsTest reads the audit's report script and holds its
+    // lists to the console table and the ledger's states. The script is no
+    // source of this module, so it is named here: without that an edit to it
+    // alone leaves the task up to date, and the test passes on the run
+    // before the edit.
+    inputs.file(rootProject.file("tools/audit_report.py")).withPropertyName("auditReportScript")
+        .withPathSensitivity(PathSensitivity.NONE)
+
     // NativeCrashReproTest makes each native call in a JVM it starts itself,
     // since the files it hands over are ones that used to end the process, and
     // that JVM needs the tests' class path. It is given here and not read off

@@ -57,8 +57,10 @@ class HashRecipe internal constructor(
      *   [RcConsoles.HELD_BACK]);
      * - `sel`: what each platform runs, what is never a ROM and which
      *   descriptor leads ([ArchiveSelector.describe]);
-     * - `disc`: the sheets that are read and the ones that are not, and
-     *   how long a sheet and a track's name may be ([DescriptorSet]);
+     * - `disc`: the sheets that are read and the ones that are not, how
+     *   long a sheet and a track's name may be ([DescriptorSet]), and how
+     *   far into a playlist its first entry is looked for
+     *   ([PlaylistReader.READ_LIMIT]);
      * - `deny`: the three lists of files nobody hashes ([ConsoleChoice]);
      * - `containers`: [CONTAINERS];
      * - `ph`: [PLACEHOLDERS], and what [PlaceholderRule] goes by.
@@ -75,7 +77,8 @@ class HashRecipe internal constructor(
         "disc=" + crc(
             "read[" + ArchiveAwareHasher.READ_SHEETS.sorted().joinToString(",") + "]" +
             " unread[" + ArchiveAwareHasher.UNREAD_SHEETS.sorted().joinToString(",") + "]" +
-            " sheet<=${DescriptorSet.SHEET_LIMIT} name<=${DescriptorSet.NAME_LIMIT}"),
+            " sheet<=${DescriptorSet.SHEET_LIMIT} name<=${DescriptorSet.NAME_LIMIT}" +
+            " playlist<=${PlaylistReader.READ_LIMIT}"),
         "deny=" + crc(
             "always[" + ConsoleChoice.DENIED_ALWAYS.sorted().joinToString(",") + "]" +
             " build[" + ConsoleChoice.DENIED_THIS_BUILD.sorted().joinToString(",") + "]" +

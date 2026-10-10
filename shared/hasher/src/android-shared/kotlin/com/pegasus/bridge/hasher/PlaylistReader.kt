@@ -35,7 +35,12 @@ object PlaylistReader {
         data class Refused(val why: Why, val reason: String) : Result
     }
 
-    /** As far into a playlist as its first entry is looked for. A real one is a few lines. */
+    /**
+     * As far into a playlist as its first entry is looked for. A real one
+     * is a few lines. It is part of what a verdict on a playlist was reached
+     * with, and so of the recipe ([HashRecipe.global], under `disc`): moved,
+     * it has every file that did not match looked at again.
+     */
     const val READ_LIMIT = 64 * 1024
 
     /**

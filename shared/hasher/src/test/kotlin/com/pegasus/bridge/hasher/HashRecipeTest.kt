@@ -447,12 +447,27 @@ class HashRecipeTest {
     // match, at the first scan of the build that carries it.
     @Test fun `the recipe changes when a table does`() {
         assertEquals(
-            "rules=6;rc=none;ext=750286ba;con=f6451701;sel=5dbc3d88;disc=c489d5eb;deny=2e1b62a9;" +
+            "rules=6;rc=none;ext=750286ba;con=f6451701;sel=5dbc3d88;disc=bc396177;deny=2e1b62a9;" +
             "containers=wbfs0,chd0;ph=1,512,24d0ed6a",
             HashRecipe("none").global,
             "A table a file is judged by has changed, and with it the number every verdict is kept under: " +
             "the next scan of every library reads again each file that did not match. If that is meant, " +
             "write the new line here. Do NOT raise 'rules' for it: the checksum has already changed the " +
             "number. 'rules' is for a change to the code that judges, which no table shows.")
+    }
+
+    // What the `disc` part is the checksum of, written out. Three limits
+    // decide what a sheet or a playlist comes to, and the third was not in
+    // it: how far into a playlist its first entry is looked for. A playlist
+    // whose entry lies past that is refused, and kept as refused, so the
+    // limit moved would have left such verdicts standing under a number
+    // that said nothing had changed.
+    @Test fun `the three limits a sheet and a playlist are read by are in the recipe`() {
+        val text = "read[cue,gdi] unread[ccd,mds,toc]" +
+                   " sheet<=${DescriptorSet.SHEET_LIMIT} name<=${DescriptorSet.NAME_LIMIT}" +
+                   " playlist<=${PlaylistReader.READ_LIMIT}"
+        val checksum = java.util.zip.CRC32().apply { update(text.toByteArray(Charsets.UTF_8)) }.value
+        assertTrue("disc=" + checksum.toString(16).padStart(8, '0') in HashRecipe("none").global.split(';'),
+                   "the disc part of ${HashRecipe("none").global} is not the checksum of: $text")
     }
 }

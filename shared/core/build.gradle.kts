@@ -21,4 +21,8 @@ tasks.named<Test>("test") {
     inputs.files(File(cpp, "rcheevos/include/rc_consoles.h"), File(cpp, "rcheevos/src/rhash/hash.c"),
                  File(cpp, "CMakeLists.txt"), rootProject.file("native/build.sh"))
         .withPropertyName("sourcesTheTableIsHeldTo").withPathSensitivity(PathSensitivity.NONE)
+    // And BridgeVersionTest reads the build file of the Android app, for the
+    // same reason: a version raised there alone has to run the test.
+    inputs.file(rootProject.file("../app/build.gradle.kts"))
+        .withPropertyName("buildFileTheVersionIsHeldTo").withPathSensitivity(PathSensitivity.NONE)
 }

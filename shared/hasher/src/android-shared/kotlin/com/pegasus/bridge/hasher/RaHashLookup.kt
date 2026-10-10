@@ -2,6 +2,7 @@ package com.pegasus.bridge.hasher
 
 import com.pegasus.bridge.core.BridgeLog
 import com.pegasus.bridge.core.BridgePaths
+import com.pegasus.bridge.core.BridgeVersion
 import com.pegasus.bridge.core.SafeUrl
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.delay
@@ -192,8 +193,13 @@ fun interface DeviceConnection {
  * Every request carries the key, so the first one made shows whether it is
  * good: see [authRejected].
  *
- * The User-Agent is set deliberately: RetroAchievements refuses generic ones
- * with a 403, curl's default and OkHttp's own `okhttp/4.12.0` among them.
+ * It asks as a program that says who it is and waits when told to. The
+ * User-Agent names the Bridge, its version and where its source is:
+ * RetroAchievements refuses generic ones with a 403, curl's default and
+ * OkHttp's own `okhttp/4.12.0` among them, and a name with a version is what
+ * lets it tell one release that misbehaves from the others. Requests go one at
+ * a time and a second apart. A 429 is waited out for as long as its
+ * `Retry-After` says, and a 403 is not asked again: see [getWithRetry].
  *
  * [clock] gives the time a list is dated with and held to, in seconds.
  *
@@ -277,7 +283,11 @@ class RaApiHashLookup(
     @Volatile private var unreachable = false
     override val offline: Boolean get() = unreachable
 
-    /** Spaces requests out, whatever the parallelism, so RA sees a steady trickle. */
+    /**
+     * Spaces requests out, whatever the parallelism, so RA sees a steady
+     * trickle. The first request of this object is not held back, and one
+     * that follows a back-off as long as the spacing is not held back again.
+     */
     private suspend fun pace() = paceMutex.withLock {
         val wait = MIN_INTERVAL_NS - (System.nanoTime() - lastRequestAt)
         if (wait > 0) delay(TimeUnit.NANOSECONDS.toMillis(wait + 999_999))
@@ -532,6 +542,19 @@ class RaApiHashLookup(
      * or no answer at all. The refusal is handed back as the reply it is rather
      * than as a failure because one of them, a 401, says the key is no good,
      * and what follows from that is the caller's to do.
+     *
+     * What is asked again, and after how long:
+     * - a request that brought nothing back and a 5xx, after 1, 2 and 4
+     *   seconds: the source is in trouble, and may not be in a moment;
+     * - a 429, after what its `Retry-After` says and a minute when it says
+     *   nothing: the source is well and has counted too many requests, and the
+     *   wait is its own to name. One that asks for more than
+     *   [MAX_RETRY_AFTER_S] ends the lookup there. A scan is not held still
+     *   for longer than that on one answer, and asking sooner than told is the
+     *   one thing not to do.
+     *
+     * Nothing else is: a 4xx says the request is wrong as it is, and the same
+     * request is as wrong the next time.
      */
     private suspend fun getWithRetry(url: String): Step<HttpReply> {
         var last = LookupOutcome.Failed(LookupOutcome.Cause.TRANSPORT, "no attempt made")
@@ -539,6 +562,8 @@ class RaApiHashLookup(
         // a status the same as the failure's own, for an exception more.
         var said = last.detail
         for (attempt in 0 until MAX_RETRIES) {
+            // How long to wait before the next attempt, if there is one.
+            var wait = 1000L shl attempt
             try {
                 pace()
                 val req = Request.Builder().url(url).header("User-Agent", USER_AGENT).build()
@@ -551,13 +576,31 @@ class RaApiHashLookup(
                 try { device.answered() } catch (t: Throwable) { }
                 when {
                     reply.ok -> return Step.Got(reply)
-                    // 403 belongs here: it is what being refused for too many
-                    // requests looks like, and treating it as fatal made the
-                    // client give up on the first one.
-                    reply.code == 403 || reply.code == 429 || reply.code >= 500 -> {
+                    reply.code == 429 -> {
+                        last = LookupOutcome.Failed(LookupOutcome.Cause.REFUSED, "HTTP 429")
+                        said = last.detail
+                        val asked = reply.retryAfter
+                        if (asked != null && asked > MAX_RETRY_AFTER_S) {
+                            BridgeLog.e(TAG, "RetroAchievements asked to wait $asked s, more than the " +
+                                             "$MAX_RETRY_AFTER_S s a lookup waits: not asking again for " +
+                                             SafeUrl.redact(url))
+                            return gaveUp(LookupOutcome.Cause.REFUSED, "HTTP 429, asked to wait $asked s")
+                        }
+                        wait = (asked ?: DEFAULT_RETRY_AFTER_S) * 1000
+                        if (attempt < MAX_RETRIES - 1) {
+                            BridgeLog.i(TAG, if (asked != null) "RetroAchievements asked to wait $asked s"
+                                             else "RetroAchievements answered 429 and named no wait: " +
+                                                  "waiting $DEFAULT_RETRY_AFTER_S s")
+                        }
+                    }
+                    reply.code >= 500 -> {
                         last = LookupOutcome.Failed(LookupOutcome.Cause.REFUSED, "HTTP ${reply.code}")
                         said = last.detail
                     }
+                    // A 403 belongs here. From RetroAchievements it is a client
+                    // it has blocked, by its User-Agent or its address, and not
+                    // a limit that passes: asked again three times, it is three
+                    // more requests from a client that was told to go away.
                     else -> {
                         BridgeLog.e(TAG, "HTTP ${reply.code} for ${SafeUrl.redact(url)}")
                         return Step.Got(reply)
@@ -583,7 +626,7 @@ class RaApiHashLookup(
             }
             // Not after the last attempt: nothing is left to wait for, and sleeping
             // there added eight seconds to every request that failed for good.
-            if (attempt < MAX_RETRIES - 1) delay(1000L shl attempt)
+            if (attempt < MAX_RETRIES - 1) delay(wait)
         }
         // Redacted, because this URL is `API_GetGameList.php?z=…&y=<api key>`
         // and the desktop log is stderr or a journal that ends up in bug reports.
@@ -593,7 +636,13 @@ class RaApiHashLookup(
         return Step.GaveUp(last)
     }
 
-    private class HttpReply(val code: Int, val body: String?) {
+    /**
+     * [retryAfter] is the `Retry-After` header as a whole number of seconds,
+     * and null when there is none or it is something else: a date there is
+     * allowed, RetroAchievements sends seconds, and a date read against this
+     * machine's clock is a wait nobody asked for.
+     */
+    private class HttpReply(val code: Int, val body: String?, val retryAfter: Long?) {
         val ok: Boolean get() = code in 200..299
     }
 
@@ -612,20 +661,29 @@ class RaApiHashLookup(
             override fun onFailure(call: Call, e: IOException) = cont.resumeWithException(e)
 
             override fun onResponse(call: Call, response: Response) = cont.resumeWith(runCatching {
-                response.use { HttpReply(it.code, if (it.isSuccessful) it.body?.string() else null) }
+                response.use {
+                    HttpReply(it.code, if (it.isSuccessful) it.body?.string() else null,
+                              it.header("Retry-After")?.trim()?.toLongOrNull()?.takeIf { s -> s >= 0 })
+                }
             })
         })
     }
 
     private companion object {
         const val TAG = "RaApiHashLookup"
-        const val USER_AGENT = "PegasusBridge/1.0"
-        // A request is a whole console now and there are few of them, one at
-        // a time behind the lock that loads a list. The spacing is the one
-        // there was for a request per file.
-        const val MIN_INTERVAL_MS = 250L
+        // The address is the public repository: whoever reads a log on the
+        // other side can find who to write to.
+        const val USER_AGENT = "PegasusBridge/" + BridgeVersion.NAME + " (+https://github.com/MrJud/PegasusBridge)"
+        // A request is a whole console and there are few of them, one at a
+        // time behind the lock that loads a list: a second between two costs
+        // a first scan of thirty consoles half a minute, once.
+        const val MIN_INTERVAL_MS = 1000L
         val MIN_INTERVAL_NS = TimeUnit.MILLISECONDS.toNanos(MIN_INTERVAL_MS)
         const val MAX_RETRIES = 4
+        // RetroAchievements counts requests over a minute, so a minute is
+        // what a 429 that names no wait is given.
+        const val DEFAULT_RETRY_AFTER_S = 60L
+        const val MAX_RETRY_AFTER_S = 120L
         const val EXCERPT_CHARS = 160
         const val DAY_SECONDS = 24L * 60 * 60
         val WHITESPACE = Regex("\\s+")

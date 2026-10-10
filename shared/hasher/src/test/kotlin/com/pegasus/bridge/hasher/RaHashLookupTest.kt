@@ -1,6 +1,7 @@
 package com.pegasus.bridge.hasher
 
 import com.pegasus.bridge.core.BridgeLog
+import com.pegasus.bridge.core.BridgeVersion
 import com.sun.net.httpserver.HttpServer
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -23,6 +24,7 @@ import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
 import kotlin.test.AfterTest
 import kotlin.test.BeforeTest
@@ -56,9 +58,10 @@ class RaHashLookupTest {
      * that arrive and a body that does not, which the client meets as an
      * exception and not as an answer. [hungUp] sends nothing at all and closes,
      * which the client meets as an exception that quotes where it was asking.
+     * [headers] go out with the status, as a `Retry-After` does with a 429.
      */
     private data class Reply(val body: String, val status: Int = 200, val cutShort: Boolean = false,
-                             val hungUp: Boolean = false)
+                             val hungUp: Boolean = false, val headers: Map<String, String> = emptyMap())
 
     private lateinit var server: HttpServer
     private lateinit var lookup: RaApiHashLookup
@@ -70,6 +73,10 @@ class RaHashLookupTest {
     private val requests = Collections.synchronizedList(mutableListOf<String>())
     /** The query of each request, as it was sent and not yet decoded. */
     private val queries = Collections.synchronizedList(mutableListOf<String>())
+    /** The User-Agent of each request, and null for one that named none. */
+    private val agents = Collections.synchronizedList(mutableListOf<String?>())
+    private val inFlight = AtomicInteger()
+    private val mostInFlight = AtomicInteger()
     private val logs = Collections.synchronizedList(mutableListOf<String>())
     private val executor = Executors.newCachedThreadPool { runnable ->
         Thread(runnable, "ra-lookup-test").apply { isDaemon = true }
@@ -89,16 +96,23 @@ class RaHashLookupTest {
         server.createContext("/") { exchange ->
             requests += exchange.requestURI.path
             queries += exchange.requestURI.rawQuery.orEmpty()
-            val reply = replies.poll() ?: Reply("unexpected request", 400)
-            // Closed before a header is sent, the exchange takes its connection with it.
-            if (reply.hungUp) { exchange.close(); return@createContext }
-            val bytes = reply.body.toByteArray()
-            exchange.sendResponseHeaders(reply.status, bytes.size.toLong() + if (reply.cutShort) 64 else 0)
-            // Closing a body that is short of its length throws, and what a
-            // handler throws makes the server drop the connection: the client
-            // has the headers by then and finds the body ended early.
-            exchange.responseBody.use { it.write(bytes) }
-            exchange.close()
+            agents += exchange.requestHeaders.getFirst("User-Agent")
+            mostInFlight.accumulateAndGet(inFlight.incrementAndGet(), ::maxOf)
+            try {
+                val reply = replies.poll() ?: Reply("unexpected request", 400)
+                // Closed before a header is sent, the exchange takes its connection with it.
+                if (reply.hungUp) { exchange.close(); return@createContext }
+                val bytes = reply.body.toByteArray()
+                reply.headers.forEach { (name, value) -> exchange.responseHeaders.add(name, value) }
+                exchange.sendResponseHeaders(reply.status, bytes.size.toLong() + if (reply.cutShort) 64 else 0)
+                // Closing a body that is short of its length throws, and what a
+                // handler throws makes the server drop the connection: the client
+                // has the headers by then and finds the body ended early.
+                exchange.responseBody.use { it.write(bytes) }
+                exchange.close()
+            } finally {
+                inFlight.decrementAndGet()
+            }
         }
         server.start()
         here = "http://127.0.0.1:${server.address.port}"
@@ -557,7 +571,12 @@ class RaHashLookupTest {
 
     // Back-offs of 1, 2 and 4 seconds between four attempts, and nothing after
     // the last: there is no attempt left to wait for. The old loop slept 8 more
-    // seconds before giving up. Pacing adds at most 250 ms before each retry.
+    // seconds before giving up, which would be 15 here.
+    //
+    // The spacing of requests is measured on the real clock and the waits of
+    // these tests are on a clock of their own, which no time passes on while
+    // the test sleeps. So each request after the first is held a second more
+    // here, where on a real clock the back-off before it had been its second.
     @OptIn(ExperimentalCoroutinesApi::class)
     @Test fun `the last attempt is not followed by a back-off`() = runTest {
         repeat(4) { replies += Reply("unavailable", 503) }
@@ -565,7 +584,135 @@ class RaHashLookupTest {
         assertNull(lookup.lookup(HASH, listOf(7)).asLegacy())
 
         assertEquals(4, requests.size)
-        assertTrue(currentTime in 7_000L..7_750L, "virtual time spent: $currentTime ms")
+        assertTrue(currentTime in 7_000L..10_000L, "virtual time spent: $currentTime ms")
+    }
+
+    @Test fun `every request says which program and version is asking`() = runTest {
+        replies += Reply("unavailable", 503)
+        replies += listed()
+
+        assertEquals(4101, lookup.lookup(HASH, listOf(7)).asLegacy()?.gameId)
+
+        val named = "PegasusBridge/${BridgeVersion.NAME} (+https://github.com/MrJud/PegasusBridge)"
+        assertEquals(listOf<String?>(named, named), agents.toList())
+        assertTrue(Regex("""\d+\.\d+\.\d+""").matches(BridgeVersion.NAME), BridgeVersion.NAME)
+    }
+
+    // Too many requests is the source well and counting. How long to stay
+    // away is its own to say, and it says so in seconds.
+    @OptIn(ExperimentalCoroutinesApi::class)
+    @Test fun `a 429 is waited out for as long as Retry-After says`() = runTest {
+        replies += Reply("slow down", 429, headers = mapOf("Retry-After" to " 7 "))
+        replies += listed()
+
+        assertEquals<LookupOutcome>(LookupOutcome.Match(mossKingdom), lookup.lookup(HASH, listOf(7)))
+
+        assertEquals(2, requests.size)
+        assertTrue(currentTime in 7_000L..8_000L, "virtual time spent: $currentTime ms")
+        assertEquals(0, lookup.consecutiveFailures)
+        assertTrue(logs.any { it == "RetroAchievements asked to wait 7 s" }, "$logs")
+    }
+
+    // RetroAchievements counts over a minute. A date in the header is read as
+    // no header: it would be held to this machine's clock.
+    @OptIn(ExperimentalCoroutinesApi::class)
+    @Test fun `a 429 that names no wait is given a minute`() = runTest {
+        for ((n, headers) in listOf(emptyMap(), mapOf("Retry-After" to "Wed, 21 Oct 2026 07:28:00 GMT"),
+                                    mapOf("Retry-After" to "-5")).withIndex()) {
+            replies += Reply("slow down", 429, headers = headers)
+            replies += listed(console = 7 + n)
+            val asked = asking(folder = File(lists, "scan-$n"))
+            val before = currentTime
+
+            assertEquals(4101, asked.lookup(HASH, listOf(7 + n)).asLegacy()?.gameId, "$headers")
+
+            assertEquals(2, asked.requests, "$headers")
+            assertTrue(currentTime - before in 60_000L..61_000L, "$headers: ${currentTime - before} ms")
+        }
+    }
+
+    // A scan is not held still for an hour on one answer, and the one thing
+    // not to do is ask before the time given. So the lookup ends there, and
+    // the console's other files end with it and ask nobody.
+    @OptIn(ExperimentalCoroutinesApi::class)
+    @Test fun `a 429 that asks for more than two minutes ends the lookup at once`() = runTest {
+        replies += Reply("slow down", 429, headers = mapOf("Retry-After" to "3600"))
+        val gaveUp = LookupOutcome.Failed(LookupOutcome.Cause.REFUSED, "HTTP 429, asked to wait 3600 s")
+
+        assertEquals<LookupOutcome>(gaveUp, lookup.lookup(HASH, listOf(7)))
+        assertEquals<LookupOutcome>(gaveUp, lookup.lookup(OTHER, listOf(7)))
+
+        assertEquals(1, requests.size)
+        assertTrue(currentTime < 1_000L, "virtual time spent: $currentTime ms")
+        assertEquals(2, lookup.consecutiveFailures)
+        assertFalse(lookup.authRejected)
+
+        // Two minutes is waited, and no more than that.
+        replies += Reply("slow down", 429, headers = mapOf("Retry-After" to "120"))
+        replies += listed(console = 8)
+        val before = currentTime
+        assertEquals(4101, lookup.lookup(HASH, listOf(8)).asLegacy()?.gameId)
+        assertTrue(currentTime - before in 120_000L..122_000L, "virtual time spent: ${currentTime - before} ms")
+        replies += Reply("slow down", 429, headers = mapOf("Retry-After" to "121"))
+        assertIs<LookupOutcome.Failed>(lookup.lookup(HASH, listOf(9)))
+        assertEquals(4, requests.size)
+    }
+
+    // Three waits for four attempts. A wait after the last would be twenty
+    // seconds or more here, for an answer nobody is going to ask for.
+    @OptIn(ExperimentalCoroutinesApi::class)
+    @Test fun `a 429 at the last attempt is not waited on`() = runTest {
+        repeat(4) { replies += Reply("slow down", 429, headers = mapOf("Retry-After" to "5")) }
+
+        assertEquals<LookupOutcome>(LookupOutcome.Failed(LookupOutcome.Cause.REFUSED, "HTTP 429"),
+                                    lookup.lookup(HASH, listOf(7)))
+
+        assertEquals(4, requests.size)
+        assertTrue(currentTime in 15_000L..18_000L, "virtual time spent: $currentTime ms")
+        assertEquals(3, logs.count { it == "RetroAchievements asked to wait 5 s" }, "$logs")
+    }
+
+    // From RetroAchievements a 403 is a client it has blocked, by what it
+    // calls itself or where it asks from. It was taken for a limit and asked
+    // three times more.
+    @OptIn(ExperimentalCoroutinesApi::class)
+    @Test fun `a 403 is never asked again`() = runTest {
+        replies += Reply("Forbidden", 403, headers = mapOf("Retry-After" to "1"))
+        val forbidden = LookupOutcome.Failed(LookupOutcome.Cause.REFUSED, "HTTP 403")
+
+        assertEquals<LookupOutcome>(forbidden, lookup.lookup(HASH, listOf(7)))
+
+        assertEquals(1, requests.size)
+        assertFalse(lookup.authRejected, "a blocked client is not a refused key")
+        assertTrue(currentTime < 1_000L, "virtual time spent: $currentTime ms")
+
+        assertEquals<LookupOutcome>(forbidden, lookup.lookup(OTHER, listOf(7)))
+        assertEquals(1, requests.size, "the console was asked for again")
+        assertEquals(2, lookup.consecutiveFailures)
+        assertEquals(emptyList(), kept())
+    }
+
+    // Two workers, each with a hash of another console. The second list is
+    // asked for when the first has been answered and a second after it was
+    // asked for: less the moment the first request took, since the spacing
+    // is from one request's start to the next.
+    @OptIn(ExperimentalCoroutinesApi::class)
+    @Test fun `requests are one at a time and a second apart`() = runTest {
+        // The first request a process makes takes as long as loading the
+        // client does, and that is not what is measured here.
+        replies += listed(console = 9)
+        asking(folder = File(lists, "another-scan")).lookup(HASH, listOf(9))
+        replies += listed(console = 7)
+        replies += listed(console = 8)
+
+        val first = async { lookup.lookup(HASH, listOf(7)) }
+        val second = async { lookup.lookup(HASH, listOf(8)) }
+
+        assertIs<LookupOutcome.Match>(first.await())
+        assertIs<LookupOutcome.Match>(second.await())
+        assertEquals(listOf("9", "7", "8"), queries.map { params(it)["i"] })
+        assertEquals(1, mostInFlight.get(), "two requests were with the server at once")
+        assertTrue(currentTime in 900L..1_000L, "virtual time spent: $currentTime ms")
     }
 
     private val heldPorts = ArrayList<java.net.Socket>()
@@ -646,7 +793,7 @@ class RaHashLookupTest {
 
     // The device is asked about a request that brought back nothing, and a
     // refusal is something. Too many requests, and then a server in trouble
-    // four times over: each is waited out and asked again as it always was,
+    // four times over: each is waited out and asked again,
     // by a lookup whose device would have said there is no connection. Asked
     // after a status as well, the first 429 on a network Android has its
     // doubts about would end the scan with the advice to connect.
@@ -668,9 +815,9 @@ class RaHashLookupTest {
         assertNull(lookup.lookup(HASH, listOf(8)).asLegacy())
 
         assertEquals(6, requests.size, "a request answered 503 was not made four times")
-        // The seven seconds of back-off, and the quarter of a second each of
-        // the four requests is held behind the one before it.
-        assertTrue(currentTime - before in 7_000L..8_000L, "virtual time spent: ${currentTime - before} ms")
+        // The seven seconds of back-off, and the second each of the four
+        // requests is held behind the one before it on this clock.
+        assertTrue(currentTime - before in 7_000L..11_000L, "virtual time spent: ${currentTime - before} ms")
         assertEquals(0, asked, "the device was asked about a request that was answered")
         assertFalse(lookup.offline, "four answers were put down to the connection")
     }
@@ -687,14 +834,14 @@ class RaHashLookupTest {
 
         assertEquals(4, asked, "asked after each attempt that failed")
         assertEquals(4, lookup.requests)
-        assertTrue(currentTime in 7_000L..7_750L, "virtual time spent: $currentTime ms")
+        assertTrue(currentTime in 7_000L..10_000L, "virtual time spent: $currentTime ms")
         assertFalse(lookup.offline)
         assertTrue(logs.any { it.contains("retries exhausted") }, "$logs")
 
         val nobodyToAsk = RaApiHashLookup(USER, API_KEY, lists, "http://127.0.0.1:${deadPort()}")
         val before = currentTime
         assertNull(nobodyToAsk.lookup(HASH, listOf(7)).asLegacy())
-        assertTrue(currentTime - before in 7_000L..7_750L, "virtual time spent: ${currentTime - before} ms")
+        assertTrue(currentTime - before in 7_000L..10_000L, "virtual time spent: ${currentTime - before} ms")
         assertFalse(nobodyToAsk.offline)
     }
 
@@ -713,7 +860,7 @@ class RaHashLookupTest {
             assertNull(lookup.lookup(HASH, listOf(7)).asLegacy(), "$thrown")
 
             assertEquals(4, asked, "$thrown")
-            assertTrue(currentTime - before in 7_000L..7_750L, "$thrown: ${currentTime - before} ms")
+            assertTrue(currentTime - before in 7_000L..10_000L, "$thrown: ${currentTime - before} ms")
             assertFalse(lookup.offline, "$thrown")
         }
     }
@@ -770,16 +917,24 @@ class RaHashLookupTest {
     // line out. The first three attempts are within the time a network takes
     // to be tried and go on as ever; at the fourth, seven seconds in, it has
     // lasted, and the lookup says so.
+    //
+    // The verdict is given the time a real clock shows at each attempt, which
+    // is the back-offs before it: none, 1, 3 and 7 seconds. The clock of the
+    // test would do if it showed the same, and it shows a second more for
+    // every request after the first (see `the last attempt is not followed by
+    // a back-off`), which puts the third attempt at the five seconds the
+    // verdict waits, give or take the millisecond a request takes.
     @OptIn(ExperimentalCoroutinesApi::class)
     @Test fun `a network not found to work settles it at the last attempt of the first lookup`() = runTest {
-        val verdict = OfflineVerdict { TimeUnit.MILLISECONDS.toNanos(currentTime) }
+        val onARealClock = listOf(0L, 1_000L, 3_000L, 7_000L)
         var asked = 0
+        val verdict = OfflineVerdict { TimeUnit.MILLISECONDS.toNanos(onARealClock[asked - 1]) }
         val lookup = unreachable { asked++; verdict.offline(LinkState.UNVALIDATED) }
 
-        assertNull(lookup.lookup(HASH, listOf(7)).asLegacy())
+        assertEquals(LookupOutcome.Cause.OFFLINE, (lookup.lookup(HASH, listOf(7)) as LookupOutcome.Failed).cause)
 
         assertEquals(4, asked)
-        assertTrue(currentTime in 7_000L..7_750L, "virtual time spent: $currentTime ms")
+        assertTrue(currentTime in 7_000L..10_000L, "virtual time spent: $currentTime ms")
         assertTrue(lookup.offline)
     }
 

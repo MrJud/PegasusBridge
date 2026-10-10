@@ -1463,26 +1463,36 @@ static int rc_hash_wii_disc(md5_state_t* md5, const rc_hash_iterator_t* iterator
 static int rc_hash_wiiware(md5_state_t* md5, const rc_hash_iterator_t* iterator, void* file_handle)
 {
   uint32_t cert_chain_size, ticket_size, tmd_size;
-  uint32_t tmd_start_addr, content_count, content_addr, content_size, buffer_size;
+  uint32_t tmd_start_addr, content_count, content_size, buffer_size;
+  uint64_t content_addr;
   uint32_t ix;
 
   uint8_t quad_buffer[4];
   uint8_t* buffer;
 
+  /* local patch 0007: every read below has to bring back all that was asked for, and one
+   * that does not is an error. none was looked at: what a read did not fill was hashed, or
+   * taken for a size or a count, as the allocator or the stack had left it. a file of a few
+   * hundred bytes that says it has 65535 contents was so given 64 MiB to hash for each of
+   * them, 4 TiB in all, with nothing a caller can do to end it. the words are put together
+   * unsigned, as patches 0001 and 0004 put theirs. */
   rc_file_seek(iterator, file_handle, 0x08, SEEK_SET);
-  rc_file_read(iterator, file_handle, quad_buffer, 4);
+  if (rc_file_read(iterator, file_handle, quad_buffer, 4) != 4)
+    return rc_hash_iterator_error(iterator, "Could not read WAD header");
   cert_chain_size =
-    (quad_buffer[0] << 24) | (quad_buffer[1] << 16) | (quad_buffer[2] << 8) | quad_buffer[3];
+    ((uint32_t)quad_buffer[0] << 24) | ((uint32_t)quad_buffer[1] << 16) | ((uint32_t)quad_buffer[2] << 8) | quad_buffer[3];
   /* Each content is individually aligned to a 0x40-byte boundary. */
   cert_chain_size = (cert_chain_size + 0x3F) & ~0x3F;
   rc_file_seek(iterator, file_handle, 0x10, SEEK_SET);
-  rc_file_read(iterator, file_handle, quad_buffer, 4);
+  if (rc_file_read(iterator, file_handle, quad_buffer, 4) != 4)
+    return rc_hash_iterator_error(iterator, "Could not read WAD header");
   ticket_size =
-    (quad_buffer[0] << 24) | (quad_buffer[1] << 16) | (quad_buffer[2] << 8) | quad_buffer[3];
+    ((uint32_t)quad_buffer[0] << 24) | ((uint32_t)quad_buffer[1] << 16) | ((uint32_t)quad_buffer[2] << 8) | quad_buffer[3];
   ticket_size = (ticket_size + 0x3F) & ~0x3F;
-  rc_file_read(iterator, file_handle, quad_buffer, 4);
+  if (rc_file_read(iterator, file_handle, quad_buffer, 4) != 4)
+    return rc_hash_iterator_error(iterator, "Could not read WAD header");
   tmd_size =
-    (quad_buffer[0] << 24) | (quad_buffer[1] << 16) | (quad_buffer[2] << 8) | quad_buffer[3];
+    ((uint32_t)quad_buffer[0] << 24) | ((uint32_t)quad_buffer[1] << 16) | ((uint32_t)quad_buffer[2] << 8) | quad_buffer[3];
   tmd_size = (tmd_size + 0x3F) & ~0x3F;
   if (tmd_size > MAX_BUFFER_SIZE)
     tmd_size = MAX_BUFFER_SIZE;
@@ -1495,25 +1505,36 @@ static int rc_hash_wiiware(md5_state_t* md5, const rc_hash_iterator_t* iterator,
     return rc_hash_iterator_error(iterator, "Could not allocate TMD buffer");
 
   rc_file_seek(iterator, file_handle, tmd_start_addr, SEEK_SET);
-  rc_file_read(iterator, file_handle, buffer, tmd_size);
+  if (rc_file_read(iterator, file_handle, buffer, tmd_size) != tmd_size) {
+    free(buffer);
+    return rc_hash_iterator_error(iterator, "WAD title metadata runs past the end of the file");
+  }
   rc_hash_iterator_verbose_formatted(iterator, "Hashing %u byte TMD", tmd_size);
   md5_append(md5, buffer, tmd_size);
   free(buffer);
 
   /* Get count of content sections */
   rc_file_seek(iterator, file_handle, (uint64_t)tmd_start_addr + 0x1de, SEEK_SET);
-  rc_file_read(iterator, file_handle, quad_buffer, 2);
-  content_count = (quad_buffer[0] << 8) | quad_buffer[1];
+  if (rc_file_read(iterator, file_handle, quad_buffer, 2) != 2)
+    return rc_hash_iterator_error(iterator, "Could not read WAD content count");
+  content_count = ((uint32_t)quad_buffer[0] << 8) | quad_buffer[1];
   rc_hash_iterator_verbose_formatted(iterator, "Hashing %u content sections", content_count);
-  content_addr = tmd_start_addr + tmd_size;
+  /* local patch 0007: where a content begins is kept in 64 bits. in 32 the sizes of two
+   * contents could bring it round to the start of the file, and a content the file does
+   * not hold was then read from where the file does have bytes. counted in full, every
+   * content has to lie after the one before it, and all that a file can have hashed is
+   * what it holds. */
+  content_addr = (uint64_t)tmd_start_addr + tmd_size;
   for (ix = 0; ix < content_count; ix++) {
     /* Get content section size */
     rc_file_seek(iterator, file_handle, (uint64_t)tmd_start_addr + 0x1e4 + 8 + ix * 0x24, SEEK_SET);
-    rc_file_read(iterator, file_handle, quad_buffer, 4);
+    if (rc_file_read(iterator, file_handle, quad_buffer, 4) != 4)
+      return rc_hash_iterator_error_formatted(iterator, "Could not read the size of WAD content %u", ix);
     if (quad_buffer[0] == 0x00 && quad_buffer[1] == 0x00 && quad_buffer[2] == 0x00 && quad_buffer[3] == 0x00) {
-      rc_file_read(iterator, file_handle, quad_buffer, 4);
+      if (rc_file_read(iterator, file_handle, quad_buffer, 4) != 4)
+        return rc_hash_iterator_error_formatted(iterator, "Could not read the size of WAD content %u", ix);
       content_size =
-        (quad_buffer[0] << 24) | (quad_buffer[1] << 16) | (quad_buffer[2] << 8) | quad_buffer[3];
+        ((uint32_t)quad_buffer[0] << 24) | ((uint32_t)quad_buffer[1] << 16) | ((uint32_t)quad_buffer[2] << 8) | quad_buffer[3];
       /* Padding between content should be ignored. But because the content data is encrypted,
       the size to hash for each content should be rounded up to the size of an AES block (16 bytes). */
       content_size = (content_size + 0x0F) & ~0x0F;
@@ -1530,10 +1551,13 @@ static int rc_hash_wiiware(md5_state_t* md5, const rc_hash_iterator_t* iterator,
       return rc_hash_iterator_error(iterator, "Could not allocate content buffer");
 
     rc_file_seek(iterator, file_handle, content_addr, SEEK_SET);
-    rc_file_read(iterator, file_handle, buffer, buffer_size);
+    if (rc_file_read(iterator, file_handle, buffer, buffer_size) != buffer_size) {
+      free(buffer);
+      return rc_hash_iterator_error_formatted(iterator, "WAD content %u runs past the end of the file", ix);
+    }
     md5_append(md5, buffer, buffer_size);
     content_addr += content_size;
-    content_addr = (content_addr + 0x3F) & ~0x3F;
+    content_addr = (content_addr + 0x3F) & ~(uint64_t)0x3F;
     free(buffer);
   }
 

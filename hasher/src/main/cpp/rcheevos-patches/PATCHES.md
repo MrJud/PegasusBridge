@@ -15,13 +15,15 @@ many there are.
 The numbers are names, not an order: no patch touches a line another does.
 
 A patch is here because a file that is not a valid image of its console made
-rcheevos crash, write outside a buffer, never come back, or hand back a hash
-of nothing or of bytes the file does not have. None changes what a valid file
-hashes to. Every patch has rows in
-`shared/tests/native_repro_test.py`, which makes the offending files from a
-few bytes each and runs them on a plain build and on one with the address and
-undefined-behaviour sanitizers; the rows are named below so that a patch lost
-in an upgrade shows as those rows failing. Where a patch changes lines that a
+rcheevos crash, write or read outside a buffer, never come back, lose a file
+it had opened, or hand back a hash of nothing or of bytes the file does not
+have. None changes what a valid file hashes to. Every patch but the last has
+rows in `shared/tests/native_repro_test.py`, which makes the offending files
+from a few bytes each and runs them on a plain build and on one with the
+address and undefined-behaviour sanitizers; the rows are named below so that a
+patch lost in an upgrade shows as those rows failing. The program the rows are
+run with also counts the files it has open before and after, and a row that
+leaves one open fails on either build. Where a patch changes lines that a
 valid file runs through as well, there are rows with valid files beside them,
 whose answer is a hash: a bound drawn too tight refuses the good with the bad,
 and rows that only want a refusal would all still pass. And where a file would
@@ -171,9 +173,8 @@ What no row holds, and is there by reading:
 
 **Left as upstream has it.** `rc_hash_wii`, which calls this function, reads
 the four bytes of the magic word without a look, so a file shorter than 28
-bytes is compared with what the stack held; and `rc_hash_wiiware`, for a
-`.wad`, tests none of its reads, though since 12.5.0 it tests its two
-allocations.
+bytes is compared with what the stack held. `rc_hash_wiiware`, for a `.wad`,
+tested none of its reads either, and was left so here until patch 0007.
 
 ## 0002-3do-directory.patch
 
@@ -377,7 +378,9 @@ a `.gdi` track sheet:
   without quotes ends there if no space comes first;
 - the character after each numeric field is stepped over only when there is
   one;
-- the sector size starts out empty.
+- the sector size starts out empty;
+- a track that opened, and is given up because nothing says what its sectors
+  are, is closed.
 
 Unlike the tests of patch 0005, which stand in front of what was there, these
 are on the way of every line of every sheet: the digits, the step after each
@@ -403,13 +406,28 @@ that never closes, and cut off when it is not, and then not found. A disc of
 many tracks with long names has a sheet as long as that. Here a name ends at
 the NUL, which no line that is whole reaches.
 
+The last of the five is not a bound. When the track a sheet names opens but
+neither its content nor the sheet says what its sectors are, the function
+reports "Could not open" and frees the track; the file it had opened stayed
+open, where the parser of a cue sheet, above it in the same file, closes its
+own. A sheet with no line for the track asked for goes the same way wherever a
+folder can be opened as a file, since the name is then empty and what opens
+is the sheet's own folder. And that is not only a sheet that is wrong: a
+Dreamcast disc is asked for its third track, where a GD-ROM has its data,
+before its first data track is looked for, so a sheet of fewer than three
+tracks that is right and hashes lost one descriptor on the way, at every
+hash. Measured: one for `valid-first-data.gdi`, which hashes, two for
+`cut-1.gdi` to `cut-3.gdi`. A sheet with a third track loses none. A process
+may hold a thousand or so, and a scan is one process.
+
 **Upstream.** Up to 12.3.0 the name was copied as the digits are, for as long
 as no space or quote came, into 256 bytes, and this patch measured it first.
 12.5.0 does that itself, with the two errors the patch had taken from it,
 "Quoted string without closing quote" and "Cannot copy %u byte filename into
 %u byte buffer": the bound on the name is upstream's and no longer part of
 the patch, which now only moves where its measuring stops. The digits, the
-steps past the end and the unset sector size are as they were.
+steps past the end, the unset sector size and the track left open are as they
+were.
 
 **Rows.** `digits.gdi` (64 digits) and `digits-12.gdi` (fits the first buffer,
 not the second), and `cut-1.gdi` to `cut-4.gdi` (the sheet ends after the
@@ -433,25 +451,216 @@ let ten digits through would hash the sheet: the row fails on the plain build
 too, where the one byte written past the buffer is seen by nobody. The unpatched
 code hashes that sheet.
 
+For the track that is closed: `valid-first-data.gdi`, which hashes, and
+`cut-1.gdi` to `cut-3.gdi`, which are refused, each end with a file left open
+when the close is taken out, on both builds. The same count holds the close
+before the error for the digits, which no row held while descriptors were
+counted by hand: with that one taken out, `digits.gdi`, `digits-12.gdi` and
+`digits-10.gdi` leave two open.
+
 What no row holds, and is there by reading:
 
 - the sector size starting out empty. What is read there otherwise is whatever
   the stack held, which differs from build to build and which neither
-  sanitizer reports;
-- the sheet being closed before the error for the digits is returned. A file
-  left open is not memory, and the leak sanitizer says nothing of it. Counted
-  by hand through `/proc/self/fd` when the patch was written: hashing
-  `digits.gdi` leaves no descriptor open, and two with the close taken out.
+  sanitizer reports.
 
-**Left as upstream has it.** When the track a sheet names opens but neither
-its content nor the sheet says what its sectors are, the function reports
-"Could not open" and frees the track without closing the file; the parser of a
-cue sheet, above it in the same file, closes it. That is two descriptors for
-each time such a sheet is hashed, in 12.5.0 as well. A sheet with no line for
-the track asked for goes the same way where a folder can be opened as a file,
-since the name is then empty and what is opened is the sheet's own folder:
-`cut-1.gdi` to `cut-3.gdi` do, and so does the first of the two tries at
-`valid-first-data.gdi`, which then hashes.
+## 0007-wiiware-reads.patch
+
+**What.** In `rc_hash_wiiware` in `src/rhash/hash_disc.c`, which hashes a
+WiiWare package, a `.wad`, by its title metadata and each of its contents:
+
+- every read has to bring back all that was asked for: the three sizes of the
+  header, the title metadata, the count of contents, the two words of each
+  content's size, and each content as far as it is hashed. One that does not
+  is an error and ends the function;
+- every word is put together as an unsigned number;
+- where a content begins is counted in 64 bits.
+
+**Why.** No read was looked at. The header says how long the certificate
+chain, the ticket and the title metadata are; the title metadata says how
+many contents follow it, in two bytes, and how long each is; and for each the
+function allocated a buffer of that length, up to 64 MiB, read into it and
+hashed all of it, whatever the read had brought. So a package cut short was
+given a hash, of what the allocator had left in the buffer, and not the same
+one twice: the rows below got one hash from the plain build and another from
+the sanitized one.
+
+And a package could have far more hashed than it holds. One of 544 bytes with
+no certificate, no ticket and no title metadata, and 65535 where the count
+would be, was 64 MiB for each of 65535 contents, 4 TiB. Measured on the code
+as it was: with 32 in place of 65535 it took 2.6 seconds, and with 65535 it
+was still running when it was killed after twenty. Inside a scan nothing kills
+it. The hash runs on a thread the scan can interrupt, and a loop in C does
+not look for the interrupt: the worker is gone until the function comes back,
+and a scan that is cancelled waits for it.
+
+With every read tested, a content has to be in the file to be hashed. That
+alone leaves one way round: the place a content begins was a 32-bit number,
+the sum of the sizes before it, and two sizes can bring it back to the start
+of the file, where there are bytes to read. In 64 bits each content lies
+after the one before it, and all a package can have hashed is what it holds,
+once.
+
+Like patches 0001 and 0004, these tests are on the way of every package that
+is right. What makes them safe is what the code did without them: a read that
+came back short was hashed as the buffer stood, memory nothing had been read
+into, so a package that fails one of these tests never had a hash that was
+the same twice. No hash that could be recorded for a game is lost.
+
+**Upstream.** 12.5.0 tests the two allocations and nothing else of it.
+
+**Rows.** `wad-65535.wad`, the 544 bytes, with no console given and as a Wii
+file. `wad-header-cut.wad`, `wad-metadata-cut.wad`, `wad-count-cut.wad` and
+`wad-content-cut.wad`: a package that ends inside its header, inside its
+title metadata, before the count of its contents, and one byte short of the
+16 its last content is rounded to; each asks for the reason, and on the
+unpatched code each hashes. `wad-content-long.wad`, whose last content is
+said to be 4 GiB long. `wad-top-bit.wad`, whose first word has its top bit
+set: put together signed, a report on the sanitized build.
+`wad-wraps.wad`, 64 MiB and 640 bytes of nothing with two contents, the first
+as long as 4 GiB less what comes before it and the second 64 bytes, which in
+32 bits begins at byte 0: the unpatched code hashes it, and here its second
+content "runs past the end of the file".
+
+Packages that are right, and the hash as the answer: `wad.wad`, three
+contents of which the first is no whole number of 16 bytes and the last is
+five bytes, with no console given and as a Wii file; and
+`wad-last-unfilled.wad`, the same with nothing after the 16 bytes its last
+content is rounded to, which a test that asked for the 0x40 bytes a content
+is filled out to would refuse.
+
+What no row holds: the test of the first of each content's two size words,
+since a file that ends before the first ends before the second. And no
+package from a real console was at hand: the layout is the one the function
+itself reads.
+
+**Left as upstream has it.** A size of no bytes is allocated as such, which
+the C libraries here answer with a pointer and another may answer with none:
+that package is then refused for want of memory.
+
+## 0008-cue-bounds.patch
+
+**What.** In `cdreader_open_cue_track` in `src/rhash/cdreader.c`, the parser of
+a cue sheet:
+
+- the number after `INDEX` and after `TRACK` is stepped over only as far as
+  the text goes;
+- a track's mode is copied only as far as the text goes, and the rest of its
+  16 bytes cleared; the sector size is read out of that copy;
+- a file's name that is written without quotes and is not there is of no
+  length.
+
+**Why.** The sheet is read 1023 bytes at a time into a buffer on the stack,
+with a NUL after what was read. After `INDEX` and `TRACK` the parser looked
+for the blank that follows the number without looking for that NUL, so a sheet
+that ends with the number, a download cut short, sent it on through whatever
+the buffer held before and out of the buffer, to the first blank on the
+stack. The mode was 16 bytes copied from wherever the line had got to: within
+15 bytes of the buffer's end, that is what lies behind it. And the sector size
+was read six bytes on from that place, whether the text had six bytes left or
+not. A name without quotes had its first character stepped over unseen; when
+that was the NUL, the name went on into what the buffer held before.
+
+None of this writes anything. The plain build reads memory that is its own
+and carries on, as a rule to the same answer; the sanitized one reports each.
+It is here because a cue sheet is the commonest descriptor there is, and what
+is behind a buffer on the stack is not always the process's own.
+
+**Upstream.** 12.5.0 has nothing of it.
+
+**Rows.** `cue-track-ends.cue` (ends with the number after `TRACK`),
+`cue-index-ends.cue` (with the number after `INDEX`) and
+`cue-mode-at-the-end.cue`, 1022 bytes whose last is the blank after a track's
+number, so that the mode begins two bytes from the end of the buffer. Each
+names the track of a Sega CD disc that is there, whole, before it ends, and
+each hashes as that disc: a mode that is not there is not missed where the
+track says what its own sectors are. On the unpatched code the sanitized
+build reports all three and the plain build hashes them.
+
+What no row holds: the name of no length. The byte read past the NUL is still
+inside the buffer, and what follows it there is the sheet's own earlier
+text, which ends.
+
+**Left as upstream has it.** The numbers of a sheet are worked with as `int`:
+minutes, seconds and frames multiplied out, a sector size taken from the
+mode, sectors times their size. A sheet that writes absurd ones makes sums
+that do not fit, which both compilers used here wrap round and the
+undefined-behaviour sanitizer reports. The track is then looked for in the
+wrong place and not found.
+
+## 0009-pce-cd-iso.patch
+
+**What.** In `rc_hash_from_file` in `src/rhash/hash.c`, an `.iso` hashed as
+console 76, the PC Engine CD, is an error: "Unsupported console for buffer
+hash: 76", which is what any other file that is not a sheet is told there.
+
+**Why.** A PC Engine CD game is hashed from its cue sheet. For another file
+`rc_hash_from_file` reads the whole of it into memory and hands it to
+`rc_hash_from_buffer`, which has no case for this console and says so. But
+before it says so it looks at the extension, and a `.cue`, `.m3u`, `.iso` or
+`.chd` it sends back to `rc_hash_from_file` to be opened as a disc. Three of
+the four have a case of their own there. An `.iso` has none, is read into
+memory again and handed on again, a buffer of the file's size each time,
+until the stack is used up: a signal, on both builds, for any `.iso` at all.
+
+Only a caller that names the console gets there; with none given an `.iso`
+is not tried as this one. `ConsoleChoice` never asks for it. The library is
+not to depend on that.
+
+**Upstream.** 12.5.0 has nothing of it.
+
+**Rows.** `pce.iso`, 3 KiB of filler under console 76, asked for the reason;
+`pce.bin`, the same bytes, which was refused in those words already.
+
+## 0010-message-length.patch
+
+**What.** `rc_hash_dispatch_message_va` in `src/rhash/hash.c`, which puts
+together every message that has a number or a name in it, uses `vsnprintf`
+wherever the compiler is C99 or later, and `vsprintf_s` only where it is not.
+The order of the two was the other way round.
+
+**Why.** The message is written into 1024 bytes. `vsnprintf` cuts one that is
+longer; `vsprintf_s`, one of the "secure" functions of Microsoft's C library,
+calls a buffer too small an invalid parameter, and a process that has set no
+handler for one is ended there. rcheevos took `vsprintf_s` wherever the
+compiler says it has the secure functions, which mingw-w64 always says, so the
+DLL was built with it. The longest message is "Could not open" with the path
+of a track: the folder of a sheet and the name the sheet gives, 255 bytes at
+the most. A sheet some 750 bytes deep, which is 250 characters of a script
+that takes three bytes each, with a track that is not there, was the end of
+the daemon on Windows.
+
+On Linux, macOS and Android nothing changes: `vsnprintf` was what was
+compiled there.
+
+**Upstream.** 12.5.0 has nothing of it.
+
+**Rows.** None can show it where the rows are run, since no program for
+Windows is run there. What holds the patch is `shared/tests/native_lib_check.sh`,
+which reads the table of what a DLL calls and refuses one that calls a
+function whose name ends in `printf_s`. The DLL built before the patch calls
+`__stdio_common_vsprintf_s` and is refused; the one built with it calls none.
+Nothing has loaded either.
+
+## Known, and not patched
+
+Found by the review of the whole branch with the sanitized program and files
+made for the purpose, and left, each for the reason given. None is on the
+way of a row.
+
+- `rc_hash_zip_file` in `src/rhash/hash_zip.c` reads the name of an entry of
+  a zip's directory by the length the entry gives, without holding it to the
+  directory it was read into: past the end of that block for an entry that
+  lies. It is reached for an `.arduboy` and a `.dosz` file and for nothing
+  else, and a scan picks up neither extension unless a collection lists it.
+  The whole of that reader, the entries' own headers after the directory,
+  has had no reading here, and a bound on one line of it would say more than
+  is known.
+- A word is put together from four bytes as `byte << 24` in many places no
+  patch touches: the header of a DS cartridge in `hash_rom.c`, the
+  directories of an ISO 9660 volume and of a 3DO one in `hash_disc.c`. A byte
+  of 0x80 or more is then a shift C leaves undefined and the sanitizer
+  reports. Both compilers used here give the number the code means.
 
 ## Never patched: an arcade set's name of no letters
 

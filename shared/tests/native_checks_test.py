@@ -238,6 +238,24 @@ class DllCheckTest(LibraryCheck):
         self.assertRegex(output, r"FAIL exports \d+ symbols")
         self.assertIn("exported  md5_init", output)
 
+    def test_a_dll_that_puts_text_together_with_a_secure_function_is_refused(self):
+        # What rcheevos did for its messages, through vsprintf_s: text that
+        # does not fit ends the process. The same with snprintf is cut short,
+        # and passes.
+        library = self.library("secure", body="#include <stdio.h>\n"
+                               "int say(char* to, int n) { return sprintf_s(to, 8, \"%d\", n); }\n")
+        status, output = self.check(library)
+        self.assertEqual(status, 1, output)
+        self.assertEqual(output.count("FAIL"), 1, output)
+        self.assertIn("FAIL calls 1 function(s) that end the process on text too long for its buffer", output)
+        self.assertRegex(output, r"\n +\S*printf_s\n")
+
+        library = self.library("cut", body="#include <stdio.h>\n"
+                               "int say(char* to, int n) { return snprintf(to, 8, \"%d\", n); }\n")
+        status, output = self.check(library)
+        self.assertEqual(status, 0, output)
+        self.assertRegex(output, r"ok   calls \d+ function\(s\) of those, none that ends the process")
+
     def test_a_name_too_few_in_a_dll_is_refused(self):
         library = self.library("narrow", exports=["some_other_name"])
         status, output = self.check(library)

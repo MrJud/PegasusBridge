@@ -1,12 +1,12 @@
 Local patch 0006 on rcheevos 12.5.0: the sector size of a .gdi line is copied
-only where it fits, a line is not read past the end of the text, and a file
-name ends where the text does. What it is for, and what upstream does, is in
-PATCHES.md.
+only where it fits, a line is not read past the end of the text, a file name
+ends where the text does, and a track that opened and is given up is closed.
+What it is for, and what upstream does, is in PATCHES.md.
 
     git apply --directory=hasher/src/main/cpp/rcheevos <this file>
 
 diff --git a/src/rhash/cdreader.c b/src/rhash/cdreader.c
-index cf4647b..df99d16 100644
+index cf4647b..1e9c891 100644
 --- a/src/rhash/cdreader.c
 +++ b/src/rhash/cdreader.c
 @@ -579,6 +579,7 @@ static void* cdreader_open_gdi_track(const char* path, uint32_t track, const rc_
@@ -110,3 +110,18 @@ index cf4647b..df99d16 100644
            ++ptr;
          num_read = ptr - ptr2;
        }
+@@ -763,6 +787,14 @@ static void* cdreader_open_gdi_track(const char* path, uint32_t track, const rc_
+   }
+   else
+   {
++    /* local patch 0006: a track that did open, and whose sectors nothing gives the size of,
++     * is closed before it is given up, as the parser of a cue sheet above closes its own.
++     * left open, it was a descriptor lost with every such sheet, and with every sheet that
++     * has no line for the track asked for, whose name is then empty: what opens in its
++     * place is the sheet's own folder. */
++    if (cdrom->file_handle)
++      cdrom->file_reader->close(cdrom->file_handle);
++
+     rc_hash_iterator_error_formatted(iterator, "Could not open %s", bin_path);
+ 
+     free(cdrom);

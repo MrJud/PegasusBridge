@@ -147,13 +147,26 @@ class NativeCrashReproTest {
                        0x2460 + 0x90 to hex("40000000")))
         )
 
+        // A WiiWare package of 544 bytes: no certificate, no ticket, no
+        // title metadata, and 65535 where the count of its contents is
+        // read. For each of them 64 MiB were hashed out of a buffer nothing
+        // had been read into, 4 TiB in all, and this row was killed after
+        // its thirty seconds; in a scan nothing kills it.
+        val wad = file("wad-65535.wad", image(544, 0x04 to ascii("Is"), 0x40 + 0x1DE to hex("FFFF")))
+        // Any .iso at all, handed over as a PC Engine CD game, which is
+        // hashed from a cue sheet: rcheevos read it into memory, found no way
+        // to hash it and sent it back to be opened as a disc, round and
+        // round until the stack was used up. Nothing above asks for it
+        // (ConsoleChoice), and the library is not to depend on that.
+        val pce = file("pce.iso", ByteArray(3072) { (it * 31 + 7).toByte() })
+
         assertNoHash(
-            (wiiImages + opera + playlists + gamecubeImages).map { it to 0 } +
+            (wiiImages + opera + playlists + gamecubeImages + wad).map { it to 0 } +
             // And each as the console it is made to look like, by number: the
             // Wii, the 3DO, the GameCube, and for the playlists the
             // PlayStation, whose discs are the ones listed that way.
             wiiImages.map { it to 19 } + (opera to 43) + playlists.map { it to 12 } +
-            gamecubeImages.map { it to 16 }
+            gamecubeImages.map { it to 16 } + (wad to 19) + (pce to 76)
         )
     }
 

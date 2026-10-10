@@ -11,7 +11,7 @@
  * com.pegasus.bridge.hasher.RcheevosNative.
  *
  *   hashForConsole(path, console, errorOut)   "<md5>|<console>", or null
- *   version()                                 "12.5.0+pb6"
+ *   version()                                 "12.5.0+pb10"
  *
  * Nothing is logged from here and nothing is kept between calls: what
  * rcheevos said of a file it gave no hash for goes back to the caller, in the

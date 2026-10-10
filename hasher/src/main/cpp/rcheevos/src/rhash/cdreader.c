@@ -307,7 +307,11 @@ static void* cdreader_open_cue_track(const char* path, uint32_t track, const rc_
         ptr += 6;
         index = atoi(ptr);
 
-        while (*ptr != ' ' && *ptr != '\n')
+        /* local patch 0008: the number is stepped over as far as the text goes. a sheet
+         * that ends with it has no blank and no line end after it, and the search for one
+         * went on past the NUL that closes the text, through whatever the buffer held
+         * before and out of the buffer. */
+        while (*ptr && *ptr != ' ' && *ptr != '\n')
           ++ptr;
         while (*ptr == ' ')
           ++ptr;
@@ -380,16 +384,30 @@ static void* cdreader_open_cue_track(const char* path, uint32_t track, const rc_
         current_track.pregap_sectors = -1;
         current_track.first_sector = -1;
 
-        while (*ptr != ' ')
+        /* local patch 0008: as for INDEX above, the number is stepped over as far as the
+         * text goes and no further. */
+        while (*ptr && *ptr != ' ')
           ++ptr;
         while (*ptr == ' ')
           ++ptr;
-        memcpy(current_track.mode, ptr, sizeof(current_track.mode));
+
+        /* local patch 0008: the mode is copied as far as the text goes, and the rest of
+         * its 16 bytes is cleared. all 16 were copied from wherever the line had got to,
+         * and a line that ends within 15 bytes of the buffer's end brought in what lies
+         * behind the buffer. the sector size is then read out of the copy, which has an
+         * end, and not six bytes on from a place in the text that may have fewer. */
+        {
+          size_t mode_len = 0;
+          while (mode_len < sizeof(current_track.mode) - 1 && ptr[mode_len])
+            ++mode_len;
+          memcpy(current_track.mode, ptr, mode_len);
+          memset(current_track.mode + mode_len, 0, sizeof(current_track.mode) - mode_len);
+        }
         current_track.is_data = (memcmp(current_track.mode, "MODE", 4) == 0);
 
         if (current_track.is_data)
         {
-          current_track.sector_size = atoi(ptr + 6);
+          current_track.sector_size = atoi(current_track.mode + 6);
         }
         else
         {
@@ -435,10 +453,16 @@ static void* cdreader_open_cue_track(const char* path, uint32_t track, const rc_
         }
         else
         {
-          do
+          /* local patch 0008: a name that is not there is of no length. its first
+           * character is stepped over unseen, and when that was the NUL that closes the
+           * text the name went on into whatever the buffer held before. */
+          if (*ptr2)
           {
-            ++ptr2;
-          } while (*ptr2 && *ptr2 != '\n' && *ptr2 != ' ');
+            do
+            {
+              ++ptr2;
+            } while (*ptr2 && *ptr2 != '\n' && *ptr2 != ' ');
+          }
         }
 
         if (ptr2 - ptr < (int)sizeof(current_track.filename))
@@ -787,6 +811,14 @@ static void* cdreader_open_gdi_track(const char* path, uint32_t track, const rc_
   }
   else
   {
+    /* local patch 0006: a track that did open, and whose sectors nothing gives the size of,
+     * is closed before it is given up, as the parser of a cue sheet above closes its own.
+     * left open, it was a descriptor lost with every such sheet, and with every sheet that
+     * has no line for the track asked for, whose name is then empty: what opens in its
+     * place is the sheet's own folder. */
+    if (cdrom->file_handle)
+      cdrom->file_reader->close(cdrom->file_handle);
+
     rc_hash_iterator_error_formatted(iterator, "Could not open %s", bin_path);
 
     free(cdrom);

@@ -31,7 +31,12 @@ game. Two kinds of row:
               whatever else it printed. A sanitizer left to itself prints its
               report and exits 1, which is what a refusal looks like, and the
               undefined-behaviour one prints and carries on; so both are told
-              to exit 97, and 97 or a report on stderr is a failure.
+              to exit 97, and 97 or a report on stderr is a failure. So is a
+              file rcheevos opened and did not close, on either build:
+              rahash_cli counts the descriptors it has open before and
+              after, and ends with 3 where there are more. No sanitizer
+              says anything of that, and a .gdi sheet lost one or two at
+              every hash, the ones that hashed among them.
 
   known gap   A file the vendored rcheevos is known to crash on, hang on or
               hash when it should refuse. Run on the plain build only, and the
@@ -525,6 +530,57 @@ def ps3_disc(sfo, eboot):
     put(image, 21 * 2048, sfo)
     put(image, PS3_EBOOT_SECTOR * 2048, eboot)
     return bytes(image)
+
+
+def wad(contents, cert=0xA00, ticket=0x2A4, sizes=None, count=None, last_padded=True):
+    """A WiiWare package as rcheevos reads one: a header of 0x40 bytes with
+    the magic word and the sizes of what follows, then the certificate chain,
+    the ticket, the title metadata and each content, every one of them
+    filled out to 0x40 bytes. The title metadata says how many contents
+    there are, at 0x1DE, and how long each is, eight bytes of a record of
+    0x24 from 0x1E4 on. `sizes` and `count` say other than the truth, and
+    `last_padded` false leaves the last content at the 16 bytes its
+    encryption rounds it to."""
+    def filled(data, to=0x40):
+        return bytes(data) + bytes(-len(data) % to)
+
+    metadata = bytearray(noise(0x1E4 + 0x24 * len(contents), seed="wad-metadata"))
+    put(metadata, 0x1DE, (len(contents) if count is None else count).to_bytes(2, "big"))
+    for at, content in enumerate(contents):
+        size = len(content) if sizes is None else sizes[at]
+        put(metadata, 0x1E4 + 0x24 * at + 8, size.to_bytes(8, "big"))
+    header = bytearray(0x40)
+    put(header, 0x00, (0x20).to_bytes(4, "big"))
+    put(header, 0x04, b"Is\x00\x00")
+    put(header, 0x08, cert.to_bytes(4, "big"))
+    put(header, 0x10, ticket.to_bytes(4, "big"))
+    put(header, 0x14, len(metadata).to_bytes(4, "big"))
+    image = bytes(header)
+    image += filled(noise(cert, seed="wad-cert")) + filled(noise(ticket, seed="wad-ticket"))
+    image += filled(metadata)
+    for at, content in enumerate(contents):
+        last = at == len(contents) - 1
+        image += filled(content, 0x40 if last_padded or not last else 0x10)
+    return image
+
+
+def wad_md5(image):
+    """What rc_hash_wiiware hashes of a package that is whole: the title
+    metadata filled out to 0x40 bytes, then each content as far as the 16
+    bytes its encryption rounds it to, each found 0x40 bytes on from where
+    the one before it ended."""
+    def up(n, to):
+        return (n + to - 1) // to * to
+
+    start = 0x40 + up(be32(image, 0x08), 0x40) + up(be32(image, 0x10), 0x40)
+    metadata_size = up(be32(image, 0x14), 0x40)
+    hashed = whole(image, start, metadata_size)
+    at = start + metadata_size
+    for content in range(int.from_bytes(image[start + 0x1DE:start + 0x1E0], "big")):
+        size = up(int.from_bytes(image[start + 0x1E4 + 0x24 * content + 8:][:8], "big"), 0x10)
+        hashed += whole(image, at, size)
+        at = up(at + size, 0x40)
+    return md5(hashed)
 
 
 def cue(track, mode):
@@ -1187,6 +1243,136 @@ def write_fixtures(directory):
         ("the same disc without the last sector of its program is hashed as far as it goes",
          82, "ps3-cut.iso", f"{md5(sfo + eboot[:4096])}|82"),
         ("the same disc without any of its program", 82, "ps3-no-program.iso", REFUSED),
+    ]
+
+    # ---- local patch 0007: a WiiWare package, which is a .wad.
+    #
+    # rc_hash_wiiware looked at none of its reads. The title metadata says
+    # how many contents there are and how long each is, and for each the
+    # function hashed a buffer of that length, up to 64 MiB, whatever the
+    # read had put in it. A package of 544 bytes that says 65535 contents
+    # was 4 TiB of hashing: the row below was still running when it was
+    # killed, on both builds, and inside a scan nothing can kill it.
+    contents = [noise(0x1234, seed="wad-0"), noise(0x40, seed="wad-1"), noise(5, seed="wad-2")]
+    package = wad(contents)
+    write("wad.wad", package)
+    # The last content as far as its encryption rounds it, and not a byte
+    # of filling after: a bound that asked for the 0x40 would refuse it.
+    unfilled = wad(contents, last_padded=False)
+    write("wad-last-unfilled.wad", unfilled)
+    # What the finding was made with: a header, no certificate, no ticket,
+    # no title metadata, and where the count would be, 65535.
+    counted = bytearray(544)
+    put(counted, 0x04, b"Is\x00\x00")
+    put(counted, 0x40 + 0x1DE, b"\xff\xff")
+    write("wad-65535.wad", counted)
+    metadata_at = 0x40 + 0xA00 + 0x2C0
+    write("wad-header-cut.wad", package[:0x12])
+    write("wad-metadata-cut.wad", package[:metadata_at + 0x100])
+    write("wad-content-cut.wad", package[:len(package) - 0x40 + 0x0F])
+    # Title metadata of 0x40 bytes, which the file has, and nothing where
+    # the count of contents is read from, 0x1DE into it.
+    short = bytearray(0x80)
+    put(short, 0x04, b"Is\x00\x00")
+    put(short, 0x14, (0x40).to_bytes(4, "big"))
+    write("wad-count-cut.wad", short)
+    # A content said to be longer than the package: 64 MiB of it were
+    # hashed out of a buffer nothing had been read into.
+    write("wad-content-long.wad", wad(contents, sizes=[0x1234, 0x40, 0xFFFFFFF0]))
+    # A size with its top bit set, the first word read: put together signed
+    # it is a shift C leaves undefined, and the sanitized build says so.
+    top = bytearray(package)
+    put(top, 0x08, (0x80000000).to_bytes(4, "big"))
+    write("wad-top-bit.wad", top)
+    # Two contents whose sizes bring a 32-bit count of where the next one
+    # begins round to nought. The first is as long as 4 GiB less what comes
+    # before it, of which 64 MiB are hashed, and the file has them; the
+    # second was then read from the start of the file, which is there too,
+    # and the package hashed. Counted in full it begins 4 GiB in.
+    wrapping = bytearray(0x280 + 64 * 1024 * 1024)
+    put(wrapping, 0x04, b"Is\x00\x00")
+    put(wrapping, 0x14, (0x240).to_bytes(4, "big"))
+    put(wrapping, 0x40 + 0x1DE, (2).to_bytes(2, "big"))
+    put(wrapping, 0x40 + 0x1E4 + 8, (0x100000000 - 0x280).to_bytes(8, "big"))
+    put(wrapping, 0x40 + 0x1E4 + 0x24 + 8, (0x40).to_bytes(8, "big"))
+    write("wad-wraps.wad", wrapping)
+    must_pass += [
+        ("a WiiWare package of three contents, with no console given",
+         0, "wad.wad", f"{wad_md5(package)}|19"),
+        ("the same package as a Wii file", 19, "wad.wad", f"{wad_md5(package)}|19"),
+        ("the same with its last content not filled out to 0x40 bytes",
+         19, "wad-last-unfilled.wad", f"{wad_md5(package)}|19"),
+        ("a package of 544 bytes that says it has 65535 contents",
+         19, "wad-65535.wad", refused("Could not read the size of WAD content 0")),
+        ("the same with no console given",
+         0, "wad-65535.wad", refused("Could not read the size of WAD content 0")),
+        ("a package that ends inside its header",
+         19, "wad-header-cut.wad", refused("Could not read WAD header")),
+        ("a package that ends inside its title metadata",
+         19, "wad-metadata-cut.wad", refused("title metadata runs past the end")),
+        ("a package that ends before the count of its contents",
+         19, "wad-count-cut.wad", refused("Could not read WAD content count")),
+        ("a package one byte short of its last content",
+         19, "wad-content-cut.wad", refused("WAD content 2 runs past the end")),
+        ("a package whose last content is said to be 4 GiB long",
+         19, "wad-content-long.wad", refused("WAD content 2 runs past the end")),
+        ("a package whose certificate chain is said to be 2 GiB long",
+         19, "wad-top-bit.wad", refused("title metadata runs past the end")),
+        ("a package whose second content begins 4 GiB in, which is the start of the file in 32 bits",
+         19, "wad-wraps.wad", refused("WAD content 1 runs past the end")),
+    ]
+
+    # ---- local patch 0008: a cue sheet that ends in the middle of a line.
+    #
+    # The parser steps over the number after TRACK and after INDEX up to
+    # the next blank, and copies sixteen bytes of what follows a track's
+    # number as its mode. A sheet that ends with the number has no blank
+    # after it, and one that ends near the end of the parser's buffer has
+    # not sixteen bytes left in it: both went on past the buffer. Only the
+    # sanitized build shows it; the plain one reads what is on the stack
+    # behind the buffer and carries on with it.
+    write("cue-track-ends.cue", b'FILE "Repro CD.bin" BINARY\r\n  TRACK 01')
+    write("cue-index-ends.cue", b'FILE "Repro CD.bin" BINARY\r\n  TRACK 01 MODE1/2352\r\n    INDEX 01')
+    # 1022 bytes, which one read holds, and the last of them the blank
+    # after the track's number: the sixteen bytes of its mode begin where
+    # the text ends, two bytes from the end of the buffer.
+    ending = b'FILE "Repro CD.bin" BINARY\r\n  TRACK 01 '
+    filling = 1022 - len(ending)
+    remarks = b"".join(b"REM " + b"x" * 58 + b"\r\n" for _ in range(filling // 64))
+    remarks += b"REM " + b"x" * (filling % 64 - 6) + b"\r\n" if filling % 64 else b""
+    assert len(remarks + ending) == 1022
+    write("cue-mode-at-the-end.cue", remarks + ending)
+    # Each of the three names its track's file whole before it ends, and
+    # the track is a disc that says what its own sectors are: a mode that
+    # is not there is not missed, and an index with no time is one at the
+    # start of the track, which is where this track's is. So each hashes,
+    # as the disc it names, and that is the answer here: what the rows
+    # hold is that nothing past the text was read on the way to it.
+    must_pass += [
+        ("a cue sheet that ends with a track's number is read as far as it goes",
+         9, "cue-track-ends.cue", f"{sega_cd}|9"),
+        ("the same with no console given", 0, "cue-track-ends.cue", f"{sega_cd}|9"),
+        ("a cue sheet that ends with an index's number", 9, "cue-index-ends.cue", f"{sega_cd}|9"),
+        ("a cue sheet of 1022 bytes that ends where a track's mode would begin",
+         9, "cue-mode-at-the-end.cue", f"{sega_cd}|9"),
+        ("the same with no console given", 0, "cue-mode-at-the-end.cue", f"{sega_cd}|9"),
+    ]
+
+    # ---- local patch 0009: an .iso hashed as a PC Engine CD game.
+    #
+    # rcheevos hashes such a game from its cue sheet. Any other file it
+    # reads into memory and then has no way to hash, and says so; but an
+    # .iso it sent back to be opened as a disc, which read it into memory
+    # again, until the stack was used up: a signal, on both builds. The
+    # Kotlin above never asks for it (ConsoleChoice), and the library is
+    # not to depend on that.
+    write("pce.iso", noise(3072, seed="pce"))
+    write("pce.bin", noise(3072, seed="pce"))
+    must_pass += [
+        ("an .iso under console 76 is refused as any file that is no sheet is",
+         76, "pce.iso", refused("Unsupported console for buffer hash: 76")),
+        ("a .bin under console 76, which was refused already",
+         76, "pce.bin", refused("Unsupported console for buffer hash: 76")),
     ]
 
     # (what the row shows, console, path from the folder of fixtures). The six

@@ -54,6 +54,13 @@ tasks.named<Test>("test") {
     // before the edit.
     inputs.file(rootProject.file("tools/audit_report.py")).withPropertyName("auditReportScript")
         .withPathSensitivity(PathSensitivity.NONE)
+    // The same for what two other tests read of the hasher's C: the table of
+    // extensions in hash.c that RomHashIOTest holds the Kotlin copy to, and
+    // the two headers the library's version is made from.
+    val cpp = rootProject.file("../hasher/src/main/cpp")
+    inputs.files(File(cpp, "rcheevos/src/rhash/hash.c"), File(cpp, "rcheevos/src/rc_version.h"),
+                 File(cpp, "pb_patchlevel.h"))
+        .withPropertyName("sourcesTheKotlinIsHeldTo").withPathSensitivity(PathSensitivity.NONE)
 
     // NativeCrashReproTest makes each native call in a JVM it starts itself,
     // since the files it hands over are ones that used to end the process, and

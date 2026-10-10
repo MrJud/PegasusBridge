@@ -1,0 +1,32 @@
+Local patch 0010 on rcheevos 12.5.0: a message is put together with vsnprintf
+wherever there is one, so that one longer than its buffer is cut short and
+does not end the process. What it is for, and what upstream does, is in
+PATCHES.md.
+
+    git apply --directory=hasher/src/main/cpp/rcheevos <this file>
+
+diff --git a/src/rhash/hash.c b/src/rhash/hash.c
+index 2df5d00..715494e 100644
+--- a/src/rhash/hash.c
++++ b/src/rhash/hash.c
+@@ -38,10 +38,17 @@ static void rc_hash_dispatch_message_va(const rc_hash_message_callback_func call
+ {
+   char buffer[1024];
+ 
+-#ifdef __STDC_SECURE_LIB__
+-  vsprintf_s(buffer, sizeof(buffer), format, args);
+-#elif __STDC_VERSION__ >= 199901L /* vsnprintf requires c99 */
++  /* local patch 0010: vsnprintf wherever the compiler has it, and vsprintf_s only where it
++   * has not. a message longer than the buffer is cut short by the first, and with the
++   * second it ends the process: the C library is handed a buffer too small, calls that an
++   * invalid parameter, and has no handler for one but to stop. mingw-w64 always says it
++   * has the secure functions, so that was the one taken for the DLL, and a message with a
++   * path in it, "Could not open" and the track a sheet names, is as long as the path. */
++#if __STDC_VERSION__ >= 199901L /* vsnprintf requires c99 */
+   vsnprintf(buffer, sizeof(buffer), format, args);
++  buffer[sizeof(buffer) - 1] = '\0';
++#elif defined(__STDC_SECURE_LIB__)
++  vsprintf_s(buffer, sizeof(buffer), format, args);
+ #else /* c89 doesn't have a size-limited vsprintf function - assume the buffer is large enough */
+   vsprintf(buffer, format, args);
+ #endif

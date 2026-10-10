@@ -24,6 +24,10 @@ patch 0003-playlist-in-playlist.patch
 patch 0004-dol-short-reads.patch
 patch 0005-short-headers.patch
 patch 0006-gdi-bounds.patch
+patch 0007-wiiware-reads.patch
+patch 0008-cue-bounds.patch
+patch 0009-pce-cd-iso.patch
+patch 0010-message-length.patch
 file f5cca0c00e528827efb8d8ba077b477922e0d8e8 .editorconfig
 file 997b9ac2b1db2a9528e5d042e1cf3139212569e7 .github/workflows/c-cpp.yml
 file 7cfbf47b5c5702a033eec5c5bd1930bec10cf070 .gitignore

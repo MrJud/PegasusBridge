@@ -1,21 +1,21 @@
 # What librahasher.so beside this file was compiled from. native/build.sh writes
 # the two together and tests/native_manifest_check.py compares them: a
 # line that no longer holds is a library to build again.
-library 167ac4bf0dbe53937fd3ed904d74fa76adc32526e86e5f3c3e31df607fffeb79 librahasher.so
+library 84e5edf8846ec5415f3aebbd4468504881ae05d9df651b4233bb4ed1a8f85c19 librahasher.so
 compiler gcc (GCC) 16.2.1 20260810
 flags -std=gnu11 -O2 -fPIC -fvisibility=hidden -DRC_HASH_NO_ENCRYPTED -shared -Wl,-z,defs -Wl,-z,now -Wl,--version-script=hasher/src/main/cpp/jni.map
 input 3ff95500850ebe134589473059ae0616f450b1a99ebb77a9190c137d4b82785b hasher/src/main/cpp/jni.map
-input dcc4cf306802bbce39c99bfd2251174971e3717fff60ead8bdece071951b31f0 hasher/src/main/cpp/pb_patchlevel.h
+input fbfaa123f573e6a17b65723c6a76ffd227d2fc83278cfe21845852ac06c7beb6 hasher/src/main/cpp/pb_patchlevel.h
 input 95f57624ee6f127ff9593ff05e595434e3a1c3f5526d6522ca176fb7cd4e07b2 hasher/src/main/cpp/rahasher.sources
-input 81305cb716befa3d7055779bcf7990c2683e361a0a943576a363a2164fbc698d hasher/src/main/cpp/rahasher_jni.c
+input 4ec79ca09731cc0f30851ac08cbb80223ec687267628ce884124bcffb2bc7ec7 hasher/src/main/cpp/rahasher_jni.c
 input 73c1178e501692a11fb702eb1d90d25a7c47ed1d02678c619bc087c9755b132b hasher/src/main/cpp/rcheevos/include/rc_consoles.h
 input 9683f979bb152781677ffd952a68fdddcb5d951eb227e96a2d1f7fd0feb3be62 hasher/src/main/cpp/rcheevos/include/rc_export.h
 input b2eeb7eb928ed07094463eefd8111ecc69a2f8aeb04e63b23172dcf3663a271b hasher/src/main/cpp/rcheevos/include/rc_hash.h
 input 4a97999341f386ef1a3b1271b1696e69dd476b0b073a752c7868c5420d9dabc5 hasher/src/main/cpp/rcheevos/src/rc_compat.h
 input 99db64703fd642b32812efe3b6fefb4843a2f1da6352aed3cb0d89cefcaafe0d hasher/src/main/cpp/rcheevos/src/rc_version.h
-input 6d8581af1acef7c7fe236f14ac86eb47f12db513d98d5baaad007a6fe8ba8ee1 hasher/src/main/cpp/rcheevos/src/rhash/cdreader.c
-input 7d54d6cfe7e8d94eca2df541080c9e4ac9c4cbdf0e4b90d845d74e1d6c80406d hasher/src/main/cpp/rcheevos/src/rhash/hash.c
-input 8b9a9d5319af15b353b0e173a4bf4cecb7df197a9b8f0dcb4c7ca6d5aba783e1 hasher/src/main/cpp/rcheevos/src/rhash/hash_disc.c
+input 345f2b61e3689716935935d2a90244d3fcbf20ace024d62b00b4366da7fd00cc hasher/src/main/cpp/rcheevos/src/rhash/cdreader.c
+input ca1f150a9599b04e3cd17d17129ff425a0f68e0305288afb8dc71f1a5def46a4 hasher/src/main/cpp/rcheevos/src/rhash/hash.c
+input 411909ef363b3b7e4f25eddec1adf43bf9135a60b5499e0520c5a8758432b999 hasher/src/main/cpp/rcheevos/src/rhash/hash_disc.c
 input 71a8e106ccb816d945c38244a6b079f618de65959d5d53bca3f495174eca43d9 hasher/src/main/cpp/rcheevos/src/rhash/hash_rom.c
 input dcf9e3e345ab709cffe8408f75fb15084a48e55d2b625deaa00614794376dca3 hasher/src/main/cpp/rcheevos/src/rhash/hash_zip.c
 input fd38ee6a43316007d4aa816f23c24a8355c58df106b4c54e43ec44afc55df521 hasher/src/main/cpp/rcheevos/src/rhash/md5.c

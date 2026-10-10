@@ -110,7 +110,7 @@ Both hash with the same library: rcheevos behind one JNI file,
 to leave that to the file's extension, and hands back what rcheevos said of a
 file it gave no hash for; the scan records that after the file's name
 (`the hasher could not read X: <reason>`). `version` is the rcheevos release and
-the number of local patches on it (`12.5.0+pb6`). `NativeHasher` and
+the number of local patches on it (`12.5.0+pb10`). `NativeHasher` and
 `NativeRomHasher` only load the library, and each holds that version against
 the one it was built for before any file is hashed. The rcheevos it is compiled
 from is the folder `hasher/src/main/cpp/rcheevos`: upstream's tree as

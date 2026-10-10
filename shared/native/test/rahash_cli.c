@@ -17,11 +17,21 @@
  * console and no other. The library's hashForConsole takes its console the
  * same way, and like this program sets the callback for errors and no other.
  *
- * It ends in one of three ways, and a test may count on them:
+ * It ends in one of four ways, and a test may count on them:
  *   0  one line on stdout, "<md5>|<console>"
  *   1  no hash; what rcheevos said of it is on stderr, on one line
  *   2  it was not started with a console from 0 to 255 and a path
+ *   3  rcheevos left a file open that it had opened: how many is on stderr,
+ *      after what it would have said otherwise
  * Anything else is rcheevos, not this file: a signal, or a sanitizer's report.
+ *
+ * The third is counted, since nothing else shows it. A file left open is not
+ * memory, and neither sanitizer says a word of it; in this program it is gone
+ * a moment later with the process, and in the daemon or the app it is one of
+ * the thousand or so descriptors a process may hold, lost for good with each
+ * file that goes that way. The descriptors open are counted before rcheevos
+ * is asked and after it has answered, in the folder the system lists them in.
+ * Where there is no such folder nothing is counted and nothing is said.
  *
  * --fault hashes nothing. It does one thing a sanitizer exists to report, a
  * read one byte past a block or a sum too large for an int, and ends with 0.
@@ -31,6 +41,7 @@
  * 0 here, as it would have for every file.
  */
 
+#include <dirent.h>
 #include <errno.h>
 #include <limits.h>
 #include <stdio.h>
@@ -111,6 +122,31 @@ static int fault(const char* kind) {
     return usage();
 }
 
+/*
+ * How many descriptors this process has open, or -1 where the system has no
+ * folder that lists them. The folder is itself open while it is read, each
+ * time, so the one more is in both counts and in no difference of them.
+ */
+static int open_descriptors(void) {
+    static const char* const places[] = { "/proc/self/fd", "/dev/fd" };
+    size_t place;
+
+    for (place = 0; place < sizeof(places) / sizeof(places[0]); place++) {
+        DIR* folder = opendir(places[place]);
+        struct dirent* entry;
+        int count = 0;
+
+        if (!folder)
+            continue;
+        while ((entry = readdir(folder)) != NULL)
+            if (entry->d_name[0] != '.')
+                count++;
+        closedir(folder);
+        return count;
+    }
+    return -1;
+}
+
 int main(int argc, char** argv) {
     rc_hash_iterator_t iterator;
     struct reasons reasons;
@@ -118,6 +154,7 @@ int main(int argc, char** argv) {
     char* end;
     long console;
     int found;
+    int before, after;
 
     if (argc == 2 && strncmp(argv[1], "--fault=", 8) == 0)
         return fault(argv[1] + 8);
@@ -138,6 +175,7 @@ int main(int argc, char** argv) {
      * that function clears the whole iterator, and a callback set ahead of it
      * is gone by the time anything is hashed.
      */
+    before = open_descriptors();
     rc_hash_initialize_iterator(&iterator, argv[2], NULL, 0);
     iterator.userdata = &reasons;
     iterator.callbacks.error_message = keep_reason;
@@ -151,6 +189,16 @@ int main(int argc, char** argv) {
     }
 
     rc_hash_destroy_iterator(&iterator);
+    after = open_descriptors();
+
+    if (before >= 0 && after > before) {
+        if (found)
+            fprintf(stderr, "%s|%ld; ", hash, console);
+        else
+            fprintf(stderr, "%s; ", reasons.text);
+        fprintf(stderr, "%d file(s) left open\n", after - before);
+        return 3;
+    }
 
     if (!found) {
         /* An error on the way to a hash is not a failure; these were. */

@@ -1,0 +1,25 @@
+Local patch 0009 on rcheevos 12.5.0: an .iso hashed as a PC Engine CD game is
+refused, where it sent rcheevos round between two functions until the stack
+ran out. What it is for, and what upstream does, is in PATCHES.md.
+
+    git apply --directory=hasher/src/main/cpp/rcheevos <this file>
+
+diff --git a/src/rhash/hash.c b/src/rhash/hash.c
+index 2df5d00..3602ff0 100644
+--- a/src/rhash/hash.c
++++ b/src/rhash/hash.c
+@@ -939,6 +939,14 @@ static int rc_hash_from_file(char hash[33], uint32_t console_id, const rc_hash_i
+       if (rc_path_compare_extension(path, "m3u"))
+         return rc_hash_generate_from_playlist(hash, console_id, iterator);
+ 
++      /* local patch 0009: an .iso is refused here, in the words every other file that is
++       * no sheet gets below. read into memory and handed on, it comes to
++       * rc_hash_from_buffer, which has no case for this console and sends an .iso back to
++       * this function to be opened as a disc: and so round, a buffer of the file's size
++       * each time, until the stack is used up and the process ends. */
++      if (rc_path_compare_extension(path, "iso"))
++        return rc_hash_iterator_error_formatted(iterator, "Unsupported console for buffer hash: %d", console_id);
++
+       return rc_hash_buffered_file(hash, console_id, iterator);
+ 
+     case RC_CONSOLE_PCFX:

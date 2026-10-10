@@ -38,10 +38,17 @@ static void rc_hash_dispatch_message_va(const rc_hash_message_callback_func call
 {
   char buffer[1024];
 
-#ifdef __STDC_SECURE_LIB__
-  vsprintf_s(buffer, sizeof(buffer), format, args);
-#elif __STDC_VERSION__ >= 199901L /* vsnprintf requires c99 */
+  /* local patch 0010: vsnprintf wherever the compiler has it, and vsprintf_s only where it
+   * has not. a message longer than the buffer is cut short by the first, and with the
+   * second it ends the process: the C library is handed a buffer too small, calls that an
+   * invalid parameter, and has no handler for one but to stop. mingw-w64 always says it
+   * has the secure functions, so that was the one taken for the DLL, and a message with a
+   * path in it, "Could not open" and the track a sheet names, is as long as the path. */
+#if __STDC_VERSION__ >= 199901L /* vsnprintf requires c99 */
   vsnprintf(buffer, sizeof(buffer), format, args);
+  buffer[sizeof(buffer) - 1] = '\0';
+#elif defined(__STDC_SECURE_LIB__)
+  vsprintf_s(buffer, sizeof(buffer), format, args);
 #else /* c89 doesn't have a size-limited vsprintf function - assume the buffer is large enough */
   vsprintf(buffer, format, args);
 #endif
@@ -949,6 +956,14 @@ static int rc_hash_from_file(char hash[33], uint32_t console_id, const rc_hash_i
 
       if (rc_path_compare_extension(path, "m3u"))
         return rc_hash_generate_from_playlist(hash, console_id, iterator);
+
+      /* local patch 0009: an .iso is refused here, in the words every other file that is
+       * no sheet gets below. read into memory and handed on, it comes to
+       * rc_hash_from_buffer, which has no case for this console and sends an .iso back to
+       * this function to be opened as a disc: and so round, a buffer of the file's size
+       * each time, until the stack is used up and the process ends. */
+      if (rc_path_compare_extension(path, "iso"))
+        return rc_hash_iterator_error_formatted(iterator, "Unsupported console for buffer hash: %d", console_id);
 
       return rc_hash_buffered_file(hash, console_id, iterator);
 

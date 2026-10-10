@@ -10,7 +10,9 @@
 #     library in the same process may have too.
 #
 # And of a rahasher.dll the same two, as a DLL tells them: the other DLLs it
-# needs, which must all be ones Windows has of its own, and its exports.
+# needs, which must all be ones Windows has of its own, and its exports. And
+# one thing more, which only a DLL can get wrong: that it calls none of the
+# C library's "secure" functions that put text together.
 #
 #   ./native_lib_check.sh <librahasher.so | rahasher.dll>
 #
@@ -35,6 +37,17 @@ Java_com_pegasus_bridge_hasher_RcheevosNative_version"
 # travel with the DLL, and nothing puts one in a bundle. Matched in either
 # case, as Windows takes the names.
 system_dlls='^(kernel32|msvcrt|api-ms-win-crt-[a-z0-9-]+)\.dll$'
+
+# What a DLL may not call: sprintf_s, vsprintf_s and their kin, by the name
+# the C library has them under. Handed text that does not fit its buffer, one
+# of these does not cut it short. It calls that an invalid parameter, and a
+# process that has set no handler for one, which the JVM has not, is ended
+# there. rcheevos put its messages together with vsprintf_s wherever the
+# compiler said it had it, and mingw-w64 always says so: a path of some
+# thousand bytes to a track that is not there was the end of the daemon.
+# Local patch 0010 has it use vsnprintf, and this is what holds the patch: no
+# file can show the difference on a system that is not Windows.
+forbidden_calls='printf_s$'
 
 if [[ $# -ne 1 ]]; then
     echo "usage: native_lib_check.sh <librahasher.so | rahasher.dll>" >&2
@@ -104,6 +117,23 @@ if [[ $dll -eq 1 ]]; then
     else
         echo "  ok   needs $(grep -c . <<<"$needs") DLL(s), all of them Windows' own:"
         sed 's/^/         /' <<<"$needs"
+    fi
+
+    # The names it calls in those DLLs: under each "DLL Name:" a table of
+    # lines whose last word is the name.
+    calls="$(awk '/^[ \t]*DLL Name:/ { on = 1; next }
+                  on && /^[ \t]*$/     { on = 0 }
+                  on && NF >= 3        { print $NF }' <<<"$headers" | LC_ALL=C sort -u)"
+    unsafe="$(grep -E "$forbidden_calls" <<<"$calls")"
+    if [[ -z "$calls" ]]; then
+        echo "  FAIL no function of another DLL is called: the table of imports was not read"
+        failures=$((failures + 1))
+    elif [[ -n "$unsafe" ]]; then
+        echo "  FAIL calls $(grep -c . <<<"$unsafe") function(s) that end the process on text too long for its buffer:"
+        sed 's/^/         /' <<<"$unsafe"
+        failures=$((failures + 1))
+    else
+        echo "  ok   calls $(grep -c . <<<"$calls") function(s) of those, none that ends the process on text too long"
     fi
 
     # Under this heading, a line for every name the DLL shows, the name

@@ -91,8 +91,9 @@ one copy: the Android `:hasher` module and the desktop daemon both compile it,
 and the tests of the `shared/` build are its tests. It walks the ROM tree,
 computes RA-compatible hashes (with iNES/SMC/N64 header stripping), asks
 RetroAchievements about each and writes one `metadata/{gameId}.json` per match.
-What it settles about every other file goes into `cache/scan-ledger.json`, so a
-miss is not read and asked about again on the next scan.
+What it settles about every file goes into `cache/scan-ledger.json`, a match
+with the id of its game, so that the next scan neither reads nor asks about a
+file that has not changed, a miss no more than a match.
 
 Each shell supplies what stands around it:
 
@@ -138,13 +139,17 @@ a hash rcheevos then gives under a console that is held back
 failure that is kept, and not a hash.
 
 Beside the hash a scan keeps the MD5 and CRC of the file itself (`rom.fileMd5`,
-`rom.fileCrc32`), and takes them only where they cost no read of their own
-(`ArchiveAwareHasher.digestInScan`): a loose file of at most 1 MiB, one of at
-most 64 MiB whose console rcheevos hashes whole, and an archive's entry, in the
-pass that copies it out. A disc image, a cartridge hashed from its header
-(Nintendo 64, Nintendo DS) and an arcade set leave a scan with both empty, and
-the keys are written all the same. Nothing reads them back: a scraper that
-needs the digests of a file asks `PlainRomHasher`, which reads it then.
+`rom.fileCrc32`), and takes them only where the read they need costs next to
+nothing (`ArchiveAwareHasher.digestInScan`): of a loose file of at most 1 MiB,
+of one of at most 64 MiB whose console rcheevos hashes whole, which the hash
+has just read to its end, and of an archive's entry, in the pass that copies
+it out. Every other file leaves a scan with both empty, and the keys are
+written all the same: a disc image, a cartridge rcheevos has a parser for
+(Nintendo 64, Nintendo DS), any file over 64 MiB, and an arcade set, which is
+not opened at all. A scan used to take both of every file, so a metadata file
+written before this has them where one written now does not. Nothing reads
+them back: a scraper that needs the digests of a file asks `PlainRomHasher`,
+which reads it then.
 
 A file that stands for a game the library does not hold is a `PLACEHOLDER` and
 never reaches the hasher: an empty file, whatever it is called, or one of at

@@ -191,9 +191,10 @@ cannot call produces hundreds of lines nobody can verify.
 
 **[ScreenScraper.fr](https://www.screenscraper.fr)** is the one that matters. It
 matches **by ROM hash**, which is what lets ES-DE and Skraper identify a retro dump
-that no title search would find, and the Bridge already computes those hashes for
-RetroAchievements — the rcheevos hash plus the file's own MD5 and CRC32. Its media
-map onto this project's categories one for one: `box-2D` to cover, `wheel`/`wheel-hd`
+that no title search would find, and the Bridge already computes those hashes — the
+rcheevos hash for RetroAchievements, and the file's own MD5 and CRC32, which a scan
+keeps where it has just read the whole file and a scraper works out when it asks.
+Its media map onto this project's categories one for one: `box-2D` to cover, `wheel`/`wheel-hd`
 to logo, `fanart` to wallpaper, `ss`/`sstitle` to screenshots, and `video`. It also
 answers with region- and language-aware metadata, which is the only route to
 descriptions in a language other than English.
@@ -507,7 +508,11 @@ cd shared
 
 The report counts the files by collection and state, names every file whose
 verdict moved, and looks for hashes that cannot be right whatever
-RetroAchievements would say of them.
+RetroAchievements would say of them. On Linux each row also has the bytes the
+scan read for its file, which the report adds up by collection. With
+`--keep=<folder>` among the arguments the scan's data root is that folder and
+stays there, so the same command run again measures a rescan, and one killed
+and run again a scan that resumes.
 
 ### One copy of what both shells run
 

@@ -528,4 +528,20 @@ class ScanLedgerTest {
         assertEquals(1, s2.cachedHits)
         assertEquals(1, s2.states[ScanLedger.State.MATCHED])
     }
+
+    // A match found standing was written into the ledger again with no game,
+    // over the entry the scan that matched it had written with one. A ledger
+    // that does not say which game a file is cannot be what skips it.
+    @Test fun `a cached match keeps the game it matched`(): Unit = runBlocking {
+        val f = rom("nes", "Contra (USA).nes", "hash-ctra")
+        val found = object : RaHashLookup {
+            override suspend fun lookup(hash: String) =
+                GameMetadata(1447, "Contra", "NES", "/i.png", 40).asOutcome()
+        }
+        pipeline(ContentHasher(), found).scan(listOf(romRoot.absolutePath))
+        pipeline(ContentHasher(), found).scan(listOf(romRoot.absolutePath))
+
+        assertEquals("MATCHED", ledgerEntry(f)!!.getString("state"))
+        assertEquals(1447, ledgerEntry(f)!!.optInt("gameId"), "the rescan wrote the match again without its game")
+    }
 }

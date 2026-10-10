@@ -170,12 +170,19 @@ of the console table and the extensions it declares. So an entry added to a
 table, or another rcheevos, has every file that did not match looked at again
 without anybody raising a number; an edit to one row of the console table has
 only those of the collections it is the row of; and a file whose folder is
-given to another collection is looked at again as well. A match is found
-through its metadata file before the ledger is asked and is never read again
-for this. What no table shows is the code that judges, and for a change to
-that a number in the recipe is still raised by hand, `HashRecipe.RULES`, with
-two beside it for one corner each: `PLACEHOLDERS` and `CONTAINERS`. The scan
-logs the line the numbers are made from, and an audit's table begins with it.
+given to another collection is looked at again as well. A match stands in the
+ledger under its number with the id of its game, and is skipped on that while
+the game's metadata file is on disk and names a ROM that is the game's still:
+that file, or another the scan found that the ledger holds as a match of the
+same game. Past a change of number, or with a ledger that lost it, the match
+is taken back from the metadata file that describes that very file, by key,
+size and date, with no read and no request. A file that shares its game's
+metadata file with another, a second dump or a track beside its sheet, is not
+described by it, and is then read and asked about once. What no table shows is
+the code that judges, and for a change to that a number in the recipe is still
+raised by hand, `HashRecipe.RULES`, with two beside it for one corner each:
+`PLACEHOLDERS` and `CONTAINERS`. The scan logs the line the numbers are made
+from, and an audit's table begins with it.
 
 Every file a scan processes ends in one of eleven states (`ScanLedger.State`),
 which is what the ledger keeps for it and what the daemon's result counts

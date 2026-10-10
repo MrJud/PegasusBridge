@@ -396,9 +396,10 @@ class ScanLedger(private val file: File, private val recipe: HashRecipe = HashRe
         //
         // A derived number is never one of those four ([HashRecipe.fold]),
         // so every verdict a ledger holds from such a build is reached again
-        // once. The cost is bounded as it was each time before: a match is
-        // skipped through its metadata before the ledger is asked, so what
-        // gets redone is everything that did not match.
+        // once. The cost is bounded as it was each time before: a match the
+        // ledger no longer vouches for is taken back from its metadata file
+        // without a read, so what gets redone is everything that did not
+        // match, and a file whose game's metadata file describes another.
         //
         // Still the one number for what a file resolves to. A second version
         // kept elsewhere for part of the same decision would drift from this

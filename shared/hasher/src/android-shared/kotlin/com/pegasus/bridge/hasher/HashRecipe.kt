@@ -28,10 +28,13 @@ import java.util.zip.CRC32
  * What cannot be read off a table is the code that uses them, and for that
  * a number is still raised by hand, [RULES].
  *
- * A match never depends on any of this. It is found through its metadata
- * file before the ledger is asked, so what a new number costs is the files
- * that did not match: read once more, and asked about once more where they
- * give a hash.
+ * A match stands in the ledger under its number like any other verdict, and
+ * is skipped by it. Past a new number it is taken back from its metadata
+ * file, which describes the file it was matched from, with no read. So what
+ * a new number costs is the files that did not match, read once more and
+ * asked about once more where they give a hash, and with them a file that
+ * shares its game's metadata file with another, which that file does not
+ * describe.
  *
  * [engine] is the hasher's own name for itself ([RomHasher.engine]).
  */

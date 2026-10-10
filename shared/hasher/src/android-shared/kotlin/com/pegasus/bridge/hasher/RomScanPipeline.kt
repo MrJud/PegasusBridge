@@ -216,8 +216,16 @@ class RomScanPipeline(
         BridgeLog.i(TAG, "found $total ROM files under ${roots.size} root(s)")
         if (total == 0) return Summary(0, 0, 0, 0, 0, writeDiscoveryIndex())
 
-        val metaCache = preloadMetadataCache()
-        BridgeLog.i(TAG, "loaded ${metaCache.size} cached entries for incremental scan")
+        val meta = preloadMetadataCache()
+        BridgeLog.i(TAG, "loaded ${meta.byKey.size} cached entries of ${meta.keyOfGame.size} " +
+                         "games for incremental scan")
+        // The files this walk found, by key. A match the ledger holds is
+        // believed only while its game's metadata file names a ROM that is
+        // here and is the game's still, and this is how a file finds the
+        // one that is named to ask that of it.
+        val walked = files.groupBy {
+            FuzzyMatch.makeCacheKey(it.file.nameWithoutExtension, it.collection.shortName)
+        }
 
         // Verdicts from previous scans, including the ones that are not matches.
         // Without it a library of mostly-unknown ROMs asked the source about every
@@ -270,7 +278,7 @@ class RomScanPipeline(
                     launch(Dispatchers.Default) {
                         for (scanned in fileQueue) {
                             if (!isActive) break
-                            processFile(scanned, metaCache, ledger, now, hashQueue, resultQueue)
+                            processFile(scanned, meta, walked, ledger, now, hashQueue, resultQueue)
                         }
                     }
                 }
@@ -374,8 +382,9 @@ class RomScanPipeline(
                             ScanLedger.State.UNSUPPORTED_FORMAT,
                             ScanLedger.State.NO_PLAYABLE_ENTRY,
                             ScanLedger.State.AMBIGUOUS_ARCHIVE -> hashFailed++
-                            // Neither arrives this way: a match is found through its
-                            // metadata or hashed again, and a retry is never left
+                            // Neither arrives this way: a match that stands, in the
+                            // ledger or in its metadata file, is sent as cached, one
+                            // that does not is hashed again, and a retry is never left
                             // standing. Listed so that a state added to the ledger does
                             // not compile until it has been given a count here.
                             ScanLedger.State.MATCHED   -> cached++
@@ -563,7 +572,8 @@ class RomScanPipeline(
 
     private suspend fun processFile(
         scanned: RomScanner.ScannedFile,
-        metaCache: Map<String, CachedMeta>,
+        meta: MetaCache,
+        walked: Map<String, List<RomScanner.ScannedFile>>,
         ledger: ScanLedger,
         now: Long,
         hashQueue: Channel<HashJob>,
@@ -677,28 +687,71 @@ class RomScanPipeline(
 
         val cacheKey = FuzzyMatch.makeCacheKey(file.nameWithoutExtension, rawPlatform)
 
-        // Unchanged since the last scan: the metadata is already on disk and the
-        // index rebuild will pick it up, so skip both hashing and the network.
-        // `fileMd5` is also required: metadata written before plain hashes
-        // existed would otherwise be cached forever, and a field added to the
-        // schema would stay empty on every library that had already been
-        // scanned once — the incremental skip is what would hide it.
-        val known = metaCache[cacheKey]
-        if (known != null && known.hash.isNotEmpty() && known.fileMd5.isNotEmpty() &&
+        val settled = ledger.canSkip(path, collection, size, modified, now)
+
+        // A match from a previous scan that is still standing: the file is the
+        // one it was, under the number it was matched under, and the ledger
+        // says which game it is. Neither read nor asked about.
+        //
+        // The game's metadata file has to be on disk, and to name a ROM that
+        // is here and is the game's: this file, or another the walk found
+        // that the ledger holds as a match of the same game, standing as
+        // this one is. The theme finds a game by the key that file carries,
+        // and one game has one file however many ROMs are of it, a sheet and
+        // its track, two dumps, two discs. When the ROM it names is deleted,
+        // or written over by another game or by a placeholder, or the file
+        // was written before metadata carried a key, the one left has to be
+        // identified again so that the file is written under its name;
+        // skipped on the ledger's word alone it would stay out of the
+        // index's keys for good. A file under the name is not enough: the
+        // key would go on leading to this game from a ROM that is another.
+        //
+        // Nothing is recorded: the entry stands as it is, game and all.
+        if (settled != null && settled.state == ScanLedger.State.MATCHED && settled.gameId > 0) {
+            val named = meta.keyOfGame[settled.gameId]
+            val vouched = named != null && (named == cacheKey || walked[named].orEmpty().any { other ->
+                val standing = ledger.canSkip(canonical(other.file), other.collection,
+                                              other.file.length(), other.file.lastModified(), now)
+                standing?.state == ScanLedger.State.MATCHED && standing.gameId == settled.gameId
+            })
+            if (vouched) {
+                ledger.count(path, settled)
+                resultQueue.send(ResultJob(
+                    HashJob(file, cacheKey, HashResult("", 0), collection, size, modified),
+                    cached = true))
+                return
+            }
+        }
+
+        // A match the ledger cannot vouch for, taken from the metadata file
+        // that describes this very file: its key, its size and its date. That
+        // is every match of a ledger written before a cached match kept its
+        // game, every match after the number of its collection has changed,
+        // and every match when the ledger is lost. Not read and not asked
+        // about, and written into the ledger with its game, so that the next
+        // scan needs the ledger alone.
+        //
+        // `fileMd5` was required here as well, so that a file written before
+        // the plain hashes existed would gain them. Nothing reads them from a
+        // metadata file, the scrapers hash for themselves, and a whole read
+        // of every ROM is not worth a field nobody asks for.
+        val known = meta.byKey[cacheKey]
+        if (known != null && known.hash.isNotEmpty() &&
             known.fileSize == size && known.lastModified == modified) {
-            ledger.record(path, collection, ScanLedger.State.MATCHED, size, modified, now)
+            ledger.record(path, collection, ScanLedger.State.MATCHED, size, modified, now,
+                          gameId = known.gameId)
             resultQueue.send(ResultJob(
                 HashJob(file, cacheKey, HashResult(known.hash, 0), collection, size, modified),
                 cached = true))
             return
         }
 
-        // A verdict from a previous scan that is still standing. The one that
-        // matters is NOT_FOUND: a library of mostly-unknown ROMs used to ask the
+        // Any other verdict from a previous scan that is still standing. The one
+        // that matters is NOT_FOUND: a library of mostly-unknown ROMs used to ask the
         // source about every one of them on every run, because a miss left no
         // trace to find. A refusal is never stored as a verdict, so this can only
-        // ever skip an answer the source actually gave.
-        val settled = ledger.canSkip(path, collection, size, modified, now)
+        // ever skip an answer the source actually gave. A match that got here
+        // has no metadata file to stand on, and is identified again below.
         if (settled != null && settled.state != ScanLedger.State.MATCHED) {
             ledger.count(path, settled)
             resultQueue.send(ResultJob(
@@ -708,7 +761,7 @@ class RomScanPipeline(
         }
 
         // The other placeholder: a line or two of text under a ROM's name.
-        // That takes reading it, so it comes after the two skips, which
+        // That takes reading it, so it comes after the three skips, which
         // leave it standing without a read, and only a file small enough to
         // be one is opened. What is refused here would otherwise go on as
         // the MD5 of a sentence. The words are of the file and not of a
@@ -877,17 +930,27 @@ class RomScanPipeline(
         return games.length()
     }
 
-    private fun preloadMetadataCache(): Map<String, CachedMeta> {
-        val map = HashMap<String, CachedMeta>()
+    /**
+     * What the metadata files on disk say, read once as a scan starts.
+     *
+     * [byKey] is by the key of the ROM a file describes, for a match that is
+     * taken from its file. [keyOfGame] is by game, for a match the ledger
+     * holds: the key its file names, or "" for a file written before they
+     * carried one. It has every game the index would list, with or without a
+     * `rom` block, since what it answers is whether the theme can find the
+     * game and under which name.
+     */
+    private class MetaCache(val byKey: Map<String, CachedMeta>, val keyOfGame: Map<Int, String>)
+
+    private fun preloadMetadataCache(): MetaCache {
+        val byKey = HashMap<String, CachedMeta>()
+        val keyOfGame = HashMap<Int, String>()
         val files = paths.metadata.listFiles { f ->
             f.isFile && f.name.endsWith(".json") && !f.name.startsWith("_")
-        } ?: return map
+        } ?: return MetaCache(byKey, keyOfGame)
         for (f in files) {
             try {
                 val j   = JSONObject(f.readText())
-                val rom = j.optJSONObject("rom") ?: continue
-                val key = j.optString("cacheKey")
-                if (key.isEmpty()) continue
                 // An id with no title is not a match, and the collector does not
                 // write one. Files written before it stopped are still on disk —
                 // 27 of 732 on the tablet — and the index drops every one of them,
@@ -895,12 +958,20 @@ class RomScanPipeline(
                 // from the network, for as long as the ROM stayed unchanged.
                 // Ignored here, they are looked up again; the file itself is left
                 // alone, for a real match to overwrite if one ever comes.
-                if (j.optInt("gameId") <= 0 || j.optString("title").isBlank()) continue
-                map[key] = CachedMeta(rom.optString("hash"), rom.optString("fileMd5"),
-                                      rom.optLong("fileSize"), rom.optLong("lastModified"))
+                val gameId = j.optInt("gameId")
+                if (gameId <= 0 || j.optString("title").isBlank()) continue
+                // The index's own third condition, so that a game is known here
+                // exactly when it is listed there.
+                if (j.optJSONObject("ra") == null) continue
+                val key = j.optString("cacheKey")
+                keyOfGame[gameId] = key
+                val rom = j.optJSONObject("rom") ?: continue
+                if (key.isEmpty()) continue
+                byKey[key] = CachedMeta(gameId, rom.optString("hash"),
+                                        rom.optLong("fileSize"), rom.optLong("lastModified"))
             } catch (_: Exception) {}
         }
-        return map
+        return MetaCache(byKey, keyOfGame)
     }
 
     private data class HashJob(
@@ -927,7 +998,7 @@ class RomScanPipeline(
          */
         val preRecorded: ScanLedger.State? = null
     )
-    private data class CachedMeta(val hash: String, val fileMd5: String,
+    private data class CachedMeta(val gameId: Int, val hash: String,
                                   val fileSize: Long, val lastModified: Long)
 
     companion object {

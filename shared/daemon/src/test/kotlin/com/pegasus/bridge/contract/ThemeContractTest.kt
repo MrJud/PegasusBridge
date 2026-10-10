@@ -1118,31 +1118,30 @@ class ThemeContractTest {
     }
 
     // The 732 files on the tablet were written before the plain hashes existed.
-    // Each is hashed and asked about once more, and comes back with every key.
-    @Test fun `a metadata file without fileMd5 is hashed again and rewritten whole`(): Unit = runBlocking {
+    // Each was hashed and asked about once more to gain the two keys, which
+    // nothing reads from a metadata file. Such a file is the match it says it
+    // is: its ROM is not read, and it keeps the shape it has until the ROM
+    // is another.
+    @Test fun `a metadata file without fileMd5 is a match and its rom is not read`(): Unit = runBlocking {
         val rom = rom("snes", "Super Mario World (USA).sfc", "hash-smw")
-        paths.metadata("1001").writeText(metadataJson(1001, "Super Mario World", "supermarioworld|snes",
+        val written = metadataJson(1001, "Super Mario World", "supermarioworld|snes",
             JSONObject().put("hash", "hash-smw")
-                .put("fileSize", rom.length()).put("lastModified", rom.lastModified())).toString(2))
+                .put("fileSize", rom.length()).put("lastModified", rom.lastModified())).toString(2)
+        paths.metadata("1001").writeText(written)
         val hashes = ContentHasher()
         val answers = MapLookup(catalogue)
 
         val first = scan(hashes, answers)
-        assertEquals(1, hashes.calls.get())
-        assertEquals(1, answers.calls.get())
-        assertEquals(1, first.newEntries)
-        assertEquals(0, first.cachedHits)
+        assertEquals(0, hashes.calls.get(), "the rom was read for a key nobody asks for")
+        assertEquals(0, answers.calls.get())
+        assertEquals(1, first.cachedHits)
+        assertEquals(0, first.newEntries)
+        assertEquals(written, paths.metadata("1001").readText(), "the file is left byte for byte as it was")
 
-        val sample = JSONObject(fixture("metadata-sample.json"))
-        val meta = JSONObject(paths.metadata("1001").readText())
-        assertEquals(kinds(sample), kinds(meta))
-        assertEquals(kinds(sample.getJSONObject("rom")), kinds(meta.getJSONObject("rom")))
-        assertEquals("md5-hash-smw", meta.getJSONObject("rom").getString("fileMd5"))
-
-        val second = scan(hashes, answers)
-        assertEquals(1, hashes.calls.get(), "the rewritten file must be taken as cached")
-        assertEquals(1, second.cachedHits)
-        assertEquals(0, second.newEntries)
+        val index = JSONObject(paths.discoveryIndex.readText())
+        assertEquals(1, index.getInt("count"))
+        assertEquals(1001, index.getJSONArray("games").getJSONObject(0).getInt("gameId"))
+        assertEquals(setOf("supermarioworld|snes"), index.getJSONObject("byKey").keySet())
     }
 
     // An id with no title, as 27 of the tablet's files have. Not a match: the

@@ -282,27 +282,297 @@ class RomScanPipelineTest {
         assertEquals(1, s2.indexed, "the index must still list it")
     }
 
-    // Metadata written before the plain hashes existed carries no fileMd5. The
-    // incremental skip must not preserve that gap forever, or a library already
-    // scanned once would never gain the field a scraper needs.
-    @Test fun `metadata without a plain hash is rescanned once`(): Unit = runBlocking {
-        rom("nes", "Super Mario Bros. (World).nes", "hash-smb")
+    // Metadata written before the plain hashes existed carries no fileMd5, and
+    // a scan used to read such a ROM whole again to fill the field in. Nothing
+    // reads the field from a metadata file, so the file is the match it says
+    // it is, here with no ledger beside it to say so first.
+    @Test fun `metadata without a plain hash is a match all the same and its rom is not read`(): Unit = runBlocking {
+        val f = rom("nes", "Super Mario Bros. (World).nes", "hash-smb")
         pipeline(ContentHasher(), MapLookup(catalogue)).scan(listOf(romRoot.absolutePath))
 
-        // Strip the field, imitating a file from the previous schema.
-        val meta = paths.metadata.listFiles { f -> !f.name.startsWith("_") }!!.first()
+        // Strip the fields, imitating a file from the previous schema.
+        val meta = paths.metadata("1446")
         val j = JSONObject(meta.readText())
-        j.getJSONObject("rom").remove("fileMd5")
+        j.getJSONObject("rom").apply { remove("fileMd5"); remove("fileCrc32") }
         meta.writeText(j.toString(2))
+        assertTrue(File(paths.cache, ScanLedger.FILE_NAME).delete())
+
+        val h2 = ContentHasher(); val l2 = MapLookup(catalogue)
+        val s2 = pipeline(h2, l2).scan(listOf(romRoot.absolutePath))
+
+        assertEquals(0, h2.calls.get(), "the rom was read for a field nobody asks for")
+        assertEquals(0, l2.calls.get())
+        assertEquals(1, s2.cachedHits)
+        assertFalse(JSONObject(meta.readText()).getJSONObject("rom").has("fileMd5"), "the file was rewritten")
+        assertEquals("MATCHED", ledgerEntry(f).getString("state"))
+        assertEquals(1446, ledgerEntry(f).getInt("gameId"), "the match was adopted without its game")
+    }
+
+    /** Two hashes of each of two games, as two dumps of one game have. */
+    private val twins = mapOf(
+        "hash-ctra"           to GameMetadata(1447, "Contra", "NES", "/Images/2.png", 40),
+        "hash-ctra-revision"  to GameMetadata(1447, "Contra", "NES", "/Images/2.png", 40),
+        "hash-lantern-sheet"  to GameMetadata(3001, "Lantern Keep", "PlayStation", "/Images/3.png", 30),
+        "hash-lantern-track-of-another-length" to GameMetadata(3001, "Lantern Keep", "PlayStation", "/Images/3.png", 30))
+
+    // One game has one metadata file, and that file describes one ROM: the
+    // last one written. The other file of the game, a second dump or the
+    // track beside its sheet, was not described by it, so it was hashed and
+    // asked about at every scan and counted as new each time. The ledger
+    // holds a match for each file, and each is skipped on that.
+    @Test fun `two roms of one game are both skipped on a rescan`(): Unit = runBlocking {
+        // Two dumps under two titles, and so two keys.
+        rom("nes", "Contra (USA).nes", "hash-ctra")
+        rom("nes", "Gryzor (Europe).nes", "hash-ctra-revision")
+        // A sheet and its track under one name, and so one key.
+        rom("psx", "Lantern Keep (USA).cue", "hash-lantern-sheet")
+        rom("psx", "Lantern Keep (USA).bin", "hash-lantern-track-of-another-length")
+        assertEquals(3, romRoot.walkTopDown().filter { it.isFile }
+            .map { com.pegasus.bridge.core.FuzzyMatch.makeCacheKey(it.nameWithoutExtension, it.parentFile.name) }
+            .toSet().size, "the four files were to have three keys")
+
+        val s1 = pipeline(ContentHasher(), MapLookup(twins)).scan(listOf(romRoot.absolutePath))
+        assertEquals(4, s1.newEntries)
+        assertEquals(2, s1.indexed)
+
+        val h2 = ContentHasher(); val l2 = MapLookup(twins)
+        val s2 = pipeline(h2, l2).scan(listOf(romRoot.absolutePath))
+
+        assertEquals(0, h2.calls.get(), "a second file of a game was read again")
+        assertEquals(0, l2.calls.get(), "a second file of a game was asked about again")
+        assertEquals(counts(new = 0, cached = 4, skipped = 0, unmatched = 0, incompatible = 0,
+                            hashFailed = 0, failedLookups = 0), s2.counts())
+        assertEquals(mapOf(ScanLedger.State.MATCHED to 4), s2.states)
+        assertEquals(2, s2.indexed)
+    }
+
+    // The theme finds a game by the key its metadata file carries, which is
+    // the name of one of its ROMs. When that ROM is deleted, the one left
+    // must not go on being skipped on the ledger's word: the file would name
+    // a ROM that is not there for good. It is identified once more, which
+    // writes the file under its own name.
+    @Test fun `a match whose game's file names a rom that is gone is identified again`(): Unit = runBlocking {
+        val dumps = listOf(rom("nes", "Contra (USA).nes", "hash-ctra"),
+                           rom("nes", "Gryzor (Europe).nes", "hash-ctra-revision"))
+        fun key(f: File) = com.pegasus.bridge.core.FuzzyMatch.makeCacheKey(f.nameWithoutExtension, "nes")
+        pipeline(ContentHasher(), MapLookup(twins)).scan(listOf(romRoot.absolutePath))
+
+        val meta = paths.metadata("1447")
+        val named = dumps.single { key(it) == JSONObject(meta.readText()).getString("cacheKey") }
+        val survivor = dumps.single { it != named }
+        assertTrue(named.delete())
+
+        val h2 = ContentHasher(); val l2 = MapLookup(twins)
+        val s2 = pipeline(h2, l2).scan(listOf(romRoot.absolutePath))
+
+        assertEquals(1, h2.calls.get(), "the rom left was skipped though its game's file names another")
+        assertEquals(1, l2.calls.get())
+        assertEquals(1, s2.newEntries)
+        assertEquals(key(survivor), JSONObject(meta.readText()).getString("cacheKey"))
+        val byKey = JSONObject(paths.discoveryIndex.readText()).getJSONObject("byKey")
+        assertEquals(setOf(key(survivor)), byKey.keySet())
+
+        val h3 = ContentHasher()
+        val s3 = pipeline(h3, NeverAsked()).scan(listOf(romRoot.absolutePath))
+        assertEquals(0, h3.calls.get())
+        assertEquals(1, s3.cachedHits)
+    }
+
+    // A file under the name is not enough: the ROM the metadata file names
+    // has to be the game's still. Here it is written over by another game.
+    // Skipped because some file answers to that name, the ROM that is left
+    // stayed out of the index's keys, and the one key was claimed there by
+    // two games, the old one and the one the file now is.
+    @Test fun `a match whose game's file names a rom that is another game now is identified again`(): Unit = runBlocking {
+        val dumps = listOf(rom("nes", "Contra (USA).nes", "hash-ctra"),
+                           rom("nes", "Gryzor (Europe).nes", "hash-ctra-revision"))
+        fun key(f: File) = com.pegasus.bridge.core.FuzzyMatch.makeCacheKey(f.nameWithoutExtension, "nes")
+        val known = twins + catalogue
+        pipeline(ContentHasher(), MapLookup(known)).scan(listOf(romRoot.absolutePath))
+
+        val meta = paths.metadata("1447")
+        val named = dumps.single { key(it) == JSONObject(meta.readText()).getString("cacheKey") }
+        val left = dumps.single { it != named }
+        named.writeText(romText("hash-smb"))
+
+        val h2 = ContentHasher(); val l2 = MapLookup(known)
+        val s2 = pipeline(h2, l2).scan(listOf(romRoot.absolutePath))
+
+        assertEquals(2, h2.calls.get(), "the rom left was skipped though its game's file names what is another game now")
+        assertEquals(2, s2.newEntries)
+        assertEquals(key(left), JSONObject(meta.readText()).getString("cacheKey"))
+        val byKey = JSONObject(paths.discoveryIndex.readText()).getJSONObject("byKey")
+        assertEquals(mapOf(key(named) to 1446, key(left) to 1447),
+                     byKey.keySet().associateWith { byKey.getJSONObject(it).getInt("gameId") })
+
+        val h3 = ContentHasher()
+        val s3 = pipeline(h3, NeverAsked()).scan(listOf(romRoot.absolutePath))
+        assertEquals(0, h3.calls.get())
+        assertEquals(2, s3.cachedHits)
+    }
+
+    // The same when what took its place is no game at all: an empty file
+    // under the ROM's name, as a library keeps for a game it does not hold.
+    @Test fun `a match whose game's file names what is a placeholder now is identified again`(): Unit = runBlocking {
+        val dumps = listOf(rom("nes", "Contra (USA).nes", "hash-ctra"),
+                           rom("nes", "Gryzor (Europe).nes", "hash-ctra-revision"))
+        fun key(f: File) = com.pegasus.bridge.core.FuzzyMatch.makeCacheKey(f.nameWithoutExtension, "nes")
+        pipeline(ContentHasher(), MapLookup(twins)).scan(listOf(romRoot.absolutePath))
+
+        val meta = paths.metadata("1447")
+        val named = dumps.single { key(it) == JSONObject(meta.readText()).getString("cacheKey") }
+        val left = dumps.single { it != named }
+        named.writeText("")
+
+        val h2 = ContentHasher(); val l2 = MapLookup(twins)
+        val s2 = pipeline(h2, l2).scan(listOf(romRoot.absolutePath))
+
+        assertEquals(1, h2.calls.get(), "the rom left was skipped though its game's file names a placeholder")
+        assertEquals(counts(new = 1, cached = 0, skipped = 1, unmatched = 0, incompatible = 0,
+                            hashFailed = 0, failedLookups = 0), s2.counts())
+        assertEquals(key(left), JSONObject(meta.readText()).getString("cacheKey"))
+        assertEquals(setOf(key(left)),
+                     JSONObject(paths.discoveryIndex.readText()).getJSONObject("byKey").keySet())
+    }
+
+    // And when the ROM it names stands in the ledger as a match, but of
+    // another game. That is what a scan of one folder leaves behind when the
+    // two dumps are kept in two: the one written over is found to be another
+    // game, and the one in the folder that was not scanned is still held
+    // for the first, whose file still names the other.
+    @Test fun `a match whose game's file names a rom the ledger holds for another game is identified again`(): Unit = runBlocking {
+        val elsewhere = Files.createTempDirectory("hasher-roms-2").toFile()
+        try {
+            val dumps = listOf(
+                rom("nes", "Contra (USA).nes", "hash-ctra"),
+                File(File(elsewhere, "nes").apply { mkdirs() }, "Gryzor (Europe).nes")
+                    .apply { writeText(romText("hash-ctra-revision")) })
+            fun key(f: File) = com.pegasus.bridge.core.FuzzyMatch.makeCacheKey(f.nameWithoutExtension, "nes")
+            val both = listOf(romRoot.absolutePath, elsewhere.absolutePath)
+            val known = twins + catalogue
+            pipeline(ContentHasher(), MapLookup(known)).scan(both)
+
+            val meta = paths.metadata("1447")
+            val named = dumps.single { key(it) == JSONObject(meta.readText()).getString("cacheKey") }
+            val left = dumps.single { it != named }
+            named.writeText(romText("hash-smb"))
+            pipeline(ContentHasher(), MapLookup(known)).scan(listOf(named.parentFile.parentFile.absolutePath))
+            assertEquals(1446, ledgerEntry(named).getInt("gameId"))
+            assertEquals(1447, ledgerEntry(left).getInt("gameId"))
+            assertEquals(key(named), JSONObject(meta.readText()).getString("cacheKey"))
+
+            val h3 = ContentHasher(); val l3 = MapLookup(known)
+            val s3 = pipeline(h3, l3).scan(both)
+
+            assertEquals(1, h3.calls.get(), "the rom left was skipped though its game's file names a rom of another game")
+            assertEquals(counts(new = 1, cached = 1, skipped = 0, unmatched = 0, incompatible = 0,
+                                hashFailed = 0, failedLookups = 0), s3.counts())
+            val byKey = JSONObject(paths.discoveryIndex.readText()).getJSONObject("byKey")
+            assertEquals(mapOf(key(named) to 1446, key(left) to 1447),
+                         byKey.keySet().associateWith { byKey.getJSONObject(it).getInt("gameId") })
+        } finally {
+            elsewhere.deleteRecursively()
+        }
+    }
+
+    // The ledgers on devices today: a build that found a match through its
+    // metadata wrote the entry again without the game, and some entries are
+    // still under a number no build gives any more. Neither can say which
+    // metadata file is its own. Each match is taken from the file that
+    // describes its ROM, and leaves the scan as the ledger now keeps one.
+    @Test fun `a ledger written before it kept the game keeps every match without a read`(): Unit = runBlocking {
+        val old = rom("nes", "Super Mario Bros. (World).nes", "hash-smb")
+        val recent = rom("nes", "Contra (USA).nes", "hash-ctra")
+        pipeline(ContentHasher(), MapLookup(catalogue)).scan(listOf(romRoot.absolutePath))
+        val today = ledgerEntry(recent).getInt("algorithmVersion")
+
+        val ledgerFile = File(paths.cache, ScanLedger.FILE_NAME)
+        val ledger = JSONObject(ledgerFile.readText())
+        for (f in listOf(old, recent)) ledger.getJSONObject("entries").getJSONObject(f.canonicalPath).remove("gameId")
+        ledger.getJSONObject("entries").getJSONObject(old.canonicalPath).put("algorithmVersion", 4)
+        ledgerFile.writeText(ledger.toString())
 
         val h2 = ContentHasher()
-        val s2 = pipeline(h2, MapLookup(catalogue)).scan(listOf(romRoot.absolutePath))
+        val s2 = pipeline(h2, NeverAsked()).scan(listOf(romRoot.absolutePath))
 
-        assertEquals(0, s2.cachedHits, "stale-schema metadata must not count as a cache hit")
-        assertEquals(1, h2.calls.get(), "the file must be hashed again to backfill")
-        val after = JSONObject(meta.readText()).getJSONObject("rom")
-        assertEquals("md5-hash-smb", after.getString("fileMd5"))
-        assertEquals("crc-hash-smb", after.getString("fileCrc32"))
+        assertEquals(0, h2.calls.get(), "a match was read again")
+        assertEquals(2, s2.cachedHits)
+        assertEquals(listOf(1446, 1447), listOf(old, recent).map { ledgerEntry(it).optInt("gameId") })
+        assertEquals(listOf(today, today), listOf(old, recent).map { ledgerEntry(it).getInt("algorithmVersion") })
+        assertEquals(listOf("MATCHED", "MATCHED"), listOf(old, recent).map { ledgerEntry(it).getString("state") })
+    }
+
+    // The ledger says a file matched a game; the metadata file is what the
+    // theme shows of it. With the file gone the match is worth nothing to
+    // anybody, and skipping the ROM would keep the game out of the list.
+    @Test fun `a match whose metadata file is gone is identified again`(): Unit = runBlocking {
+        rom("nes", "Super Mario Bros. (World).nes", "hash-smb")
+        pipeline(ContentHasher(), MapLookup(catalogue)).scan(listOf(romRoot.absolutePath))
+        assertTrue(paths.metadata("1446").delete())
+
+        val h2 = ContentHasher(); val l2 = MapLookup(catalogue)
+        val s2 = pipeline(h2, l2).scan(listOf(romRoot.absolutePath))
+
+        assertEquals(1, h2.calls.get())
+        assertEquals(1, l2.calls.get())
+        assertEquals(1, s2.newEntries)
+        assertEquals(0, s2.cachedHits)
+        assertEquals(1, s2.indexed, "the game is back in the list")
+        assertTrue(paths.metadata("1446").isFile)
+    }
+
+    // What this is all for: with nothing changed, and every verdict one that
+    // is kept, a second scan opens no ROM and makes no request, whatever the
+    // first one found each file to be.
+    @Test fun `a rescan of a library that has not changed hands the hasher nothing and asks nothing`(): Unit = runBlocking {
+        rom("nes", "Match.nes", "hash-match-1")
+        rom("nes", "Miss.nes", "hash-miss")
+        rom("nes", "Metroid (Europe) (Virtual Console).nes", "hash-virtual")
+        stub("nes", "Nothing (World).nes", "")
+        stub("nes", "Not Here Yet (World).nes")
+        rom("switch", "Game.nes", "hash-switch")
+        rom("wii", "Game.wbfs", "never read")
+        zip("nes", "Two Games.zip", "first.nes" to "hash-first", "second.nes" to "hash-second")
+        zip("nes", "Patch.zip", "Patch.ips" to "x".repeat(64), "readme.txt" to "x")
+        zip("psx", "Disc.zip", "Disc.ccd" to "[CloneCD]", "Disc.img" to "x".repeat(4096))
+        val tmp = Files.createTempDirectory("hasher-tmp").toFile()
+        val states = mapOf(
+            ScanLedger.State.MATCHED to 1, ScanLedger.State.NOT_FOUND to 1,
+            ScanLedger.State.KNOWN_UNSUPPORTED to 1, ScanLedger.State.PLACEHOLDER to 2,
+            ScanLedger.State.UNSUPPORTED to 1, ScanLedger.State.UNSUPPORTED_FORMAT to 1,
+            ScanLedger.State.AMBIGUOUS_ARCHIVE to 1, ScanLedger.State.NO_PLAYABLE_ENTRY to 1,
+            ScanLedger.State.UNHASHABLE to 1)
+        try {
+            val l1 = MixedLookup()
+            val s1 = RomScanPipeline(paths, ArchiveAwareHasher(ContentHasher(), tmp), l1, throttleMs = { 0L })
+                .scan(listOf(romRoot.absolutePath))
+            assertEquals(counts(new = 1, cached = 0, skipped = 3, unmatched = 1, incompatible = 1,
+                                hashFailed = 4, failedLookups = 0), s1.counts())
+            assertEquals(states, s1.states)
+            assertEquals(3, l1.asked.size, "asked: ${l1.asked}")
+
+            val h2 = ContentHasher()
+            // Counted where the archive hasher is asked as well, so that an
+            // archive opened only to be listed shows too.
+            val opened = AtomicInteger()
+            val archives = ArchiveAwareHasher(h2, tmp)
+            val counting = object : RomHasher by archives {
+                override fun hashDetailed(path: String, collection: CollectionRef): HashOutcome {
+                    opened.incrementAndGet()
+                    return archives.hashDetailed(path, collection)
+                }
+            }
+            val s2 = RomScanPipeline(paths, counting, NeverAsked(), throttleMs = { 0L })
+                .scan(listOf(romRoot.absolutePath))
+
+            assertEquals(0, opened.get(), "a file was handed to the hasher")
+            assertEquals(0, h2.calls.get())
+            assertEquals(counts(new = 0, cached = 1, skipped = 3, unmatched = 1, incompatible = 1,
+                                hashFailed = 4, failedLookups = 0), s2.counts())
+            assertEquals(states, s2.states)
+        } finally {
+            tmp.deleteRecursively()
+        }
     }
 
     // Metadata files written before the collector refused a blank title are still
@@ -350,6 +620,32 @@ class RomScanPipelineTest {
         assertEquals(2, s3.indexed)
         assertEquals("Super Mario Bros.", JSONObject(paths.metadata("1446").readText()).getString("title"))
         assertEquals("Contra", JSONObject(paths.metadata("1447").readText()).getString("title"))
+    }
+
+    // The index lists a game only when its file has an `ra` object. A file
+    // without one, trusted as a match, kept its ROM away from the hasher and
+    // out of the list for as long as the ROM stayed the same. A scan knows a
+    // game exactly when the index would list it: by the ledger, and with the
+    // ledger gone by the file alone, the ROM is identified again and its
+    // file written whole.
+    @Test fun `metadata the index would not list is looked up again`(): Unit = runBlocking {
+        rom("nes", "Contra (USA).nes", "hash-ctra")
+        pipeline(ContentHasher(), MapLookup(catalogue)).scan(listOf(romRoot.absolutePath))
+        val meta = paths.metadata("1447")
+
+        for (ledgerKept in listOf(true, false)) {
+            meta.writeText(JSONObject(meta.readText()).apply { remove("ra") }.toString(2))
+            if (!ledgerKept) assertTrue(File(paths.cache, ScanLedger.FILE_NAME).delete())
+
+            val h = ContentHasher(); val l = MapLookup(catalogue)
+            val s = pipeline(h, l).scan(listOf(romRoot.absolutePath))
+
+            assertEquals(1, h.calls.get(), "with the ledger kept: $ledgerKept")
+            assertEquals(1, l.calls.get())
+            assertEquals(1, s.newEntries)
+            assertEquals(1, s.indexed, "the game is in the list again")
+            assertTrue(JSONObject(meta.readText()).has("ra"))
+        }
     }
 
     @Test fun `an edited file is rescanned`(): Unit = runBlocking {

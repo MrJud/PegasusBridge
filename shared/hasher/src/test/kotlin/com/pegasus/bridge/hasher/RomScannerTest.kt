@@ -116,6 +116,75 @@ class RomScannerTest {
         assertEquals(listOf("Declared.jud", "game.nes"), overridden.map { it.file.name }.sorted())
     }
 
+    // ── Markdown, or a Mega Drive cartridge ─────────────────────────────────
+
+    // `.md` was in the built-in list, so every README.md under a library was
+    // a game: the ones of a BIOS pack, of a folder of mods, of a tool kept
+    // beside the discs it patches. It is a ROM where the collection says so,
+    // by listing it or by being one that holds Mega Drive cartridges, and
+    // the second is asked of the console table by both of the collection's
+    // names, as a file's console is.
+    @Test fun `md is a ROM only in a Mega Drive collection or where declared`() {
+        fun collection(folder: String, name: String, shortName: String, extensions: String) =
+            touch("$folder/metadata.pegasus.txt")
+                .writeText("collection: $name\nshortname: $shortName\nextensions: $extensions\n")
+
+        // Listed by the collection, and found in a game's folder under it too.
+        collection("library/megadrive", "Mega Drive", "megadrive", "md, gen")
+        touch("library/megadrive/Lantern Keep (USA).md")
+        touch("library/megadrive/Other Game (USA)/Other Game (USA).md")
+        // Not listed, in collections of the Mega Drive's family: a folder
+        // named for an add-on whose collection calls itself megadrive, and a
+        // folder megadrive whose collection goes by a name the table has
+        // never heard of.
+        collection("library/sega32x", "Sega 32X", "megadrive", "32x")
+        touch("library/sega32x/Third Game (USA).md")
+        collection("library/genesis", "Sixteen Bits", "sixteenbits", "gen")
+        touch("library/genesis/Fourth Game (USA).md")
+        // Listed, by a collection of no console anybody knows.
+        collection("library/fanmade", "Fan-made", "fanmade", "md")
+        touch("library/fanmade/Fifth Game.md")
+        // No metafile at all: the folder is the collection its name says.
+        touch("loose/megadrive/Sixth Game (USA).md")
+
+        // Everywhere else it is a readme, beside files that are found.
+        collection("library/switch", "Nintendo Switch", "switch", "nsp, xci")
+        touch("library/switch/Mods/README.md")
+        touch("library/switch/Mods/mod.zip")
+        collection("library/psx", "PlayStation", "psx", "cue, bin")
+        touch("library/psx/Some Game/README.md")
+        touch("library/psx/Some Game/Some Game.cue")
+        // A collection of the 8-bit consoles has no Mega Drive in it, and a
+        // folder named for an add-on is, by itself, of that add-on alone.
+        collection("library/gamegear", "Sega 8-bit", "mastersystem", "gg, sms")
+        touch("library/gamegear/README.md")
+        touch("loose/segacd/README.md")
+        // With no metafile above it a folder under megadrive is not megadrive.
+        touch("loose/megadrive/Docs/README.md")
+        touch("loose/tools/README.md")
+
+        val expected = listOf(
+            "library/fanmade/Fifth Game.md",
+            "library/genesis/Fourth Game (USA).md",
+            "library/megadrive/Lantern Keep (USA).md",
+            "library/megadrive/Other Game (USA)/Other Game (USA).md",
+            "library/psx/Some Game/Some Game.cue",
+            "library/sega32x/Third Game (USA).md",
+            "library/switch/Mods/mod.zip",
+            "loose/megadrive/Sixth Game (USA).md")
+
+        val found = RomScanner.scanWithCollections(listOf(root.path), CollectionResolver())
+        assertEquals(expected, found.map { it.file.relativeTo(root).invariantSeparatorsPath }.sorted())
+
+        // An answer given in place of the collection's is all there is, for
+        // `md` as for the rest; and the walk that knows no collections has
+        // no `md` unless its caller says so.
+        val overridden = RomScanner.scanWithCollections(listOf(root.path), CollectionResolver()) { RomScanner.ROM_EXTENSIONS }
+        assertEquals(listOf("Some Game.cue", "mod.zip"), overridden.map { it.file.name }.sorted())
+        assertEquals(listOf("Some Game.cue", "mod.zip"), scan())
+        assertTrue("md" !in RomScanner.ROM_EXTENSIONS)
+    }
+
     // ── The same tree reached more than once ────────────────────────────────
 
     @Test fun `repeated roots do not repeat files`() {

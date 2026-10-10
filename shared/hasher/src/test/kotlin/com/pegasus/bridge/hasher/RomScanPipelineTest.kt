@@ -681,6 +681,10 @@ class RomScanPipelineTest {
         collection("bbcmicro", "BBC Micro", "beeb", extensions = "ssd")
         collection("chailove", "ChaiLove", "chailove", extensions = "chailove")
         collection("n3ds", "Nintendo 3DS", "3ds", extensions = "cci")
+        // A `.md` is listed only where its collection is of the Mega Drive
+        // or says it is a ROM. This one says so, wrongly: the scan finds the
+        // file, and the table refuses it all the same.
+        collection("psx", "PlayStation", "psx", extensions = "cue, md")
         val unsupported = mapOf(
             rom("ps3/Some Game/PS3_GAME/USRDIR", "EBOOT.BIN", "never read")
                 to "RetroAchievements has no console for ps3",
@@ -698,6 +702,9 @@ class RomScanPipelineTest {
             rom("arcade", "chip.bin", "never read") to "an arcade set is a .zip or a .7z, and this is a .bin",
             rom("psx", "README.md", "never read") to "a .md file in this collection is not a Mega Drive cartridge")
         val hashed = rom("adam", "x.bin", "hash-adam")
+        // And where no collection says so a readme is not a file of the
+        // scan at all: it is in no count below and nothing is kept for it.
+        val readme = rom("ps2", "README.md", "never read")
 
         val expected = counts(new = 0, cached = 0, skipped = 7, unmatched = 1, incompatible = 0,
                               hashFailed = 5, failedLookups = 0)
@@ -723,6 +730,8 @@ class RomScanPipelineTest {
                          ledgerEntry(file).let { it.getString("state") to it.getString("detail") }, file.path)
         }
         assertEquals("NOT_FOUND", ledgerEntry(hashed).getString("state"))
+        assertFalse(JSONObject(File(paths.cache, ScanLedger.FILE_NAME).readText()).getJSONObject("entries")
+                        .has(readme.canonicalPath), "a readme was kept in the ledger")
 
         // And again on a rescan, each file in the count it was in, with
         // nothing read and nothing asked: the miss is found standing.
@@ -805,7 +814,9 @@ class RomScanPipelineTest {
     @Test fun `a folder that narrows the console keeps its collection's family`(): Unit = runBlocking {
         collection("sega32x", "Sega 16-bit and 32X", "megadrive", extensions = "32x, bin, md")
         collection("segacd", "Sega 16-bit and CD", "megadrive", extensions = "cue, bin, md")
-        collection("gamegear", "Sega 8-bit", "mastersystem")
+        // It lists `md` as the other two do, or its readme would not be a
+        // file of the scan to begin with.
+        collection("gamegear", "Sega 8-bit", "mastersystem", extensions = "gg, sms, md")
         rom("sega32x", "Lantern Keep (USA).md", "hash-lantern")
         val second = rom("segacd", "Other Game (USA).md", "hash-other")
         val readme = rom("gamegear", "README.md", "never read")

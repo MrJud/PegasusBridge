@@ -1,6 +1,7 @@
 package com.pegasus.bridge.hasher
 
 import com.pegasus.bridge.core.BridgeLog
+import com.pegasus.bridge.core.RcConsoles
 import java.io.File
 
 object RomScanner {
@@ -24,10 +25,16 @@ object RomScanner {
      * each scanned as **zero files**, so no hash was taken and no lookup was
      * ever made — the failure this comment already predicted, found on a real
      * device rather than reasoned about.
+     *
+     * `md` is not here, and it was. It is a Mega Drive cartridge and it is
+     * Markdown, and a list cannot tell which: counted everywhere, it made a
+     * game of the README.md of every tool, mod and BIOS pack kept under a
+     * library, each read and asked about. Where it counts is a question for
+     * the file's collection ([countsMarkdownAsCartridge]).
      */
     val ROM_EXTENSIONS = setOf(
         "bin", "iso", "gba", "gbc", "gb", "nes", "sfc", "smc",
-        "md", "gen", "smd", "n64", "z64", "v64", "nds", "3ds",
+        "gen", "smd", "n64", "z64", "v64", "nds", "3ds",
         "psp", "a26", "a78", "lnx", "pce", "sgx", "ws", "wsc",
         "32x", "gg", "sms", "sg", "col", "ngp", "ngc", "vb",
         "fig", "swc", "zip", "7z", "chd", "cso", "pbp", "cue",
@@ -59,6 +66,11 @@ object RomScanner {
      * counted in the collection's own folder and nowhere below, when each
      * shell read the metafile of the one folder it was asked about.
      *
+     * `md` is the one extension the collection has to answer for, since the
+     * built-in set no longer has it: it counts where the collection lists it,
+     * as any extension does, and where the collection is one that holds Mega
+     * Drive cartridges, listed or not.
+     *
      * [extensionsOverride], when given, answers for a folder in place of all
      * that. Nothing but a test gives one.
      *
@@ -84,12 +96,37 @@ object RomScanner {
                     .getOrElse { CollectionRef.inferred(dir.name) }
                 val allowed = if (extensionsOverride != null)
                                   runCatching { extensionsOverride(dir) }.getOrDefault(ROM_EXTENSIONS)
-                              else ROM_EXTENSIONS + collection.declaredExtensions
+                              else ROM_EXTENSIONS + collection.declaredExtensions +
+                                   (if (countsMarkdownAsCartridge(collection)) MEGA_DRIVE_ONLY else emptySet())
                 Folder(collection, allowed)
             },
             allowed = { it.allowed }
         ).map { (file, folder) -> ScannedFile(file, folder.collection) }
     }
+
+    /**
+     * Whether a `.md` in [collection] is a cartridge without the collection
+     * saying so: when the console table knows the collection as one whose
+     * files may be of the Mega Drive, console 1. That is `megadrive` and
+     * `genesis` under either name, with a metafile or with none, and a folder
+     * `sega32x` or `segacd` whose collection calls itself `megadrive`. A
+     * collection the table knows by neither of its names is not one,
+     * whatever it holds: it has to list the extension, as it has to list
+     * any other the built-in set lacks.
+     *
+     * The row is the one a scan goes on to plan the file by
+     * ([ConsoleChoice.choose]), which refuses a `.md` outside this same
+     * family. So a file let in here is never one refused there for being
+     * Markdown.
+     */
+    private fun countsMarkdownAsCartridge(collection: CollectionRef): Boolean {
+        val row = RcConsoles.resolve(collection.shortName, collection.dirName)
+        return row is RcConsoles.Hashable && MEGA_DRIVE in row.family
+    }
+
+    /** RC_CONSOLE_MEGA_DRIVE. */
+    private const val MEGA_DRIVE = 1
+    private val MEGA_DRIVE_ONLY = setOf("md")
 
     /**
      * Every ROM under [dirs], by a rule the caller gives and with no word of

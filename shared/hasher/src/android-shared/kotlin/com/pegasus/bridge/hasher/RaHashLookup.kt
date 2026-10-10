@@ -36,6 +36,18 @@ interface RaHashLookup {
     suspend fun lookup(hash: String): LookupOutcome
 
     /**
+     * The same, for a caller that knows which consoles the hash may be of:
+     * [consoles] are RetroAchievements' ids, the one the file was hashed as
+     * first, then the others its hash may be filed under, in the order to
+     * try them.
+     *
+     * A lookup that asks by the hash alone has no use for them, and this is
+     * what it inherits. One that wraps another has to override both, or
+     * what it passes on is the question without the consoles.
+     */
+    suspend fun lookup(hash: String, consoles: List<Int>): LookupOutcome = lookup(hash)
+
+    /**
      * Lookups in a row that ended in [LookupOutcome.Failed], so a caller can
      * stop a doomed scan. Counted once per lookup, however many requests it
      * took, and cleared by any answer except [LookupOutcome.IdOnly], which

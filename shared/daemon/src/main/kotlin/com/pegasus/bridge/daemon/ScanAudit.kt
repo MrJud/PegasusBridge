@@ -591,7 +591,10 @@ object ScanAudit {
     /**
      * Remembers every hash [inner] was asked about, and is otherwise [inner]:
      * the three things a scan stops on are passed through, so that with
-     * `--lookup` an audit ends where a daemon's scan would.
+     * `--lookup` an audit ends where a daemon's scan would. The consoles a
+     * scan gives with a hash are passed on as given, for the same reason:
+     * left to the interface's own way, [inner] would be asked by the hash
+     * alone and the audit would be of another scan.
      */
     internal class CountingLookup(private val inner: RaHashLookup) : RaHashLookup {
         private val askedAbout = ConcurrentHashMap<String, AtomicInteger>()
@@ -599,6 +602,11 @@ object ScanAudit {
         override suspend fun lookup(hash: String): LookupOutcome {
             askedAbout.computeIfAbsent(hash) { AtomicInteger() }.incrementAndGet()
             return inner.lookup(hash)
+        }
+
+        override suspend fun lookup(hash: String, consoles: List<Int>): LookupOutcome {
+            askedAbout.computeIfAbsent(hash) { AtomicInteger() }.incrementAndGet()
+            return inner.lookup(hash, consoles)
         }
 
         override val consecutiveFailures: Int get() = inner.consecutiveFailures

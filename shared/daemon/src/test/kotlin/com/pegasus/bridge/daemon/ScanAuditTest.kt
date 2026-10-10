@@ -523,6 +523,35 @@ class ScanAuditTest {
         assertEquals(listOf(3, 2), listOf(quiet.calls, quiet.distinct))
     }
 
+    // An audit's scan is a daemon's with this lookup around the real one,
+    // and a scan gives the consoles with the hash. Passed on by the hash
+    // alone, the lookup inside would be asked another question than a
+    // daemon's is, and the table would be of a scan nobody runs. The scan is
+    // built as the audit builds it; the counts are what `# lookups` is
+    // written from.
+    @Test fun `an audit's lookup is told the consoles as a daemon's is`() {
+        rom("snes/Game.sfc", "hash-game")
+        val told = ConcurrentLinkedQueue<Pair<String, List<Int>>>()
+        val inside = object : RaHashLookup {
+            override suspend fun lookup(hash: String): LookupOutcome = error("asked by the hash alone")
+            override suspend fun lookup(hash: String, consoles: List<Int>): LookupOutcome {
+                told += hash to consoles
+                return LookupOutcome.NotFound
+            }
+        }
+        val counting = ScanAudit.CountingLookup(inside)
+        val paths = BridgePaths(File(root, "scan-data")).apply { ensureAll() }
+
+        val s = runBlocking {
+            BridgeDaemon.buildScanPipeline(paths, hasher, counting, 1).scan(listOf(roms.absolutePath))
+        }
+
+        assertEquals(listOf("hash-game" to listOf(3, 4, 6)), told.toList())
+        assertEquals("1 for 1 hashes", "${counting.calls} for ${counting.distinct} hashes")
+        assertTrue(counting.asked("hash-game"))
+        assertEquals(1, s.unmatched)
+    }
+
     @Test fun `arguments that make no audit are refused before anything is read`() {
         rom("snes/Game.sfc")
         val folder = "--audit=${roms.absolutePath}"

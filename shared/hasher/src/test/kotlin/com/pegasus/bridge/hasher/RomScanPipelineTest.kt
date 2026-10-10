@@ -1640,6 +1640,129 @@ class RomScanPipelineTest {
         assertEquals(mapOf(ScanLedger.State.API_RETRY to 1, ScanLedger.State.MATCHED to 1), s.states)
     }
 
+    /** Hashes a file to its text, as the console the test names for the file. */
+    private class HashedAs(private val consoles: Map<String, Int>) : RomHasher {
+        override fun hash(path: String): HashResult? {
+            val f = File(path)
+            return HashResult(f.readText().removeSuffix(NUL).trim(), consoles.getValue(f.name))
+        }
+    }
+
+    /** Keeps what it was asked, the consoles with the hash, and answers what it is built to. */
+    private class ToldConsoles(private val answer: (Int) -> LookupOutcome = { LookupOutcome.NotFound }) : RaHashLookup {
+        val asked: MutableList<Pair<String, List<Int>>> = java.util.Collections.synchronizedList(mutableListOf())
+        override suspend fun lookup(hash: String): LookupOutcome = error("a scan gives the consoles with the hash")
+        override suspend fun lookup(hash: String, consoles: List<Int>): LookupOutcome {
+            asked += hash to consoles
+            return answer(asked.size)
+        }
+    }
+
+    // A lookup that answers from one console's list has to be told which
+    // lists. The console a file was hashed as comes first, since that is
+    // where nearly every hash is; then the others its collection's files may
+    // be of, because RetroAchievements files a hash under the game's console
+    // and the hasher's rules go by the file. A Game Boy Color game in a .gb
+    // file is the case: hashed as a Game Boy's, listed under Game Boy Color.
+    @Test fun `the lookup is told the console a file was hashed as, then where else its hash may be filed`(): Unit = runBlocking {
+        rom("gbc", "Game.gb", "hash-gb")
+        rom("snes", "Game.sfc", "hash-sfc")
+        rom("nes", "Game.nes", "hash-nes")
+        rom("misc", "Game.bin", "hash-bin")
+        rom("snes", "Stray.gba", "hash-gba")
+        rom("nds", "Game.nds", "hash-nds")
+        rom("fds", "Disk.fds", "hash-fds")
+        rom("saturnjp", "Disc.iso", "hash-saturn")
+        rom("megaduck", "Duck.bin", "hash-duck")
+        rom("megadrive", "Cart.gen", "hash-gen")
+        rom("snes", "Stray.fds", "hash-stray-fds")
+        val hasher = HashedAs(mapOf("Game.gb" to 4, "Game.sfc" to 3, "Game.nes" to 0, "Game.bin" to 12,
+                                    "Stray.gba" to 5, "Game.nds" to 18, "Disk.fds" to 7, "Disc.iso" to 9,
+                                    "Duck.bin" to 1, "Cart.gen" to 1, "Stray.fds" to 7))
+        val told = ToldConsoles()
+
+        val s = pipeline(hasher, told).scan(listOf(romRoot.absolutePath))
+
+        assertEquals(mapOf(
+            "hash-gb"  to listOf(4, 6),
+            "hash-sfc" to listOf(3, 4, 6),
+            // Hashed as no console: the collection's own, and its family.
+            "hash-nes" to listOf(7, 81),
+            // A folder no row is known for: only what the hasher said.
+            "hash-bin" to listOf(12),
+            // Hashed as a console its collection's row does not lead with.
+            "hash-gba" to listOf(5, 3, 4, 6),
+            // A DSi game among DS games is hashed as a DS game and listed apart.
+            "hash-nds" to listOf(18, 78),
+            // Three folders no row is known for, whose files rcheevos knows by
+            // the extension alone. It sends a .fds to the NES, a disc to the
+            // Sega CD and a .bin to the Mega Drive, each the first of several
+            // consoles that hash the file alike, and RetroAchievements lists
+            // the game under its own: the Famicom Disk System, the Saturn,
+            // the Mega Duck.
+            "hash-fds"    to listOf(7, 81),
+            "hash-saturn" to listOf(9, 39),
+            "hash-duck"   to listOf(1, 10, 25, 55, 57, 63, 69, 73, 74),
+            // Where the row says the file is a Mega Drive cartridge, it is one.
+            "hash-gen" to listOf(1, 9, 10, 11, 15, 33),
+            // A stray is known by its extension as well.
+            "hash-stray-fds" to listOf(7, 81, 3, 4, 6),
+        ), told.asked.toMap())
+        assertEquals(11, told.asked.size)
+        assertEquals(mapOf(ScanLedger.State.NOT_FOUND to 11), s.states)
+    }
+
+    @Test fun `two files of one collection with one hash are still one lookup`(): Unit = runBlocking {
+        rom("snes", "Copy A.sfc", "hash-sfc")
+        rom("snes", "Copy B.sfc", "hash-sfc")
+        rom("snes", "Copy C.sfc", "hash-sfc")
+        val told = ToldConsoles()
+
+        val s = pipeline(HashedAs(mapOf("Copy A.sfc" to 3, "Copy B.sfc" to 3, "Copy C.sfc" to 3)), told)
+            .scan(listOf(romRoot.absolutePath))
+
+        assertEquals(listOf("hash-sfc" to listOf(3, 4, 6)), told.asked.toList())
+        assertEquals(mapOf(ScanLedger.State.NOT_FOUND to 3), s.states)
+    }
+
+    // The answer is to the hash and the consoles it was looked up in. The
+    // same file kept in two collections is two questions: not known among
+    // the Game Boy's lists says nothing of the Super Nintendo's. Shared
+    // under the hash alone, the second copy would be given the first one's
+    // answer, and written off without its own lists being looked in.
+    @Test fun `one hash in two collections is looked up in the consoles of each`(): Unit = runBlocking {
+        rom("gb", "Copy A.gb", "hash-both")
+        rom("snes", "Copy B.gb", "hash-both")
+        val told = ToldConsoles()
+
+        val s = RomScanPipeline(paths, HashedAs(mapOf("Copy A.gb" to 4, "Copy B.gb" to 4)), told,
+                                throttleMs = { 0L }, hashWorkers = 1, apiWorkers = 1)
+            .scan(listOf(romRoot.absolutePath))
+
+        assertEquals(setOf("hash-both" to listOf(4, 6), "hash-both" to listOf(4, 3, 6)), told.asked.toSet())
+        assertEquals(2, told.asked.size)
+        assertEquals(mapOf(ScanLedger.State.NOT_FOUND to 2), s.states)
+    }
+
+    // The answer shared between copies is kept under the hash and its
+    // consoles, and has to be dropped under the same name when the lookup
+    // fails. Dropped under the hash alone, it stays, and the second copy is
+    // given the first one's failure.
+    @Test fun `a lookup that failed is asked again for the next file of the same hash and consoles`(): Unit = runBlocking {
+        rom("snes", "Copy A.sfc", "hash-sfc")
+        rom("snes", "Copy B.sfc", "hash-sfc")
+        val told = ToldConsoles { call ->
+            if (call == 1) LookupOutcome.Failed(LookupOutcome.Cause.TRANSPORT, "timeout") else LookupOutcome.NotFound
+        }
+
+        val s = RomScanPipeline(paths, HashedAs(mapOf("Copy A.sfc" to 3, "Copy B.sfc" to 3)), told,
+                                throttleMs = { 0L }, hashWorkers = 1, apiWorkers = 1)
+            .scan(listOf(romRoot.absolutePath))
+
+        assertEquals(2, told.asked.size, "the copy that came after a failure was given the failure")
+        assertEquals(mapOf(ScanLedger.State.API_RETRY to 1, ScanLedger.State.NOT_FOUND to 1), s.states)
+    }
+
     @Test fun `a file the hasher cannot read does not abort the scan`(): Unit = runBlocking {
         rom("nes", "Broken.nes", "UNHASHABLE")
         rom("nes", "Good.nes", "hash-smb")

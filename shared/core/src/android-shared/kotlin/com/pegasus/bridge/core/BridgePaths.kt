@@ -1,6 +1,9 @@
 package com.pegasus.bridge.core
 
 import java.io.File
+import java.io.IOException
+import java.nio.file.Files
+import java.nio.file.StandardCopyOption
 
 /**
  * Where the Bridge keeps its data. The Android build passes `/sdcard/PegasusData`;
@@ -89,14 +92,34 @@ class BridgePaths(val root: File) {
     companion object {
         fun epochSeconds(): Long = System.currentTimeMillis() / 1000L
 
-        /** Write via temp + rename so a reader never sees a half-written file. */
+        /**
+         * Write via temp + rename so a reader never sees a half-written file,
+         * and a process killed in the middle leaves the old file or the new
+         * one, whole.
+         *
+         * By a move that is asked to be atomic and to replace. `File.renameTo`
+         * alone, which this was, does not replace an existing file on
+         * Windows: every write but the first fell through to rewriting the
+         * target in place, where a kill leaves half a file. That mattered
+         * less while a file was written once as a job ended; the scan's
+         * ledger is now rewritten while the scan runs.
+         *
+         * What follows a move that fails is what there was before, for a
+         * filesystem that cannot do one: the plain rename, then the rewrite
+         * in place.
+         */
         fun writeAtomic(target: File, content: String) {
             target.parentFile?.mkdirs()
             val tmp = File(target.parentFile, "${target.name}.tmp")
             tmp.writeText(content)
-            if (!tmp.renameTo(target)) {
-                target.writeText(content)
-                tmp.delete()
+            try {
+                Files.move(tmp.toPath(), target.toPath(),
+                           StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING)
+            } catch (_: IOException) {
+                if (!tmp.renameTo(target)) {
+                    target.writeText(content)
+                    tmp.delete()
+                }
             }
         }
     }

@@ -1037,4 +1037,151 @@ class ScanAbortTest {
         assertFalse(ledgerOnDisk().has(gone.canonicalPath), "the aborted scan kept the entry of a file that is gone")
         assertEquals("NOT_FOUND", ledgerOnDisk().getJSONObject(stays.canonicalPath).getString("state"))
     }
+
+    // ── A scan that is killed ───────────────────────────────────────────────
+
+    /**
+     * One file at a time through each stage, a report for every result, and
+     * the ledger saved whenever [saveEveryMs] lets it be: 0 is after every
+     * result that settled something. So at the report of the fourth result
+     * the ledger holds four verdicts and no fifth.
+     */
+    private fun inStep(hasher: RomHasher, lookup: RaHashLookup, saveEveryMs: Long = 0) =
+        RomScanPipeline(paths, hasher, lookup, throttleMs = { 0L }, hashWorkers = 1, apiWorkers = 1,
+                        reportStep = { 1 }, ledgerSaveEveryMs = saveEveryMs)
+
+    private val ledgerFile get() = File(paths.cache, ScanLedger.FILE_NAME)
+
+    /**
+     * A process that is killed runs no `catch` and no `finally`, so no test
+     * can end a scan that way. What one can do is look at the disk as the
+     * scan goes, which is all a kill leaves: the ledger is copied aside at the
+     * fourth result of six, the scan runs to its end, and the copy is put
+     * back in place of what the end wrote. The next scan starts from what a
+     * kill after the fourth result would have left it.
+     *
+     * Before the ledger was saved along the way there was no file to copy.
+     */
+    @Test fun `what a scan had settled is on disk before it ends, and a scan started from that reads only the rest`(): Unit = runBlocking {
+        repeat(6) { rom("nes", "Miss$it.nes", "miss-$it") }
+        val aside = File(dataRoot, "ledger-at-four.json")
+
+        inStep(ContentHasher(), SaysNo()).scan(listOf(romRoot.absolutePath)) {
+            if (it.processed == 4) ledgerFile.copyTo(aside)
+        }
+
+        val kept = JSONObject(aside.readText()).getJSONObject("entries")
+        assertEquals(4, kept.length(), "the verdicts on disk at the fourth result")
+        assertEquals(setOf("NOT_FOUND"), kept.keySet().map { kept.getJSONObject(it).getString("state") }.toSet())
+        assertEquals(6, JSONObject(ledgerFile.readText()).getJSONObject("entries").length())
+
+        aside.copyTo(ledgerFile, overwrite = true)
+        val hasher = ContentHasher()
+        val asked = AtomicInteger()
+        val second = object : RaHashLookup {
+            override suspend fun lookup(hash: String): LookupOutcome {
+                asked.incrementAndGet(); return GameMetadata(gameId = 0).asOutcome()
+            }
+        }
+        val s = inStep(hasher, second).scan(listOf(romRoot.absolutePath))
+
+        assertEquals(2, hasher.calls.get(), "a file whose verdict was on disk was read again")
+        assertEquals(2, asked.get())
+        assertEquals(6, s.unmatched)
+    }
+
+    // The same for matches. A match is in its metadata file before it is in
+    // the ledger, so the two the copy does not hold are taken from their
+    // files, and nothing at all is read.
+    @Test fun `the matches a scan had made are on disk before it ends, and a scan started from that reads nothing`(): Unit = runBlocking {
+        repeat(6) { rom("nes", "Game$it.nes", "hash-$it") }
+        val knows = object : RaHashLookup {
+            val calls = AtomicInteger()
+            override suspend fun lookup(hash: String): LookupOutcome {
+                calls.incrementAndGet()
+                val n = hash.substringAfterLast('-').toInt()
+                return GameMetadata(5000 + n, "Game $n", "NES", "/i.png", 10).asOutcome()
+            }
+        }
+        val aside = File(dataRoot, "ledger-at-four.json")
+
+        inStep(ContentHasher(), knows).scan(listOf(romRoot.absolutePath)) {
+            if (it.processed == 4) ledgerFile.copyTo(aside)
+        }
+
+        val kept = JSONObject(aside.readText()).getJSONObject("entries")
+        assertEquals(4, kept.length())
+        for (path in kept.keySet()) {
+            val e = kept.getJSONObject(path)
+            assertEquals("MATCHED", e.getString("state"))
+            assertTrue(paths.metadata(e.getInt("gameId").toString()).isFile)
+        }
+
+        aside.copyTo(ledgerFile, overwrite = true)
+        knows.calls.set(0)
+        val hasher = ContentHasher()
+        val s = inStep(hasher, knows).scan(listOf(romRoot.absolutePath))
+
+        assertEquals(0, hasher.calls.get(), "a match was read again")
+        assertEquals(0, knows.calls.get())
+        assertEquals(6, s.cachedHits)
+        assertEquals(mapOf("MATCHED" to 6), statesOnDisk())
+    }
+
+    // Each save writes the whole ledger, so a scan is told how often it may.
+    @Test fun `a scan saves its ledger no more often than it is told`(): Unit = runBlocking {
+        repeat(6) { rom("nes", "Miss$it.nes", "miss-$it") }
+        var thereAtFour: Boolean? = null
+
+        inStep(ContentHasher(), SaysNo(), saveEveryMs = 3_600_000).scan(listOf(romRoot.absolutePath)) {
+            if (it.processed == 4) thereAtFour = ledgerFile.exists()
+        }
+
+        assertEquals(false, thereAtFour, "the ledger was written before its time had come")
+        assertEquals(mapOf("NOT_FOUND" to 6), statesOnDisk())
+    }
+
+    // The longest wait there is means never in the middle. Turned into
+    // nanoseconds it no longer fits its type and came out below zero, which
+    // every result is later than: the ledger was written at each of them.
+    @Test fun `a scan told to wait for ever saves its ledger only as it ends`(): Unit = runBlocking {
+        repeat(6) { rom("nes", "Miss$it.nes", "miss-$it") }
+        var thereAtFour: Boolean? = null
+
+        inStep(ContentHasher(), SaysNo(), saveEveryMs = Long.MAX_VALUE).scan(listOf(romRoot.absolutePath)) {
+            if (it.processed == 4) thereAtFour = ledgerFile.exists()
+        }
+
+        assertEquals(false, thereAtFour, "the ledger was written in the middle of a scan told never to")
+        assertEquals(mapOf("NOT_FOUND" to 6), statesOnDisk())
+    }
+
+    // A rescan that finds every verdict standing records nothing, and has
+    // nothing to write until its end.
+    @Test fun `a rescan that settles nothing new does not write the ledger as it goes`(): Unit = runBlocking {
+        repeat(6) { rom("nes", "Miss$it.nes", "miss-$it") }
+        inStep(ContentHasher(), SaysNo()).scan(listOf(romRoot.absolutePath))
+        var thereAtSix: Boolean? = null
+
+        // The ledger a scan works from has been read by the time the files
+        // are counted out, so the file can go then: whatever is there before
+        // the end, this scan wrote.
+        val hasher = ContentHasher()
+        var seen = 0
+        inStep(hasher, SaysNo()).scan(listOf(romRoot.absolutePath), onCounted = { assertTrue(ledgerFile.delete()) }) {
+            seen++
+            if (it.processed == 6) thereAtSix = ledgerFile.exists()
+        }
+
+        assertEquals(0, hasher.calls.get())
+        assertEquals(6, seen)
+        assertEquals(false, thereAtSix, "a scan with nothing new to say wrote its ledger in the middle")
+        assertEquals(mapOf("NOT_FOUND" to 6), statesOnDisk())
+    }
+
+    @Test fun `a pipeline told to save its ledger less than never is refused`() {
+        assertFailsWith<IllegalArgumentException> {
+            RomScanPipeline(paths, ContentHasher(), SaysNo(), ledgerSaveEveryMs = -1)
+        }
+    }
 }

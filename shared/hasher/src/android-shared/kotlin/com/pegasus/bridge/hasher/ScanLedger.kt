@@ -210,6 +210,20 @@ class ScanLedger(private val file: File, private val recipe: HashRecipe = HashRe
      */
     private val undecided = HashMap<String, String>()
 
+    /**
+     * How many verdicts [record] has taken since the last [save] that got
+     * through, under the lock of [entries]. A verdict that is only counted
+     * changes nothing that is stored, and does not raise it.
+     */
+    private var unsaved = 0
+
+    /**
+     * Whether anything was recorded that no [save] has written yet. A scan
+     * asks before it saves in the middle, so that a rescan with nothing new
+     * to say does not rewrite the file every few seconds.
+     */
+    val dirty: Boolean get() = synchronized(entries) { unsaved > 0 }
+
     init { load() }
 
     private fun load() {
@@ -287,6 +301,7 @@ class ScanLedger(private val file: File, private val recipe: HashRecipe = HashRe
     ) {
         synchronized(entries) {
             entries[path] = Entry(state, now, size, modified, recipe.versionFor(collection), gameId, detail)
+            unsaved++
         }
         count(path, state, detail)
     }
@@ -330,6 +345,9 @@ class ScanLedger(private val file: File, private val recipe: HashRecipe = HashRe
                     .also { j -> if (e.gameId > 0) j.put("gameId", e.gameId) }
                     .also { j -> if (e.detail.isNotEmpty()) j.put("detail", e.detail) })
             }
+            // In the block that copies them: what is recorded from here on is
+            // not in this copy, and has to leave the ledger dirty.
+            unsaved = 0
         }
         // The header's number is the recipe's with no collection in it. No
         // entry is held against it: each carries the number of its own
@@ -341,7 +359,13 @@ class ScanLedger(private val file: File, private val recipe: HashRecipe = HashRe
             .put("count", map.length())
             .put("entries", map)
         runCatching { writeAtomic(file, payload.toString()) }
-            .onFailure { BridgeLog.w(TAG, "could not write the ledger: ${it.message}") }
+            .onFailure {
+                BridgeLog.w(TAG, "could not write the ledger: ${it.message}")
+                // None of it is on disk, so all of it is still to be saved:
+                // a scan asks again at its next save in the middle, and does
+                // not wait for a verdict more to have a reason to.
+                synchronized(entries) { unsaved++ }
+            }
     }
 
     /**

@@ -268,6 +268,16 @@ result reaches the collector, and a scan stopped at whichever file went by in
 between, one that needed no lookup, would end with that failure in none of its
 counts and its file in no ledger.
 
+A scan that is killed runs none of that. It has still written its ledger as
+it went: at a result that comes ten seconds or more after the last write,
+when something was settled in between. So it loses what it settled after its
+last write, which is ten seconds of verdicts at most, and not always the last
+ten: a write waits for a result, and one file can take minutes. A match is in
+its metadata file before it is in the ledger, and the next scan takes it from
+there without a read; one that shares that file with another ROM of its game
+is read once more. A killed scan rebuilds no index and leaves its record at
+`running`.
+
 **No connection.** What the device knows about its connection explains a
 failure and prevents nothing. Every request is made. Only when one has failed
 without an answer of any kind — an exception, not an HTTP status — does the
@@ -338,9 +348,14 @@ write failed first:
 - **The final `_index.json`** — the ledger has been saved by then. The scan
   ends as an error, which the theme shows or does not as for a write during
   the scan; the record left when it does not is the one of the last file.
-- **The ledger** — logged, and that is all. It is written as a scan ends, and
-  the scan ends as it would have. The next one asks again about every file
-  that is not a match.
+- **The ledger** — logged, and that is all. It is written while a scan
+  runs, no more often than every ten seconds and only when something was
+  settled since the last write, and as the scan ends: the whole file each
+  time (74 KB on a tablet with 339 files), through a temporary file that
+  takes its place in one move, so that what is on disk is always a whole
+  ledger. One that fails while the scan runs is tried again ten seconds on.
+  The scan ends as it would have. When no write got through, the next one
+  asks again about every file that is not a match.
 
 A start request turned away for missing credentials writes an error record
 too. When that cannot be written it is logged, and the request ends as it

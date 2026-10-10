@@ -15,6 +15,7 @@ import kotlin.test.AfterTest
 import kotlin.test.BeforeTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
@@ -543,5 +544,49 @@ class ScanLedgerTest {
 
         assertEquals("MATCHED", ledgerEntry(f)!!.getString("state"))
         assertEquals(1447, ledgerEntry(f)!!.optInt("gameId"), "the rescan wrote the match again without its game")
+    }
+
+    // A scan saves in the middle only when it has something to write.
+    @Test fun `the ledger knows what it has not saved yet`() {
+        val file = File(paths.cache, ScanLedger.FILE_NAME)
+        val nes = CollectionRef.inferred("nes")
+        val ledger = ScanLedger(file)
+        assertFalse(ledger.dirty, "a new ledger has nothing to save")
+
+        ledger.record("/roms/nes/a.nes", nes, ScanLedger.State.NOT_FOUND, 10, 20, now = 1000)
+        assertTrue(ledger.dirty)
+
+        ledger.save { f, text -> BridgePaths.writeAtomic(f, text) }
+        assertFalse(ledger.dirty, "what was recorded has been saved")
+
+        // A verdict found standing is counted and not stored again.
+        val standing = ledger.canSkip("/roms/nes/a.nes", nes, 10, 20, now = 1000)!!
+        ledger.count("/roms/nes/a.nes", standing)
+        assertFalse(ledger.dirty, "counting a verdict stored nothing")
+
+        ledger.record("/roms/nes/b.nes", nes, ScanLedger.State.NOT_FOUND, 10, 20, now = 1000)
+        ledger.count("/roms/nes/a.nes", standing)
+        assertTrue(ledger.dirty, "counting a verdict took another for saved")
+
+        // One that has just been read from disk has nothing to save either.
+        ledger.save { f, text -> BridgePaths.writeAtomic(f, text) }
+        assertFalse(ScanLedger(file).dirty)
+    }
+
+    // A write that fails has put nothing on disk. Taken for saved, what it
+    // held would wait for the next verdict to be written with, and a scan
+    // killed before one came would lose it.
+    @Test fun `a ledger whose write failed still has it to save`() {
+        val file = File(paths.cache, ScanLedger.FILE_NAME)
+        val ledger = ScanLedger(file)
+        ledger.record("/roms/nes/a.nes", CollectionRef.inferred("nes"), ScanLedger.State.NOT_FOUND, 10, 20, now = 1000)
+
+        ledger.save { _, _ -> throw java.io.IOException("no room left") }
+        assertTrue(ledger.dirty, "a write that failed was taken for one that got through")
+        assertFalse(file.exists())
+
+        ledger.save { f, text -> BridgePaths.writeAtomic(f, text) }
+        assertFalse(ledger.dirty)
+        assertEquals(1, JSONObject(file.readText()).getJSONObject("entries").length())
     }
 }

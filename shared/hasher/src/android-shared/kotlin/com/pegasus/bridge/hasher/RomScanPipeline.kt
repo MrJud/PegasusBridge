@@ -56,7 +56,13 @@ class RomScanPipeline(
      * the last one as well, and a clock is no use to a caller that is only
      * told of every hundredth result.
      */
-    private val reportStep: (total: Int) -> Int = { (it / 50).coerceAtLeast(1) }
+    private val reportStep: (total: Int) -> Int = { (it / 50).coerceAtLeast(1) },
+    /**
+     * The least time, in milliseconds, between two saves of the ledger while
+     * a scan runs. 0 saves after every result that settled something, which
+     * is what a test wants.
+     */
+    private val ledgerSaveEveryMs: Long = LEDGER_SAVE_EVERY_MS
 ) {
 
     // Refused here rather than discovered mid-scan. With no hash workers nothing
@@ -67,6 +73,7 @@ class RomScanPipeline(
     init {
         require(hashWorkers > 0) { "hashWorkers must be positive, was $hashWorkers" }
         require(apiWorkers > 0) { "apiWorkers must be positive, was $apiWorkers" }
+        require(ledgerSaveEveryMs >= 0) { "ledgerSaveEveryMs must not be negative, was $ledgerSaveEveryMs" }
     }
 
     /**
@@ -259,6 +266,8 @@ class RomScanPipeline(
         var failedLookups = 0
         var abortReason = ""
         var abortCause: AbortCause? = null
+        // When the ledger was last written, by a clock that does not jump.
+        var savedAt = System.nanoTime()
 
         try {
             // In here and not straight after the walk, so that a caller whose
@@ -446,6 +455,29 @@ class RomScanPipeline(
                             }
                         }
                     }
+
+                    // The ledger goes to disk as the scan goes, and not only as
+                    // it ends. Both saves at the end are code the scan has to
+                    // reach, and a process that is killed reaches neither: the
+                    // system taking the service away, a power button, a kill.
+                    // Every answer of "no" a long first scan had been given
+                    // was then lost, and each of those files was read and
+                    // asked about again.
+                    //
+                    // Here, after the result has been recorded, so that a
+                    // match is in its metadata file before it is in the
+                    // ledger: a kill between the two leaves a file the next
+                    // scan adopts, never an entry with no file to stand on.
+                    // Only when something new was recorded, so that a rescan
+                    // of cached files writes nothing, and no more often than
+                    // every [ledgerSaveEveryMs], because each save writes the
+                    // whole ledger. Nothing is forgotten here: that is for a
+                    // scan that gets to its end.
+                    if (ledger.dirty && (System.nanoTime() - savedAt) / 1_000_000 >= ledgerSaveEveryMs) {
+                        ledger.save { f, text -> BridgePaths.writeAtomic(f, text) }
+                        savedAt = System.nanoTime()
+                    }
+
                     processed++
                     if (processed % step == 0 || processed == total) {
                         onProgress(Progress(processed, total, r.job.file.name, newEntries, cached, skipped,
@@ -1018,5 +1050,13 @@ class RomScanPipeline(
         // queues them behind the semaphore.
         const val DEFAULT_API_WORKERS  = 2
         const val MAX_CONSECUTIVE_FAILURES = 8
+
+        /**
+         * The least time between two writes of the ledger while a scan runs.
+         * A write is made as a result comes in, so what a scan that is
+         * killed can lose is what it settled in this long after its last
+         * write, however long ago that was.
+         */
+        const val LEDGER_SAVE_EVERY_MS = 10_000L
     }
 }

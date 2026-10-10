@@ -6,6 +6,7 @@ import kotlin.test.AfterTest
 import kotlin.test.BeforeTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertTrue
 
 class BridgePathsTest {
@@ -61,5 +62,23 @@ class BridgePathsTest {
         BridgePaths.writeAtomic(target, "first")
         BridgePaths.writeAtomic(target, "second")
         assertEquals("second", target.readText())
+    }
+
+    // The ledger is rewritten many times in one scan, always over itself.
+    @Test fun `atomic write over an existing file leaves the new text and no temp file`() {
+        val target = File(root, "cache/ledger.json")
+        BridgePaths.writeAtomic(target, "first, and the longer of the two")
+        BridgePaths.writeAtomic(target, "second")
+        assertEquals("second", target.readText())
+        assertEquals(listOf("ledger.json"), File(root, "cache").list()!!.toList())
+    }
+
+    // A target the move cannot replace, here a folder that is not empty, is
+    // refused as it always was: by the write in place, and with its reason.
+    @Test fun `atomic write onto something that cannot be replaced still fails`() {
+        val target = File(root, "taken").apply { mkdirs() }
+        File(target, "inside").writeText("x")
+        assertFailsWith<java.io.IOException> { BridgePaths.writeAtomic(target, "text") }
+        assertTrue(File(target, "inside").isFile)
     }
 }

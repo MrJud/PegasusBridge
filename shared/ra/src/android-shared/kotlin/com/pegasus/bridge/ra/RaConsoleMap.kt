@@ -1,173 +1,145 @@
 package com.pegasus.bridge.ra
 
+import com.pegasus.bridge.core.FuzzyMatch
+import com.pegasus.bridge.core.RcConsoles
 import org.json.JSONObject
 
 /**
  * Translates between Pegasus collection short names and RetroAchievements
- * consoles.
+ * consoles, so that a theme can ask "which RA game is this?" without carrying
+ * a console table of its own.
  *
- * Generated from the theme's RAConsoleMap.js so the two cannot drift: the theme
- * should be able to ask "which RA game is this?" without carrying a console
- * table of its own.
+ * The ids are not written here. They come from [RcConsoles], the table of
+ * what each collection is to rcheevos, which a test holds to the vendored
+ * rc_consoles.h.
+ * This began as a copy of the theme's RAConsoleMap.js, written by hand, and
+ * three of its ids were another console's: a Wii collection was matched
+ * against the Pokémon Mini catalogue. One table for both uses cannot disagree
+ * with itself.
+ *
+ * What is written here is what no header has: the names RetroAchievements
+ * shows a console under, and the labels a theme shortens them to.
  */
 object RaConsoleMap {
 
-    /** Pegasus collection short name -> RA console id. */
-    private val TO_CONSOLE_ID: Map<String, Int> = mapOf(
-        "megadrive" to 1,
-        "genesis" to 1,
-        "n64" to 2,
-        "snes" to 3,
-        "gb" to 4,
-        "gba" to 5,
-        "gbc" to 6,
-        "nes" to 7,
-        "pcengine" to 8,
-        "segacd" to 9,
-        "sega32x" to 10,
-        "mastersystem" to 11,
-        "psx" to 12,
-        "atari2600" to 25,
-        "gc" to 16,
-        "nds" to 18,
-        "ps2" to 21,
-        "wii" to 24,
-        "psp" to 41,
-        "3ds" to 76,
-        "dreamcast" to 40,
-        "saturn" to 39,
-        "atari7800" to 51,
-        "atarilynx" to 13,
-        "neogeo" to 14,
-        "wonderswan" to 53,
-        "virtualboy" to 28,
-        "sg1000" to 33,
-        "gamegear" to 15,
-        "arcade" to 27
+    /**
+     * A console as it is shown: the [names] RetroAchievements writes it under,
+     * the first being the one given back for a collection; the [label] a
+     * theme shows where the name is too long; and [shortName], the collection
+     * one of those names is sent back to.
+     */
+    private class Names(val console: Int, val shortName: String, val label: String?, vararg val names: String)
+
+    /**
+     * The entries the theme's script had, as it had them, short names
+     * included: `megadrive` and `atarilynx`, which is how those collections
+     * are spelt on disk, and not the keys of the rows. Then three names seen
+     * in answers RetroAchievements gave since. A console that is not here
+     * has an id and no name, and its collection is shown under its own.
+     */
+    private val NAMES: List<Names> = listOf(
+        Names(1, "megadrive", "MD", "Mega Drive", "Mega Drive/Genesis", "Genesis"),
+        Names(2, "n64", "N64", "Nintendo 64"),
+        Names(3, "snes", "SNES", "SNES", "SNES/Super Famicom", "Super Nintendo"),
+        Names(4, "gb", "GB", "Game Boy"),
+        Names(5, "gba", "GBA", "Game Boy Advance"),
+        Names(6, "gbc", "GBC", "Game Boy Color"),
+        Names(7, "nes", "NES", "NES", "NES/Famicom"),
+        Names(8, "pcengine", "PCE", "PC Engine", "PC Engine/TurboGrafx-16"),
+        Names(9, "segacd", "SCD", "Sega CD"),
+        Names(10, "sega32x", "32X", "32X", "Sega 32X"),
+        Names(11, "mastersystem", "SMS", "Master System"),
+        Names(12, "psx", "PSX", "PlayStation"),
+        Names(13, "atarilynx", "LYNX", "Atari Lynx"),
+        // The script sent this name to `neogeo`, and had no label for it.
+        Names(14, "ngp", null, "Neo Geo Pocket"),
+        Names(15, "gamegear", "GG", "Game Gear"),
+        Names(16, "gc", "GC", "GameCube"),
+        Names(18, "nds", "NDS", "Nintendo DS"),
+        Names(19, "wii", "Wii", "Wii"),
+        Names(21, "ps2", "PS2", "PlayStation 2"),
+        Names(25, "atari2600", "2600", "Atari 2600"),
+        Names(27, "arcade", "ARC", "Arcade"),
+        Names(28, "virtualboy", "VB", "Virtual Boy"),
+        Names(33, "sg1000", "SG", "SG-1000"),
+        Names(39, "saturn", "SAT", "Saturn", "Sega Saturn"),
+        Names(40, "dreamcast", "DC", "Dreamcast"),
+        Names(41, "psp", "PSP", "PSP", "PlayStation Portable"),
+        Names(43, "3do", "3DO", "3DO Interactive Multiplayer"),
+        Names(51, "atari7800", "7800", "Atari 7800"),
+        Names(53, "wonderswan", "WS", "WonderSwan"),
+        Names(57, "channelf", "CHF", "Fairchild Channel F"),
+        Names(62, "3ds", "3DS", "Nintendo 3DS"),
+        Names(71, "arduboy", "ARD", "Arduboy")
     )
+
+    /**
+     * Rows shown under a name that is not their console's. Neo Geo sets are
+     * hashed and listed as arcade games, and a collection of them is still
+     * called Neo Geo.
+     */
+    private val ROW_NAMES: Map<String, Names> = mapOf(
+        "neogeo" to Names(27, "neogeo", "NG", "Neo Geo")
+    )
+
+    private val NAMES_BY_CONSOLE: Map<Int, Names> = NAMES.associateBy { it.console }
+
+    /** Every name a row goes by, the key first. */
+    private fun namesOf(row: RcConsoles.Row): List<String> = listOf(row.key) + row.spellings
+
+    /** A row that RetroAchievements has no console for has no id, and so no entry anywhere. */
+    private fun idOf(row: RcConsoles.Row): Int? = when (row) {
+        is RcConsoles.Hashable -> row.console
+        is RcConsoles.NoAlgorithm -> row.id
+        is RcConsoles.NotOnRa -> null
+    }
+
+    /**
+     * Pegasus collection short name -> RA console id: every row that has one,
+     * under its key and under each of its spellings. A console rcheevos cannot
+     * hash for is here too. Its games are in the catalogue all the same, and
+     * can be matched by title.
+     */
+    private val TO_CONSOLE_ID: Map<String, Int> = buildMap {
+        for (row in RcConsoles.ROWS) {
+            val id = idOf(row) ?: continue
+            for (name in namesOf(row)) put(name, id)
+        }
+    }
 
     /** RA console name -> Pegasus short name. */
-    private val FROM_CONSOLE_NAME: Map<String, String> = mapOf(
-        "Mega Drive" to "megadrive",
-        "Mega Drive/Genesis" to "megadrive",
-        "Genesis" to "megadrive",
-        "Nintendo 64" to "n64",
-        "SNES" to "snes",
-        "SNES/Super Famicom" to "snes",
-        "Super Nintendo" to "snes",
-        "Game Boy" to "gb",
-        "Game Boy Advance" to "gba",
-        "Game Boy Color" to "gbc",
-        "NES" to "nes",
-        "NES/Famicom" to "nes",
-        "PC Engine" to "pcengine",
-        "PC Engine/TurboGrafx-16" to "pcengine",
-        "Sega CD" to "segacd",
-        "32X" to "sega32x",
-        "Sega 32X" to "sega32x",
-        "Master System" to "mastersystem",
-        "PlayStation" to "psx",
-        "Atari 2600" to "atari2600",
-        "GameCube" to "gc",
-        "Nintendo DS" to "nds",
-        "PlayStation 2" to "ps2",
-        "Wii" to "wii",
-        "PSP" to "psp",
-        "PlayStation Portable" to "psp",
-        "Nintendo 3DS" to "3ds",
-        "Dreamcast" to "dreamcast",
-        "Saturn" to "saturn",
-        "Sega Saturn" to "saturn",
-        "Atari 7800" to "atari7800",
-        "Atari Lynx" to "atarilynx",
-        "Neo Geo" to "neogeo",
-        "Neo Geo Pocket" to "neogeo",
-        "WonderSwan" to "wonderswan",
-        "Virtual Boy" to "virtualboy",
-        "SG-1000" to "sg1000",
-        "Game Gear" to "gamegear",
-        "Arcade" to "arcade"
-    )
+    private val FROM_CONSOLE_NAME: Map<String, String> = buildMap {
+        for (entry in NAMES + ROW_NAMES.values) for (name in entry.names) put(name, entry.shortName)
+    }
 
     /** RA console name -> compact label for the UI. */
-    private val SHORT_LABEL: Map<String, String> = mapOf(
-        "Mega Drive" to "MD",
-        "Mega Drive/Genesis" to "MD",
-        "Genesis" to "MD",
-        "Nintendo 64" to "N64",
-        "SNES" to "SNES",
-        "SNES/Super Famicom" to "SNES",
-        "Super Nintendo" to "SNES",
-        "Game Boy" to "GB",
-        "Game Boy Advance" to "GBA",
-        "Game Boy Color" to "GBC",
-        "NES" to "NES",
-        "NES/Famicom" to "NES",
-        "PC Engine" to "PCE",
-        "PC Engine/TurboGrafx-16" to "PCE",
-        "Sega CD" to "SCD",
-        "32X" to "32X",
-        "Sega 32X" to "32X",
-        "Master System" to "SMS",
-        "PlayStation" to "PSX",
-        "Atari 2600" to "2600",
-        "GameCube" to "GC",
-        "Nintendo DS" to "NDS",
-        "PlayStation 2" to "PS2",
-        "Wii" to "Wii",
-        "PSP" to "PSP",
-        "PlayStation Portable" to "PSP",
-        "Nintendo 3DS" to "3DS",
-        "Dreamcast" to "DC",
-        "Saturn" to "SAT",
-        "Sega Saturn" to "SAT",
-        "Atari 7800" to "7800",
-        "Atari Lynx" to "LYNX",
-        "Neo Geo" to "NG",
-        "WonderSwan" to "WS",
-        "Virtual Boy" to "VB",
-        "SG-1000" to "SG",
-        "Game Gear" to "GG",
-        "Arcade" to "ARC"
-    )
+    private val SHORT_LABEL: Map<String, String> = buildMap {
+        for (entry in NAMES + ROW_NAMES.values) {
+            val label = entry.label ?: continue
+            for (name in entry.names) put(name, label)
+        }
+    }
 
-    /** Pegasus short name -> RA console name. */
-    private val TO_CONSOLE_NAME: Map<String, String> = mapOf(
-        "megadrive" to "Mega Drive",
-        "genesis" to "Mega Drive",
-        "n64" to "Nintendo 64",
-        "snes" to "SNES",
-        "gb" to "Game Boy",
-        "gba" to "Game Boy Advance",
-        "gbc" to "Game Boy Color",
-        "nes" to "NES",
-        "pcengine" to "PC Engine",
-        "segacd" to "Sega CD",
-        "sega32x" to "32X",
-        "mastersystem" to "Master System",
-        "psx" to "PlayStation",
-        "atari2600" to "Atari 2600",
-        "gc" to "GameCube",
-        "nds" to "Nintendo DS",
-        "ps2" to "PlayStation 2",
-        "wii" to "Wii",
-        "psp" to "PSP",
-        "3ds" to "Nintendo 3DS",
-        "dreamcast" to "Dreamcast",
-        "saturn" to "Saturn",
-        "atari7800" to "Atari 7800",
-        "atarilynx" to "Atari Lynx",
-        "neogeo" to "Neo Geo",
-        "wonderswan" to "WonderSwan",
-        "virtualboy" to "Virtual Boy",
-        "sg1000" to "SG-1000",
-        "gamegear" to "Game Gear",
-        "arcade" to "Arcade"
-    )
+    /** Pegasus short name -> RA console name, for the same names as the ids and wherever a name is known. */
+    private val TO_CONSOLE_NAME: Map<String, String> = buildMap {
+        for (row in RcConsoles.ROWS) {
+            val id = idOf(row) ?: continue
+            val shown = (ROW_NAMES[row.key] ?: NAMES_BY_CONSOLE[id])?.names?.firstOrNull() ?: continue
+            for (name in namesOf(row)) put(name, shown)
+        }
+    }
 
-    /** 0 when the platform has no RetroAchievements equivalent. */
-    fun consoleId(pegasusShortName: String?): Int =
-        TO_CONSOLE_ID[pegasusShortName?.lowercase().orEmpty()] ?: 0
+    /**
+     * 0 when the platform has no RetroAchievements equivalent.
+     *
+     * The name is tried as it is written, in lower case, and then as
+     * [FuzzyMatch.normalizePlatform] folds it: a theme sends a collection's
+     * short name, and the index of matched games holds the folded one.
+     */
+    fun consoleId(pegasusShortName: String?): Int {
+        val name = pegasusShortName?.lowercase().orEmpty()
+        return TO_CONSOLE_ID[name] ?: TO_CONSOLE_ID[FuzzyMatch.normalizePlatform(name)] ?: 0
+    }
 
     fun pegasusShortName(raConsoleName: String?): String {
         val n = raConsoleName.orEmpty()

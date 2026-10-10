@@ -16,8 +16,8 @@ object RomScanner {
      * extension for real dumps, the whole platform would scan as zero files and
      * nothing anywhere would say why.
      *
-     * So [scan] takes a resolver, and both shells point it at the collection's
-     * own declaration.
+     * So a scan adds what the file's collection declares
+     * ([scanWithCollections]), for both shells alike.
      *
      * The home-computer formats are here because leaving them out was not
      * harmless: `amiga`, `amstradcpc` and `apple2` each hold one real dump and
@@ -40,14 +40,27 @@ object RomScanner {
         "cv", "rom"
     )
 
+    /** A ROM a scan found, with the collection its folder is in. */
+    data class ScannedFile(val file: File, val collection: CollectionRef)
+
     /**
-     * Every ROM under [dirs].
+     * Every ROM under [dirs], each with its collection.
      *
-     * [extensionsFor] is asked once per directory and answers which extensions
-     * count there — the built-in set by default, and the collection's own
-     * declaration when a caller can supply one. Answering with the union rather
-     * than a replacement is deliberate: a collection that forgets to list `zip`
-     * should not lose its archives.
+     * [resolver] is asked once for each folder that holds a file, here, while
+     * one thread walks the tree, and the answer travels with the file: what
+     * comes after asks nothing of a folder again, and cannot take a file for
+     * another collection than the one that decided whether it is a ROM.
+     *
+     * What counts as a ROM in a folder is the built-in set and whatever the
+     * folder's collection declares. A union and not a replacement: a
+     * collection that forgets to list `zip` should not lose its archives.
+     * The collection is the nearest one declared at or above the folder, so
+     * an extension it declares counts in the folders under it as well. It
+     * counted in the collection's own folder and nowhere below, when each
+     * shell read the metafile of the one folder it was asked about.
+     *
+     * [extensionsOverride], when given, answers for a folder in place of all
+     * that. Nothing but a test gives one.
      *
      * Each file is returned once, under the path it was first reached by, however
      * many of [dirs] reach it. The theme does not hand over one root per
@@ -55,15 +68,58 @@ object RomScanner {
      * arrives beside `psx`, and `switch` beside a folder nested inside it.
      * Without this a tree reached twice was hashed twice and counted twice.
      */
+    fun scanWithCollections(
+        dirs: List<String>,
+        resolver: CollectionResolver,
+        extensionsOverride: ((File) -> Set<String>)? = null
+    ): List<ScannedFile> {
+        class Folder(val collection: CollectionRef, val allowed: Set<String>)
+        return walk(
+            dirs,
+            about = { dir ->
+                // A folder nothing can be learnt of is the folder it is called,
+                // as it was before anything was asked: one that cannot be
+                // resolved must not end the scan of a library.
+                val collection = runCatching { resolver.collectionOf(dir) }
+                    .getOrElse { CollectionRef.inferred(dir.name) }
+                val allowed = if (extensionsOverride != null)
+                                  runCatching { extensionsOverride(dir) }.getOrDefault(ROM_EXTENSIONS)
+                              else ROM_EXTENSIONS + collection.declaredExtensions
+                Folder(collection, allowed)
+            },
+            allowed = { it.allowed }
+        ).map { (file, folder) -> ScannedFile(file, folder.collection) }
+    }
+
+    /**
+     * Every ROM under [dirs], by a rule the caller gives and with no word of
+     * collections: [extensionsFor] is asked once per directory and answers
+     * which extensions count there. For the tests of the walk itself.
+     */
     fun scan(
         dirs: List<String>,
         extensionsFor: (File) -> Set<String> = { ROM_EXTENSIONS }
-    ): List<File> {
-        val results = mutableListOf<File>()
-        // One answer per directory, cached: the resolver may read a metadata file
+    ): List<File> = walk(
+        dirs,
+        about = { dir -> runCatching { extensionsFor(dir) }.getOrDefault(ROM_EXTENSIONS) },
+        allowed = { it }
+    ).map { it.first }
+
+    /**
+     * The walk both of the above are: every file under [dirs] whose extension
+     * is in what [allowed] makes of its folder's answer from [about], with
+     * that answer.
+     */
+    private fun <T> walk(
+        dirs: List<String>,
+        about: (File) -> T,
+        allowed: (T) -> Set<String>
+    ): List<Pair<File, T>> {
+        val results = mutableListOf<Pair<File, T>>()
+        // One answer per directory, cached: it may take reading a metadata file
         // from disk, and a library of several thousand ROMs would otherwise ask
-        // for the same collection's extensions once per file.
-        val perDir = HashMap<String, Set<String>>()
+        // about the same folder once per file.
+        val perDir = HashMap<String, T>()
         // By canonical path, so a repeated root, a root inside another (in either
         // order) and a symlinked alias are all the same directory, entered once.
         // It is also what stops a symlink pointing back up the tree: `walkTopDown`
@@ -89,10 +145,10 @@ object RomScanner {
                 .filter { it.isFile }
                 .forEach { f ->
                     val parent = f.parentFile ?: dir
-                    val allowed = perDir.getOrPut(parent.path) {
-                        runCatching { extensionsFor(parent) }.getOrDefault(ROM_EXTENSIONS)
+                    val folder = perDir.getOrPut(parent.path) { about(parent) }
+                    if (f.extension.lowercase() in allowed(folder) && keptFiles.add(canonical(f))) {
+                        results.add(f to folder)
                     }
-                    if (f.extension.lowercase() in allowed && keptFiles.add(canonical(f))) results.add(f)
                 }
         }
         BridgeLog.d(TAG, "scanned ${dirs.size} root(s) for ${results.size} files")

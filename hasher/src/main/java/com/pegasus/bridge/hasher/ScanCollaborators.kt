@@ -11,10 +11,10 @@ import android.content.Context
  * the connection, and hands them to its router. Nothing builds
  * [HasherService]: Android does, with no arguments, and starts it with an
  * Intent that carries strings. So the service asks here, once for every scan,
- * and each answer is a function that can be replaced, the way
- * [RomScanExtensions] takes its resolver. What replaces them is a run of the
- * service off a device, on a JVM that has no librahasher.so to load, must
- * not reach retroachievements.org and has no ConnectivityManager to ask.
+ * and each answer is a function that can be replaced. What replaces them is a
+ * run of the service off a device, on a JVM that has no librahasher.so to
+ * load, must not reach retroachievements.org and has no ConnectivityManager
+ * to ask.
  *
  * Mutable and one for the whole process, hence `internal`, and nothing in the
  * app sets any of them. Whoever replaces one puts the default back when done.

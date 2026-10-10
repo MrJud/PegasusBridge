@@ -115,6 +115,19 @@ interface RomHasher {
     fun hashDetailed(path: String, platform: String): HashOutcome =
         hash(path, platform)?.let { HashOutcome.Ok(it) }
             ?: HashOutcome.Failed("the hasher returned nothing")
+
+    /**
+     * The same, from a scan, which knows the file's collection and not only
+     * what it is called: the folder it is kept in and what it declares too.
+     *
+     * Defaulted to one name alone, which is all a hasher has needed so far:
+     * the short name, or the folder's where that says more of what the
+     * folder holds ([CollectionRef.hasherPlatform]). One placed between the
+     * scan and another hasher has to hand the collection on as it came, or
+     * the one inside is told less than the scan knew.
+     */
+    fun hashDetailed(path: String, collection: CollectionRef): HashOutcome =
+        hashDetailed(path, collection.hasherPlatform)
 }
 
 /**

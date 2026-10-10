@@ -245,7 +245,6 @@ class HasherService : Service() {
             lookup        = ScanCollaborators.lookup(raUser, raApiKey, device),
             throttleMs    = ::thermalDelayMs,
             hashWorkers   = hashWorkers,
-            extensionsFor = RomScanExtensions.forScan,
             // Every result, and not the fiftieth of the library the pipeline
             // reports by when it is not told. Which of them get a record is
             // decided below, and part of that is how long ago the last one

@@ -12,8 +12,6 @@ import com.pegasus.bridge.hasher.RaApiHashLookup
 import com.pegasus.bridge.hasher.RaHashLookup
 import com.pegasus.bridge.hasher.RomHasher
 import com.pegasus.bridge.hasher.RomScanPipeline
-import com.pegasus.bridge.hasher.RomScanner
-import com.pegasus.bridge.pegasus.MetadataFile
 import org.json.JSONObject
 import java.io.File
 import kotlin.system.exitProcess
@@ -239,31 +237,7 @@ class BridgeDaemon(
             hasher: RomHasher,
             lookup: RaHashLookup,
             hashWorkers: Int
-        ): RomScanPipeline = RomScanPipeline(
-            paths, hasher, lookup,
-            hashWorkers = hashWorkers,
-            // A collection states which extensions it contains, and the
-            // scanner's built-in list is only a default. They disagree
-            // more often than is comfortable — every collection in the
-            // library this was developed against declares one the list
-            // has never heard of — and the collection is the authority.
-            extensionsFor = ::collectionExtensions
-        )
-
-        /**
-         * What counts as a ROM in [dir]: the built-in set, plus whatever the
-         * collection's own metadata file declares.
-         *
-         * A union rather than a replacement. A collection that forgets to list `zip`
-         * should not thereby lose its archives, and one that adds a spelling of its
-         * own should not need the Bridge to be rebuilt to see it.
-         */
-        private fun collectionExtensions(dir: File): Set<String> {
-            val declared = runCatching { MetadataFile.readCollection(dir)?.extensions }
-                .getOrNull().orEmpty()
-            return if (declared.isEmpty()) RomScanner.ROM_EXTENSIONS
-                   else RomScanner.ROM_EXTENSIONS + declared
-        }
+        ): RomScanPipeline = RomScanPipeline(paths, hasher, lookup, hashWorkers = hashWorkers)
 
         /**
          * The daemon the command line asks for, not yet started.

@@ -1044,6 +1044,32 @@ class ThemeContractTest {
         assertEquals("hash_index", m?.method)
     }
 
+    // A disc game in a folder of its own, under a collection Pegasus reads
+    // from the metafile above it. The theme asks for a game by its file and
+    // the collection's short name, and that is the key the scan has to have
+    // written: taken from the game's folder, the key ended in the folder's
+    // name, and the game was found only by the title half of it, which any
+    // game of that name on any platform would have answered to.
+    @Test fun `a nested layout is found by exact key`(): Unit = runBlocking {
+        File(romRoot, "psx").mkdirs()
+        File(romRoot, "psx/metadata.pegasus.txt").writeText("collection: PlayStation\nshortname: psx\n")
+        val rom = rom("psx/Lantern Keep (USA)", "Lantern Keep (USA).bin", "hash-lantern")
+        val known = mapOf("hash-lantern" to GameMetadata(4001, "Lantern Keep", "PlayStation", "/Images/004001.png", 30))
+
+        assertEquals(1, scan(ContentHasher(), MapLookup(known)).newEntries)
+
+        val meta = JSONObject(paths.metadata("4001").readText())
+        assertEquals("psx", meta.getString("platform"))
+        assertEquals(FuzzyMatch.makeCacheKey("Lantern Keep (USA)", "psx"), meta.getString("cacheKey"))
+        val index = JSONObject(paths.discoveryIndex.readText())
+        assertEquals(setOf("lanternkeep|psx"), index.getJSONObject("byKey").keySet())
+
+        val m = RaMatcher.fromIndex(index, "Whatever The Library Calls It", "psx", rom.absolutePath)
+        assertEquals(4001, m?.gameId)
+        assertEquals("Lantern Keep", m?.title)
+        assertEquals("hash_index", m?.method)
+    }
+
     // The 732 files on the tablet were written before the plain hashes existed.
     // Each is hashed and asked about once more, and comes back with every key.
     @Test fun `a metadata file without fileMd5 is hashed again and rewritten whole`(): Unit = runBlocking {

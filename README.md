@@ -492,9 +492,8 @@ Android `hasher/` module is what only Android has:
   is compiled into the tablet's library and the desktop's;
 - `DeviceNetwork` — what Android's `ConnectivityManager` says of the
   connection, asked when a lookup's request has failed;
-- `ScanCollaborators` and `RomScanExtensions` — where the service gets its
-  hasher, its lookup, that reading of the connection and each collection's
-  extensions.
+- `ScanCollaborators` — where the service gets its hasher, its lookup and
+  that reading of the connection.
 
 So a change under `android-shared` needs both checks, and CI runs only the
 first:

@@ -296,7 +296,8 @@ one that found no ROM, was stopped, was cancelled or failed — it rebuilds
 - `byKey{}` is the reverse lookup from a ROM to its game. The Bridge reads it,
   in `RaMatcher` (`/ra/match`, `match-ra`); the theme does not. A key is
   `FuzzyMatch.makeCacheKey` of the ROM's file name without its extension and
-  of the folder it sits in.
+  of its collection's short name (the name of the folder it sits in, where no
+  metafile declares a collection).
 
 The legacy `ra_hashes_cache.json` (single mega-file with `external_hashes` and `verify_map`) is gone. `verify_map` was user-stored state and now lives only in `api.memory("ra_hash_verify_map")`.
 
@@ -685,10 +686,18 @@ lets discovery re-derive the command and lets an uninstalled emulator show up as
 
 ### The scanner's extension list
 
-`RomScanner.ROM_EXTENSIONS` is now a **default**, not a definition: the daemon
-adds whatever each collection's `extensions:` line declares. They disagree more
-often than is comfortable — every collection in the development library declares
-`jud`, which the built-in list has never heard of.
+`RomScanner.ROM_EXTENSIONS` is now a **default**, not a definition: a scan adds
+whatever the `extensions:` lines of a file's collection declare, on Android and
+on the desktop alike, and in the folders under the collection's own as well.
+They disagree more often than is comfortable — every collection in the
+development library declares `jud`, which the built-in list has never heard of.
+
+Which collection a file is in is read where Pegasus reads it: the nearest
+`metadata.pegasus.txt` at or above the file's folder that declares a
+`collection:` (`CollectionResolver`). The scan takes the file's platform from
+that collection's `shortname:`, so `psx/<game>/<game>.cue` is a `psx` game and
+not one of a platform called `<game>`. A folder under no such file is still
+taken for the collection its name says.
 
 ## 9. What changed vs. legacy
 

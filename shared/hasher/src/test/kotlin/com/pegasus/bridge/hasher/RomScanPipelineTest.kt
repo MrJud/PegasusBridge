@@ -397,6 +397,260 @@ class RomScanPipelineTest {
         assertEquals(1, h.calls.get(), "only the supported platform should be hashed")
     }
 
+    // ── A file's collection ─────────────────────────────────────────────────
+    //
+    // The libraries below are laid out as Pegasus wants them: a metafile in
+    // the collection's folder, which says what the collection is called, and
+    // the games in it or in folders of their own under it.
+
+    /** A collection declared in [folder] as Pegasus reads one. */
+    private fun collection(folder: String, name: String, shortName: String, extensions: String? = null) {
+        File(romRoot, folder).apply { mkdirs() }.resolve("metadata.pegasus.txt").writeText(
+            "collection: $name\nshortname: $shortName\n" + (extensions?.let { "extensions: $it\n" } ?: ""))
+    }
+
+    /** Fails the scan, and so the test, when a file that needs no lookup is asked about. */
+    private class NeverAsked : RaHashLookup {
+        override suspend fun lookup(hash: String): LookupOutcome =
+            throw AssertionError("the source was asked about $hash")
+    }
+
+    /**
+     * [ContentHasher], and every collection a scan handed it, by the file's
+     * name. It hands the collection on as a hasher that knows nothing of
+     * collections is handed it, and keeps the one name that came to.
+     */
+    private class CollectionHasher : RomHasher {
+        val inner = ContentHasher()
+        val handed = java.util.concurrent.ConcurrentHashMap<String, CollectionRef>()
+        val told = java.util.concurrent.ConcurrentHashMap<String, String>()
+        override fun hash(path: String): HashResult? = inner.hash(path)
+        override fun hash(path: String, platform: String): HashResult? {
+            told[File(path).name] = platform
+            return inner.hash(path)
+        }
+        override fun hashDetailed(path: String, collection: CollectionRef): HashOutcome {
+            handed[File(path).name] = collection
+            return super.hashDetailed(path, collection)
+        }
+    }
+
+    private val nested = mapOf(
+        "hash-lantern" to GameMetadata(3001, "Lantern Keep", "PlayStation", "/Images/3.png", 30))
+
+    private fun ledgerEntry(f: File): JSONObject =
+        JSONObject(File(paths.cache, ScanLedger.FILE_NAME).readText()).getJSONObject("entries")
+            .getJSONObject(f.canonicalPath)
+
+    // A disc game is kept in a folder of its own, and the folder was taken for
+    // its platform: the metadata said platform `lanternkeepusa`, under a key
+    // that ends the same way, and no theme asks for a game by that.
+    @Test fun `a file in a game folder takes its collection's platform`(): Unit = runBlocking {
+        collection("psx", "PlayStation", "psx")
+        rom("psx/Lantern Keep (USA)", "Lantern Keep (USA).bin", "hash-lantern")
+
+        val h = CollectionHasher()
+        val s = pipeline(h, MapLookup(nested)).scan(listOf(romRoot.absolutePath))
+
+        assertEquals(1, s.newEntries)
+        val meta = JSONObject(paths.metadata("3001").readText())
+        assertEquals("psx", meta.getString("platform"))
+        assertEquals("lanternkeep|psx", meta.getString("cacheKey"))
+        assertEquals(setOf("lanternkeep|psx"),
+                     JSONObject(paths.discoveryIndex.readText()).getJSONObject("byKey").keySet())
+        // The hasher is told the collection, and where it is kept.
+        val handed = h.handed.getValue("Lantern Keep (USA).bin")
+        assertEquals(listOf("psx", "PlayStation", "psx", CollectionRef.Source.DECLARED),
+                     listOf(handed.shortName, handed.name, handed.dirName, handed.source))
+        assertEquals(File(romRoot, "psx"), handed.directory)
+    }
+
+    // The files under `switch/Switch Files` were platform `Switch Files`,
+    // which is on no list of platforms to turn away: each was read to its end
+    // and asked about.
+    @Test fun `a nested folder of an unsupported collection is skipped`(): Unit = runBlocking {
+        collection("switch", "Nintendo Switch", "switch")
+        val f = rom("switch/Switch Files", "x.zip", "never read")
+
+        val h = ContentHasher()
+        val s = pipeline(h, NeverAsked()).scan(listOf(romRoot.absolutePath))
+
+        assertEquals(counts(new = 0, cached = 0, skipped = 1, unmatched = 0, incompatible = 0,
+                            hashFailed = 0, failedLookups = 0), s.counts())
+        assertEquals(0, h.calls.get(), "the file was read")
+        assertEquals("UNSUPPORTED", ledgerEntry(f).getString("state"))
+    }
+
+    // The theme hands over the folder of every game it knows as a root of its
+    // own. The collection is found above the root all the same, so a scan
+    // started there says of a file what a scan of the whole library says.
+    @Test fun `the game folder alone as root gives the same answers`(): Unit = runBlocking {
+        collection("psx", "PlayStation", "psx")
+        collection("switch", "Nintendo Switch", "switch")
+        rom("psx/Lantern Keep (USA)", "Lantern Keep (USA).bin", "hash-lantern")
+        val turnedAway = rom("switch/Switch Files", "x.zip", "never read")
+
+        val h = CollectionHasher()
+        val s = pipeline(h, MapLookup(nested)).scan(listOf(
+            File(romRoot, "psx/Lantern Keep (USA)").absolutePath,
+            File(romRoot, "switch/Switch Files").absolutePath))
+
+        assertEquals(counts(new = 1, cached = 0, skipped = 1, unmatched = 0, incompatible = 0,
+                            hashFailed = 0, failedLookups = 0), s.counts())
+        assertEquals("psx", JSONObject(paths.metadata("3001").readText()).getString("platform"))
+        assertEquals("lanternkeep|psx", JSONObject(paths.metadata("3001").readText()).getString("cacheKey"))
+        assertEquals("UNSUPPORTED", ledgerEntry(turnedAway).getString("state"))
+        assertEquals(setOf("Lantern Keep (USA).bin"), h.handed.keys)
+        assertEquals(1, h.inner.calls.get())
+    }
+
+    // What the collection calls itself is the platform, whatever the folder
+    // is called: it is the name the theme asks by, and the folder's is not.
+    // The hasher is told both.
+    @Test fun `a declared shortname names the platform`(): Unit = runBlocking {
+        collection("gamegear", "Sega 8-bit", "mastersystem")
+        rom("gamegear", "Lantern Keep (USA).sms", "hash-lantern")
+
+        val h = CollectionHasher()
+        pipeline(h, MapLookup(nested)).scan(listOf(romRoot.absolutePath))
+
+        val meta = JSONObject(paths.metadata("3001").readText())
+        assertEquals("lanternkeep|mastersystem", meta.getString("cacheKey"))
+        assertEquals("mastersystem", meta.getString("platform"))
+        val handed = h.handed.getValue("Lantern Keep (USA).sms")
+        assertEquals("mastersystem" to "gamegear", handed.shortName to handed.dirName)
+    }
+
+    // A hasher that knows nothing of collections is told one name, and what
+    // it does with it is choose the entry of an archive that is the game.
+    // That name is the short name, but not for a folder named for one console
+    // of the family the short name stands for: `gamegear` in a collection
+    // that calls itself `mastersystem`, `sega32x` in one that calls itself
+    // `megadrive`, as an ES-DE library has them. Told the short name there,
+    // the hasher looked in a zipped Game Gear cartridge for a Master System
+    // one, found none and hashed the zip, and a game that had matched while
+    // the folder's name was all a scan went by was written down as a miss.
+    @Test fun `an archive is opened for what its folder holds where the short name is of a wider family`(): Unit = runBlocking {
+        val games = nested + ("hash-other" to GameMetadata(3002, "Other Game", "32X", "/Images/4.png", 10))
+        zip("gamegear", "Lantern Keep (USA).zip", "Lantern Keep (USA).gg" to "hash-lantern")
+        zip("sega32x", "Other Game (USA).zip", "Other Game (USA).32x" to "hash-other")
+        val tmp = Files.createTempDirectory("hasher-tmp").toFile()
+        fun scanned() = runBlocking {
+            RomScanPipeline(paths, ArchiveAwareHasher(ContentHasher(), tmp), MapLookup(games), throttleMs = { 0L })
+                .scan(listOf(romRoot.absolutePath))
+        }
+        try {
+            // With no metafile each folder is the platform, as it always was.
+            assertEquals(2, scanned().newEntries)
+
+            collection("gamegear", "Sega 8-bit", "mastersystem")
+            collection("sega32x", "Sega 16-bit", "megadrive")
+            val s = scanned()
+
+            assertEquals(mapOf(ScanLedger.State.MATCHED to 2), s.states)
+            assertEquals(setOf("lanternkeep|mastersystem", "othergame|genesis"),
+                         JSONObject(paths.discoveryIndex.readText()).getJSONObject("byKey").keySet())
+        } finally {
+            tmp.deleteRecursively()
+        }
+    }
+
+    // And it is the short name wherever the folder says nothing more: a
+    // folder called anything at all, and one named for a console that is not
+    // of the short name's family, which the short name is taken to know
+    // better than.
+    @Test fun `a hasher that is told one name is told the short name unless the folder says more`(): Unit = runBlocking {
+        collection("Sony Console", "PlayStation", "psx")
+        collection("neogeo", "Neo Geo Pocket Color", "ngpc")
+        collection("gamegear", "Sega 8-bit", "mastersystem")
+        rom("Sony Console/Lantern Keep (USA)", "Lantern Keep (USA).bin", "hash-lantern")
+        rom("neogeo", "Pocket.ngc", "hash-pocket")
+        rom("gamegear", "Small.gg", "hash-small")
+        rom("loose/Some Game", "Some Game.bin", "hash-loose")
+
+        val h = CollectionHasher()
+        pipeline(h, MapLookup(nested)).scan(listOf(romRoot.absolutePath))
+
+        assertEquals(mapOf("Lantern Keep (USA).bin" to "psx", "Pocket.ngc" to "ngpc", "Small.gg" to "gamegear",
+                           "Some Game.bin" to "Some Game"), h.told.toMap())
+    }
+
+    // What a library scanned by a build before this one meets at its next
+    // scan. The key of a game in a folder of its own ended in that folder's
+    // name, and now ends in the collection's: the metadata file no longer
+    // answers for the ROM, so the ROM is read and asked about once more, its
+    // file is written over under the same id, and the index has the one key.
+    // After that it is found as any other. A miss is kept by the ROM's path,
+    // which has not moved, and costs nothing.
+    @Test fun `a game matched under its folder's name is read once more and then found by its collection's`(): Unit = runBlocking {
+        rom("psx/Lantern Keep (USA)", "Lantern Keep (USA).bin", "hash-lantern")
+        rom("psx/Unknown Game", "Unknown Game.bin", "hash-unknown")
+        // No metafile: the scan takes each folder for a platform, as every
+        // scan did.
+        pipeline(ContentHasher(), MapLookup(nested)).scan(listOf(romRoot.absolutePath))
+        fun byKey() = JSONObject(paths.discoveryIndex.readText()).getJSONObject("byKey").keySet()
+        assertEquals(setOf("lanternkeep|lanternkeepusa"), byKey())
+
+        collection("psx", "PlayStation", "psx")
+        val h = ContentHasher(); val l = MapLookup(nested)
+        val s = pipeline(h, l).scan(listOf(romRoot.absolutePath))
+
+        assertEquals(counts(new = 1, cached = 0, skipped = 0, unmatched = 1, incompatible = 0,
+                            hashFailed = 0, failedLookups = 0), s.counts())
+        assertEquals(1, h.calls.get(), "only the match is read again")
+        assertEquals(1, l.calls.get(), "only the match is asked about again")
+        assertEquals(setOf("lanternkeep|psx"), byKey())
+        assertEquals(1, s.indexed)
+        assertEquals(listOf("3001.json"),
+                     paths.metadata.list()!!.filter { it.endsWith(".json") && !it.startsWith("_") })
+
+        val h2 = ContentHasher(); val l2 = MapLookup(nested)
+        val s2 = pipeline(h2, l2).scan(listOf(romRoot.absolutePath))
+
+        assertEquals(counts(new = 0, cached = 1, skipped = 0, unmatched = 1, incompatible = 0,
+                            hashFailed = 0, failedLookups = 0), s2.counts())
+        assertEquals(0, h2.calls.get()); assertEquals(0, l2.calls.get())
+    }
+
+    // The list of platforms to turn away is asked about the folder as well as
+    // about the short name. `vita` is not on it and `psvita` is: with the
+    // short name alone, giving the collection its name would have had every
+    // file in it read and asked about.
+    @Test fun `psvita declaring shortname vita is still skipped`(): Unit = runBlocking {
+        collection("psvita", "PlayStation Vita", "vita")
+        val f = rom("psvita", "Some Game.zip", "never read")
+
+        val h = ContentHasher()
+        val s = pipeline(h, NeverAsked()).scan(listOf(romRoot.absolutePath))
+
+        assertEquals(1, s.skippedPlatforms)
+        assertEquals(0, h.calls.get(), "the file was read")
+        assertEquals("UNSUPPORTED", ledgerEntry(f).getString("state"))
+    }
+
+    // An extension a collection declares counted in the collection's own
+    // folder and not in a game's folder under it, where each shell read the
+    // metafile of the one folder a file was in. And it is the collection's:
+    // the same extension in a collection that does not declare it is no ROM.
+    @Test fun `an extension only the collection declares is found in a sub-folder`(): Unit = runBlocking {
+        collection("psx", "PlayStation", "psx", extensions = "cue, JUD")
+        collection("snes", "Super Nintendo", "snes")
+        rom("psx/Lantern Keep (USA)", "Lantern Keep (USA).jud", "hash-lantern")
+        rom("psx", "Loose.jud", "hash-loose")
+        // What a collection declares is added to the built-in list and does
+        // not stand in for it: one that lists two extensions keeps its `.bin`.
+        rom("psx/Another Game", "Unlisted.bin", "hash-unlisted")
+        rom("snes/Some Game", "Some Game.jud", "hash-undeclared")
+        rom("snes", "Plain.sfc", "hash-plain")
+
+        val h = CollectionHasher()
+        val s = pipeline(h, MapLookup(nested)).scan(listOf(romRoot.absolutePath))
+
+        assertEquals(setOf("Lantern Keep (USA).jud", "Loose.jud", "Unlisted.bin", "Plain.sfc"), h.handed.keys)
+        assertEquals(4, s.total)
+        assertEquals("lanternkeep|psx", JSONObject(paths.metadata("3001").readText()).getString("cacheKey"))
+    }
+
     // Several files sharing a hash should cost one network call, not one each.
     @Test fun `identical hashes are looked up once`(): Unit = runBlocking {
         rom("nes", "Copy A.nes", "hash-smb")

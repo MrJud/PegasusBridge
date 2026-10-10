@@ -408,6 +408,46 @@ class BridgeRouterTest {
         assertEquals(1.0, body.getDouble("progress"))
     }
 
+    // The pipeline a daemon builds, and not the one these tests build for
+    // themselves, on a library laid out as Pegasus wants it: a metafile in the
+    // collection's folder and a game in a folder of its own. Nothing is handed
+    // to that pipeline to read the metafile with, as there used to be, and it
+    // still has to find the extension the collection declares, a level down,
+    // and take the collection's name for the game's platform.
+    @Test fun `a scan through the daemon's own pipeline reads the collection from its metafile`() {
+        File(romRoot, "psx/Super Mario Bros. (World)").mkdirs()
+        File(romRoot, "psx/metadata.pegasus.txt").writeText(
+            "collection: PlayStation\nshortname: psx\nextensions: cue, jud\n")
+        File(romRoot, "psx/Super Mario Bros. (World)/Super Mario Bros. (World).jud").writeText("hash-smb")
+        File(romRoot, "nes").mkdirs()
+        File(romRoot, "nes/Undeclared.jud").writeText("hash-nope")
+
+        val asDaemon = BridgeRouter(paths, config, JobRegistry(paths), scanPipeline = {
+            BridgeDaemon.buildScanPipeline(paths, FixedHasher(), FixedLookup(), RomScanPipeline.DEFAULT_HASH_WORKERS)
+        })
+        val daemon = MicroHttpServer(handler = asDaemon::handle).also { it.start() }
+        try {
+            fun ask(p: String) = client.newCall(
+                Request.Builder().url("http://127.0.0.1:${daemon.port}$p").build()).execute()
+            val jobId = ask("/scan?roots=" + romRoot.absolutePath).use { JSONObject(it.body!!.string()).getString("jobId") }
+            var body = JSONObject()
+            for (attempt in 0 until 100) {
+                Thread.sleep(100)
+                body = ask("/jobs/$jobId").use { JSONObject(it.body!!.string()) }
+                if (body.getString("status") != "running") break
+            }
+
+            assertEquals("done", body.getString("status"), "job did not finish: $body")
+            assertEquals(1, body.getJSONObject("result").getInt("total"), "$body")
+            assertEquals(1, body.getJSONObject("result").getInt("newEntries"))
+            val meta = JSONObject(paths.metadata("1446").readText())
+            assertEquals("psx", meta.getString("platform"))
+            assertEquals("supermariobros|psx", meta.getString("cacheKey"))
+        } finally {
+            daemon.stop()
+        }
+    }
+
     // The theme picks the id and persists it, so a reload can re-attach to a scan
     // that is still running. The daemon has to adopt it rather than mint its own.
     @Test fun `scan adopts a client-supplied job id`() {

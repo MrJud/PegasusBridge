@@ -2,6 +2,7 @@ package com.pegasus.bridge.hasher
 
 import com.pegasus.bridge.core.BridgeLog
 import com.pegasus.bridge.core.PegasusMetafile
+import com.pegasus.bridge.core.RcConsoles
 import java.io.File
 
 /**
@@ -27,6 +28,23 @@ data class CollectionRef(
     val source: Source = Source.DECLARED
 ) {
     enum class Source { DECLARED, INFERRED }
+
+    /**
+     * The one name for a hasher that is told a platform and nothing more.
+     *
+     * The short name, with the exception the console table itself makes
+     * ([RcConsoles.resolve]): a collection kept in a folder named for one
+     * console of the family its short name stands for, `gamegear` under
+     * `mastersystem` or `sega32x` under `megadrive`, goes by the folder's
+     * name, and so does one whose short name the table has never heard of,
+     * in a folder it knows. The name decides which entry of an archive is
+     * the game. Told `mastersystem`, a hasher looked in a zipped Game Gear
+     * cartridge for a Master System one, found none and hashed the zip: a
+     * game that matched while the folder's name was all a scan went by
+     * became one the database lacks.
+     */
+    val hasherPlatform: String
+        get() = if (RcConsoles.resolve(shortName, dirName) == RcConsoles.row(shortName)) shortName else dirName
 
     companion object {
         /** The collection a folder called [name] is taken for when nothing declares one. */

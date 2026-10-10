@@ -34,15 +34,17 @@ them, so they can be found with no list of right answers:
       Game Boy is hashed whole with no check of the header, and it is the
       first console rcheevos tries for an extension it does not know.
 
-J2 and J3 ask what collection a file is in, and two things answer: the folder
+J2 and J3 ask what collection a file is in, and three things answer: the folder
 it is under at the root, which is where the library keeps it, and the
-`platform` column, which is what the scan took it for and handed the hasher.
-They differ for a file in a folder of its own, switch/Game/Game.iso, which the
-scan hands over as "Game". Either is enough: a file is in a collection with no
-algorithm when one of the two names one, and in an arcade collection when one
-of the two does. So an archive in a folder called mame is not J2 wherever that
-folder is, because the scan hashes it by name on purpose, and one in a folder
-under arcade is not J2 either.
+`platform` and `dirName` columns, which are what the scan took it for and
+handed the hasher: the short name its collection declares, and the name of the
+folder that collection is kept in. A table written before the scan knew of
+collections has no `dirName`, and its `platform` is the name of the file's own
+folder, "Game" for switch/Game/Game.iso. Any one is enough: a file is in a
+collection with no algorithm when one of the three names one, and in an arcade
+collection when one of the three does. So an archive in a folder called mame is
+not J2 wherever that folder is, because the scan hashes it by name on purpose,
+and one in a folder under arcade is not J2 either.
 
 For a file taken out of an archive the extension that counts is the entry's.
 
@@ -78,14 +80,14 @@ from pathlib import PurePosixPath, PureWindowsPath
 
 # What ScanAudit writes, in its order. `path` and `state` are the two a table
 # cannot do without; a table from a later build may have more columns.
-COLUMNS = ["path", "platform", "extension", "size", "state", "console",
+COLUMNS = ["path", "platform", "dirName", "extension", "size", "state", "console",
            "hash", "fileMd5", "archiveEntry", "detail", "asked", "ms"]
 COMPARED = ["platform", "state", "console", "hash", "fileMd5", "archiveEntry", "asked"]
 
 # The states of the ledger, in the order a person wants to read them: what was
 # identified, what was asked about, what could not be hashed. A state this
 # list does not have, which a later build may add, goes after them by name.
-STATE_ORDER = ["MATCHED", "NOT_FOUND", "API_RETRY", "UNSUPPORTED",
+STATE_ORDER = ["MATCHED", "NOT_FOUND", "KNOWN_UNSUPPORTED", "API_RETRY", "UNSUPPORTED",
                "AMBIGUOUS_ARCHIVE", "UNHASHABLE", "HASH_FAILED"]
 
 DESCRIPTORS = {"cue", "gdi", "m3u", "ccd", "toc"}
@@ -255,9 +257,12 @@ def junk_rules(row, roots):
     broken = []
     # Where the library keeps the file and what the scan took it for. The
     # second alone let through every file in a folder of its own: the scan
-    # hands switch/Game/Game.iso over as "Game", and a hash there is the
-    # very thing J3 is for.
-    kinds = {platform_key(collection_of(row["path"], roots)), platform_key(row.get("platform", ""))}
+    # handed switch/Game/Game.iso over as "Game", and a hash there is the
+    # very thing J3 is for. The folder the collection is kept in is the
+    # scan's word too, and a hash under a folder called switch is the same
+    # thing whatever the collection there calls itself.
+    kinds = {platform_key(collection_of(row["path"], roots)), platform_key(row.get("platform", "")),
+             platform_key(row.get("dirName", ""))}
     extension = extension_of(row)
     if extension in DESCRIPTORS and digest == row.get("fileMd5", "").lower():
         broken.append("J1")

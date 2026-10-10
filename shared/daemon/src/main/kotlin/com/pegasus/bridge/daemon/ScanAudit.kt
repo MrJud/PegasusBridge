@@ -4,6 +4,7 @@ import com.pegasus.bridge.core.BridgeLog
 import com.pegasus.bridge.core.BridgePaths
 import com.pegasus.bridge.core.Config
 import com.pegasus.bridge.hasher.ArchiveAwareHasher
+import com.pegasus.bridge.hasher.CollectionRef
 import com.pegasus.bridge.hasher.DeviceConnection
 import com.pegasus.bridge.hasher.GameMetadata
 import com.pegasus.bridge.hasher.HashOutcome
@@ -71,7 +72,7 @@ object ScanAudit {
     private const val TAG = "ScanAudit"
 
     /** The table's columns, in the order they are written. */
-    internal val COLUMNS = listOf("path", "platform", "extension", "size", "state", "console",
+    internal val COLUMNS = listOf("path", "platform", "dirName", "extension", "size", "state", "console",
                                   "hash", "fileMd5", "archiveEntry", "detail", "asked", "ms")
 
     /** What the command line came to. */
@@ -236,10 +237,12 @@ object ScanAudit {
      * that the ledger has not, which is a file the scan dropped when it was
      * stopped. Sorted by path, so that two tables of one library line up.
      *
-     * `platform` is what the scan handed the hasher with the file, and is
-     * empty for a file the hasher was never asked about. It is not worked out
-     * here from the folder: that would be this file's opinion, and what the
-     * scan takes a file's platform to be is one of the things being measured.
+     * `platform` and `dirName` are what the scan handed the hasher with the
+     * file, the short name of the file's collection and the name of the
+     * folder that collection is kept in, and are empty for a file the hasher
+     * was never asked about. They are not worked out here from the folder:
+     * that would be this file's opinion, and what the scan takes a file's
+     * collection to be is one of the things being measured.
      *
      * `asked` is 1 when the file's hash was put to the lookup. One request
      * answers for every file with the same hash, and each of them has a 1.
@@ -259,6 +262,7 @@ object ScanAudit {
             listOf(
                 path,
                 s?.platform.orEmpty(),
+                s?.dirName.orEmpty(),
                 file.extension.lowercase(),
                 (entry?.optLong("fileSize") ?: file.length()).toString(),
                 entry?.optString("state") ?: NOT_RECORDED,
@@ -350,8 +354,14 @@ object ScanAudit {
         private val skip: List<String>
     ) : RomHasher {
 
-        class Seen(val platform: String, val outcome: String, val console: String, val hash: String,
-                   val fileMd5: String, val archiveEntry: String, val reason: String, val ms: Long)
+        /**
+         * [platform] is the short name of the collection the scan gave, and
+         * [dirName] the name of that collection's folder; a caller that
+         * gave a platform and no collection has no folder to record.
+         */
+        class Seen(val platform: String, val dirName: String, val outcome: String, val console: String,
+                   val hash: String, val fileMd5: String, val archiveEntry: String, val reason: String,
+                   val ms: Long)
 
         private val seen = ConcurrentHashMap<String, Seen>()
 
@@ -364,13 +374,20 @@ object ScanAudit {
         override fun hash(path: String, platform: String): HashResult? = delegate.hash(path, platform)
 
         override fun hashDetailed(path: String, platform: String): HashOutcome =
-            recorded(path, platform) { delegate.hashDetailed(path, platform) }
+            recorded(path, platform, "") { delegate.hashDetailed(path, platform) }
 
-        private fun recorded(path: String, platform: String, ask: () -> HashOutcome): HashOutcome {
+        // The one a scan calls. The collection goes on as the object it came
+        // as: made again from its short name, the hasher inside would be told
+        // of a folder by that name, with nothing declared.
+        override fun hashDetailed(path: String, collection: CollectionRef): HashOutcome =
+            recorded(path, collection.shortName, collection.dirName) { delegate.hashDetailed(path, collection) }
+
+        private fun recorded(path: String, platform: String, dirName: String,
+                             ask: () -> HashOutcome): HashOutcome {
             val key = canonical(File(path))
             val started = System.nanoTime()
             fun keep(outcome: String, result: HashResult?, reason: String) {
-                seen[key] = Seen(platform, outcome, result?.consoleId?.toString().orEmpty(),
+                seen[key] = Seen(platform, dirName, outcome, result?.consoleId?.toString().orEmpty(),
                                  result?.hash.orEmpty(), result?.fileMd5.orEmpty(),
                                  result?.archiveEntry.orEmpty(), reason,
                                  (System.nanoTime() - started) / 1_000_000)

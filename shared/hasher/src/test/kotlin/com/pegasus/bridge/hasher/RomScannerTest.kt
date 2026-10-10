@@ -91,6 +91,31 @@ class RomScannerTest {
         assertTrue(results.size <= 1)
     }
 
+    // The same of the scan that asks about collections. A folder whose
+    // metafiles cannot be listed is the folder it is called, as every folder
+    // was before anything was asked, and an answer given in place of the
+    // collection's that cannot be had is the built-in list.
+    @Test fun `a folder that cannot be resolved is taken for its name and the scan goes on`() {
+        touch("psx/metadata.pegasus.txt").writeText("collection: PlayStation\nshortname: psx\nextensions: jud\n")
+        touch("psx/Declared.jud")
+        touch("locked/game.nes")
+        touch("locked/weird.jud")
+        val resolver = CollectionResolver { dir ->
+            if (dir.name == "locked") error("no listing here") else com.pegasus.bridge.core.PegasusMetafile.filesIn(dir)
+        }
+
+        val found = RomScanner.scanWithCollections(listOf(root.path), resolver)
+
+        assertEquals(mapOf("Declared.jud" to "psx", "game.nes" to "locked"),
+                     found.associate { it.file.name to it.collection.shortName })
+        assertEquals(CollectionRef.Source.INFERRED, found.single { it.file.name == "game.nes" }.collection.source)
+
+        val overridden = RomScanner.scanWithCollections(listOf(root.path), CollectionResolver()) { dir ->
+            if (dir.name == "locked") error("no answer here") else setOf("jud")
+        }
+        assertEquals(listOf("Declared.jud", "game.nes"), overridden.map { it.file.name }.sorted())
+    }
+
     // ── The same tree reached more than once ────────────────────────────────
 
     @Test fun `repeated roots do not repeat files`() {

@@ -179,6 +179,10 @@ class JunkTest(Tables):
             row("ps3/Some Game/USRDIR/disc.iso", hash=md5("p"), console="1"),
             # And a collection only the scan knows by such a name.
             row("consoles/Handheld.rom", hash=md5("h"), console="1", platform="PS Vita"),
+            # Or by the name of the folder it is kept in, under a short name
+            # of its own and below the folder at the root.
+            row("consoles/psvita/Kept.rom", hash=md5("k"), console="1", platform="handheld", dirName="psvita"),
+            row("consoles/portable/Fine.rom", hash=md5("f"), console="1", platform="handheld", dirName="portable"),
             # No hash is what such a collection should have.
             row("switch/Unhashed.nsp", state="UNSUPPORTED", platform=""),
             row("amiga/Unread.adf", state="HASH_FAILED"),
@@ -189,7 +193,8 @@ class JunkTest(Tables):
         ]
         self.only("J3", rows, sorted([f"{name}/Game.rom" for name in nowhere]
                                      + ["Wii U/Game.rom", "PS-Vita/Game.rom", "switch/Game/Game.iso",
-                                        "ps3/Some Game/USRDIR/disc.iso", "consoles/Handheld.rom"]))
+                                        "ps3/Some Game/USRDIR/disc.iso", "consoles/Handheld.rom",
+                                        "consoles/psvita/Kept.rom"]))
 
     def test_j4_a_game_boy_hash_for_a_file_that_is_not_one(self):
         rows = [

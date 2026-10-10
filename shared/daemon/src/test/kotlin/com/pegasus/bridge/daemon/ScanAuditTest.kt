@@ -5,6 +5,7 @@ import com.pegasus.bridge.core.BridgePaths
 import com.pegasus.bridge.core.Config
 import com.pegasus.bridge.core.NoopLog
 import com.pegasus.bridge.core.StderrLog
+import com.pegasus.bridge.hasher.CollectionRef
 import com.pegasus.bridge.hasher.GameMetadata
 import com.pegasus.bridge.hasher.HashOutcome
 import com.pegasus.bridge.hasher.HashResult
@@ -182,9 +183,8 @@ class ScanAuditTest {
         assertEquals(listOf("audit.tsv"), out.parentFile.list()!!.toList())
     }
 
-    // What makes the audit's scan the daemon's: the pipeline is the one the
-    // daemon builds, with the resolver that reads a collection's own
-    // extensions. A pipeline built here without it finds `jud` nowhere.
+    // The audit's scan reads a collection's metafile as a daemon's does: an
+    // extension counts where the collection declares it and nowhere else.
     @Test fun `a collection's own extensions count in an audit as they do in a scan`() {
         rom("snes/Declared.jud")
         File(roms, "snes/metadata.pegasus.txt").writeText(
@@ -195,6 +195,26 @@ class ScanAuditTest {
         assertEquals(0, audit())
 
         assertEquals(setOf("Declared.jud", "Plain.nes"), rows().keys)
+    }
+
+    // What the scan takes a file's collection to be is in the table as the
+    // scan handed it to the hasher: the short name the collection declares,
+    // and the name of the folder it is kept in. They are one where nothing
+    // declares a collection, and for a file in a folder of its own they are
+    // the collection's and not that folder's.
+    @Test fun `a folder declaring shortname 'whatever' is recorded with both names`() {
+        rom("x/Declared.sfc")
+        rom("x/A Game/Nested.sfc")
+        File(roms, "x/metadata.pegasus.txt").writeText("collection: Something Else\nshortname: whatever\n")
+        rom("snes/Plain.sfc")
+
+        assertEquals(0, audit())
+
+        val rows = rows()
+        fun names(file: String) = listOf("platform", "dirName").map { rows.getValue(file).getValue(it) }
+        assertEquals(listOf("whatever", "x"), names("Declared.sfc"))
+        assertEquals(listOf("whatever", "x"), names("Nested.sfc"))
+        assertEquals(listOf("snes", "snes"), names("Plain.sfc"))
     }
 
     @Test fun `a file over the limit or named to be skipped is answered for without being read`() {
@@ -520,6 +540,7 @@ class ScanAuditTest {
     // a kind this hasher takes nothing out of, as one added later would be.
     @Test fun `the recording hasher hands on what it was given and keeps what came back`() {
         val given = ConcurrentLinkedQueue<Pair<String, String>>()
+        val collections = ConcurrentLinkedQueue<Pair<String, CollectionRef>>()
         val answers = mapOf(
             "Good.sfc" to HashOutcome.Ok(HashResult("hash-good", 3, fileMd5 = "md5-good", archiveEntry = "Inner.sfc")),
             "Bad.sfc" to HashOutcome.Failed("the hasher could not read Bad.sfc", retryable = false),
@@ -529,6 +550,10 @@ class ScanAuditTest {
             override fun hashDetailed(path: String, platform: String): HashOutcome {
                 given += path to platform
                 return answers[File(path).name] ?: throw java.io.IOException("cannot read ${File(path).name}")
+            }
+            override fun hashDetailed(path: String, collection: CollectionRef): HashOutcome {
+                collections += path to collection
+                return answers.getValue("Good.sfc")
             }
         }
         val recording = ScanAudit.RecordingHasher(inside, null, emptyList())
@@ -552,5 +577,23 @@ class ScanAuditTest {
         assertEquals(listOf("Super Nintendo", "threw IOException", "", "", "", "", "cannot read Gone.sfc"),
                      kept("Gone.sfc"))
         assertEquals(4, seen.size)
+        // A caller that gave a platform gave no folder.
+        assertEquals(setOf(""), seen.values.map { it.dirName }.toSet())
+
+        // The call a scan makes, with the file's collection. The hasher inside
+        // has to be handed the collection itself: one made again from its
+        // short name would have lost the folder and what the collection
+        // declares, and the audit would decide by less than a daemon does.
+        val collection = CollectionRef("snes", "Super Nintendo", "Nintendo 16-bit", File(roms, "Nintendo 16-bit"),
+                                       setOf("sfc", "jud"))
+        val scanned = rom("Nintendo 16-bit/A Game/Scanned.jud")
+        assertTrue(answers.getValue("Good.sfc") === recording.hashDetailed(scanned.path, collection))
+        assertEquals(1, collections.size)
+        assertEquals(scanned.path, collections.single().first)
+        assertTrue(collection === collections.single().second, "the collection was taken apart on the way")
+        assertEquals(4, given.size, "a call with a collection was passed on as one with a platform")
+        val kept = recording.seen().getValue(scanned.canonicalPath)
+        assertEquals(listOf("snes", "Nintendo 16-bit", "Ok", "hash-good"),
+                     listOf(kept.platform, kept.dirName, kept.outcome, kept.hash))
     }
 }

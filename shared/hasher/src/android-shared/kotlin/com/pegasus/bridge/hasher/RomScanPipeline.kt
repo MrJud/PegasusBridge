@@ -32,14 +32,17 @@ class RomScanPipeline(
     private val hashWorkers: Int = DEFAULT_HASH_WORKERS,
     private val apiWorkers: Int = DEFAULT_API_WORKERS,
     /**
-     * Which extensions count as ROMs in a given directory.
+     * Which extensions count as ROMs in a given directory, in place of the
+     * scan's own answer: the built-in set and what the folder's collection
+     * declares, which [RomScanner.scanWithCollections] reads from the
+     * collection's metafile.
      *
-     * Supplied by the caller because the honest answer lives in the collection's
-     * own `metadata.pegasus.txt`, and this module cannot read one without
-     * depending on the module that parses it. The default is the built-in set,
-     * which is what every existing caller already got.
+     * Both shells used to supply this, each reading the metafile through the
+     * module that parses one, because this module could not. It can now, and
+     * neither shell gives anything here. What is left is for a test that
+     * wants a scan to count fewer files than it would.
      */
-    private val extensionsFor: (File) -> Set<String> = { RomScanner.ROM_EXTENSIONS },
+    private val extensionsFor: ((File) -> Set<String>)? = null,
     /**
      * How many results go by between two reports of progress, for a library
      * of [total] files. The last result is reported whatever this says.
@@ -203,7 +206,9 @@ class RomScanPipeline(
     ): Summary {
         paths.ensureAll()
 
-        val files = RomScanner.scan(roots, extensionsFor)
+        // One resolver for one scan, as it asks to be: it never reads a
+        // metafile twice, so one kept longer would not hear of an edit.
+        val files = RomScanner.scanWithCollections(roots, CollectionResolver(), extensionsFor)
         val total = files.size
         BridgeLog.i(TAG, "found $total ROM files under ${roots.size} root(s)")
         if (total == 0) return Summary(0, 0, 0, 0, 0, writeDiscoveryIndex())
@@ -217,7 +222,7 @@ class RomScanPipeline(
         val ledger = ScanLedger(File(paths.cache, ScanLedger.FILE_NAME))
         val now = BridgePaths.epochSeconds()
 
-        val fileQueue    = Channel<File>(capacity = 64)
+        val fileQueue    = Channel<RomScanner.ScannedFile>(capacity = 64)
         val hashQueue    = Channel<HashJob>(capacity = 32)
         val resultQueue  = Channel<ResultJob>(capacity = 128)
         // hash -> the one lookup for it, in flight or finished.
@@ -252,9 +257,9 @@ class RomScanPipeline(
 
                 val producers = List(hashProducers(hashWorkers)) {
                     launch(Dispatchers.Default) {
-                        for (file in fileQueue) {
+                        for (scanned in fileQueue) {
                             if (!isActive) break
-                            processFile(file, metaCache, ledger, now, hashQueue, resultQueue)
+                            processFile(scanned, metaCache, ledger, now, hashQueue, resultQueue)
                         }
                     }
                 }
@@ -521,7 +526,7 @@ class RomScanPipeline(
         // out. Such a scan only adds now. Nothing in between depends on the
         // order: the ledger is asked only about files the walk found, which are
         // never the ones dropped, and the counts are of this run.
-        ledger.forget(files.map { canonical(it) }.toSet(), roots.map { canonical(File(it)) })
+        ledger.forget(files.map { canonical(it.file) }.toSet(), roots.map { canonical(File(it)) })
         ledger.save { f, text -> BridgePaths.writeAtomic(f, text) }
         // The index after the ledger, and not before it as it was. A write of
         // the index that fails is thrown from here, so that a scan whose index
@@ -548,22 +553,32 @@ class RomScanPipeline(
     }
 
     private suspend fun processFile(
-        file: File,
+        scanned: RomScanner.ScannedFile,
         metaCache: Map<String, CachedMeta>,
         ledger: ScanLedger,
         now: Long,
         hashQueue: Channel<HashJob>,
         resultQueue: Channel<ResultJob>
     ) {
-        val rawPlatform = file.parentFile?.name ?: "unknown"
-        val platform    = FuzzyMatch.normalizePlatform(rawPlatform)
+        val file        = scanned.file
+        val collection  = scanned.collection
+        // What the file's collection calls its platform, and not the name of
+        // the folder the file is in. The two are one for `nes/Game.nes` and
+        // for nothing kept a level down: `psx/<game>/Game.bin` was platform
+        // `<game>`, under a key no theme asks by, and the files in a folder
+        // under `switch` were hashed and asked about.
+        val rawPlatform = collection.shortName
         val path        = canonical(file)
         val size        = file.length()
         val modified    = file.lastModified()
 
-        if (platform in UNSUPPORTED_PLATFORMS) {
+        // By either name. A folder `psvita` whose collection calls itself
+        // `vita` is no more covered for the short name not being on the list.
+        val uncovered = listOf(rawPlatform, collection.dirName).map(FuzzyMatch::normalizePlatform)
+            .firstOrNull { it in UNSUPPORTED_PLATFORMS }
+        if (uncovered != null) {
             ledger.record(path, ScanLedger.State.UNSUPPORTED, size, modified, now,
-                          detail = "RetroAchievements does not cover $platform")
+                          detail = "RetroAchievements does not cover $uncovered")
             resultQueue.send(ResultJob(HashJob(file, "", HashResult("", 0), rawPlatform, 0, 0),
                                        skipped = true))
             return
@@ -611,7 +626,7 @@ class RomScanPipeline(
         // flight before the scope could return; this interrupts the thread, so a
         // read that honours interrupts stops where it is. A java.io stream does
         // not, and a loop reading one has to look for the interrupt itself.
-        val outcome = try { runInterruptible(Dispatchers.IO) { hasher.hashDetailed(file.absolutePath, rawPlatform) } }
+        val outcome = try { runInterruptible(Dispatchers.IO) { hasher.hashDetailed(file.absolutePath, collection) } }
                       catch (c: kotlinx.coroutines.CancellationException) { throw c }
                       catch (t: Throwable) {
                           // An interrupted read rarely says so: a file channel throws

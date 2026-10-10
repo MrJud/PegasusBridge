@@ -340,4 +340,33 @@ class CollectionResolverTest {
         assertEquals("psx", ref.shortName)
         assertEquals(File(library, "psx"), ref.directory)
     }
+    // A hasher that is told one name is told the short name, but for a
+    // folder named for one console of the family the short name stands for,
+    // or for a console the table knows where it has never heard of the short
+    // name: there the folder's name says what an archive in it holds.
+    @Test fun `the one name a hasher is told is the folder's only where the folder says more`() {
+        fun told(shortName: String, dirName: String) =
+            CollectionRef(shortName, "Whatever It Is Called", dirName, File(library, dirName), emptySet()).hasherPlatform
+        val rows = listOf(
+            // The folder is the collection, in so many words or in others.
+            Triple("psx", "psx", "psx"),
+            Triple("psx", "Sony Console", "psx"),
+            Triple("mastersystem", "Sega master system", "mastersystem"),
+            Triple("c64", "commodore64", "c64"),
+            // One console of the family the short name is of.
+            Triple("mastersystem", "gamegear", "gamegear"),
+            Triple("megadrive", "sega32x", "sega32x"),
+            Triple("megadrive", "segacd", "segacd"),
+            Triple("gba", "gb", "gb"),
+            // A console outside it: the short name is taken at its word.
+            Triple("ngpc", "neogeo", "ngpc"),
+            Triple("nes", "switch", "nes"),
+            Triple("vita", "psx", "vita"),
+            // A short name the table has never heard of.
+            Triple("sixteenbit", "megadrive", "megadrive"),
+            Triple("sixteenbit", "Old Games", "sixteenbit"))
+        assertEquals(rows.map { "${it.first} in ${it.second}: ${it.third}" },
+                     rows.map { "${it.first} in ${it.second}: ${told(it.first, it.second)}" })
+        assertEquals("Old Games", CollectionRef.inferred("Old Games").hasherPlatform)
+    }
 }

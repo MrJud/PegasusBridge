@@ -447,7 +447,7 @@ class HashRecipeTest {
     // match, at the first scan of the build that carries it.
     @Test fun `the recipe changes when a table does`() {
         assertEquals(
-            "rules=5;rc=none;ext=750286ba;con=f6451701;sel=5dbc3d88;disc=c489d5eb;deny=2e1b62a9;" +
+            "rules=6;rc=none;ext=750286ba;con=f6451701;sel=5dbc3d88;disc=c489d5eb;deny=2e1b62a9;" +
             "containers=wbfs0,chd0;ph=1,512,24d0ed6a",
             HashRecipe("none").global,
             "A table a file is judged by has changed, and with it the number every verdict is kept under: " +

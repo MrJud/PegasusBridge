@@ -318,6 +318,40 @@ class GoldenHashTest {
         assertEquals(emptyList(), File(dir, "tmp").listFiles().orEmpty().map { it.name }, "a disc was left behind")
     }
 
+    // A Mega Drive collection is where the games of the Sega CD, the 32X and
+    // the 8-bit consoles are kept as well, and loose each is hashed as what
+    // it is. Zipped, each was held to a list of Mega Drive cartridges alone:
+    // the cartridges of the other consoles were archives with nothing
+    // playable in them, and of a Sega CD disc the sheet was passed over and
+    // the track, a `.bin`, hashed as a cartridge of 75 KiB, under console 1.
+    // An archive now gives what its entry gives loose.
+    @Test
+    fun `what a Mega Drive collection holds hashes zipped as it does loose`() {
+        val name = "Golden Sega CD (Japan)"
+        val track = segaCdTrack()
+        val folder = File(dir, "megadrive").apply { mkdirs() }
+        val disc = zip(File(folder, "$name.zip"), "$name.cue" to cueFor(name), "$name.bin" to track)
+        val r = assertIs<HashOutcome.Ok>(hasher.hashDetailed(disc.absolutePath, "megadrive")).result
+        assertEquals("$SEGA_CD|9" to "$name.cue", "${r.hash}|${r.consoleId}" to r.archiveEntry)
+
+        val wrong = listOf("Golden 8-bit (Europe).sms" to 11, "Golden Handheld (World).gg" to 15,
+                           "Golden 32X (USA).32x" to 10).mapNotNull { (cartridge, console) ->
+            val bytes = noise(32 * 1024, seed = 400 + console)
+            val loose = File(folder, cartridge).apply { writeBytes(bytes) }
+            val zipped = zip(File(folder, cartridge.substringBeforeLast('.') + ".zip"),
+                             README to "x".toByteArray(), cartridge to bytes)
+            val expected = "${md5(bytes)}|$console"
+            val answers = listOf(loose, zipped).map { file ->
+                (hasher.hashDetailed(file.absolutePath, "megadrive") as? HashOutcome.Ok)?.result
+                    ?.let { "${it.hash}|${it.consoleId}" } ?: "no hash"
+            }
+            if (answers == listOf(expected, expected)) null
+            else "$cartridge: loose ${answers[0]}, zipped ${answers[1]}, expected $expected"
+        }
+        assertEquals(emptyList(), wrong)
+        assertEquals(emptyList(), File(dir, "tmp").listFiles().orEmpty().map { it.name }, "a copy was left behind")
+    }
+
     // What rcheevos itself says of a disc taken out whose sheet it reads for
     // another name than was written: two blanks after FILE, which it takes
     // for the start of a bare name. It asks for a file that was never in the

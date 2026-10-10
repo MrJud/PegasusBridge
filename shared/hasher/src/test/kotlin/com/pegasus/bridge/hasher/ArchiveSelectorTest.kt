@@ -1,6 +1,7 @@
 package com.pegasus.bridge.hasher
 
 import com.pegasus.bridge.core.FuzzyMatch
+import com.pegasus.bridge.core.RcConsoles
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
@@ -190,11 +191,108 @@ class ArchiveSelectorTest {
             }
 
         assertEquals("Lantern Keep (USA).gg", picked("mastersystem", "gamegear"), "the folder narrows the short name")
-        assertEquals("NoPlayableEntry", picked("mastersystem", "mastersystem"), "a Master System collection")
-        assertEquals("NoPlayableEntry", picked("mastersystem", "Sega 8-bit"), "a folder that says nothing")
         assertEquals("Lantern Keep (USA).gg", picked("gamegear", "Handhelds"), "the short name alone")
         assertEquals("Lantern Keep (USA).gg", picked("sega8", "gamegear"), "a short name nobody knows, in a folder that is")
         assertEquals("NoPlayableEntry", picked("nes", "gamegear"), "a short name that knows better than the folder")
+        // A Master System collection is where Game Gear cartridges are kept
+        // too, by the console table, and a scan hashes a loose one there as
+        // what it is. So does it a zipped one, whatever the folder is called.
+        assertEquals("Lantern Keep (USA).gg", picked("mastersystem", "mastersystem"), "a Master System collection")
+        assertEquals("Lantern Keep (USA).gg", picked("mastersystem", "Sega 8-bit"), "a folder that says nothing")
+    }
+
+    // The console table and the lists here were two opinions on what a
+    // collection holds. A scan hashes a loose `.gb` under `snes`, a `.32x`
+    // under `megadrive`, a `.min` under `pokemini`, each as the console the
+    // table's row gives it; the same cartridge in a zip was held to a list
+    // that had never heard of the row's family, and the archive held nothing
+    // playable. Twenty-four names of collections had such an extension.
+    //
+    // Every extension rcheevos gives one console, and every one a row sends
+    // somewhere itself: wherever the plan for the loose file is to hash it
+    // as that console, a console of the collection's family, the same file
+    // as the one entry of an archive there is the game. An extension whose
+    // own console nobody can hash for is passed over: loose it is hashed as
+    // the collection's console for want of a better, as any name is, and
+    // that is no evidence of what the collection holds.
+    @Test fun `what a collection hashes loose by its row is playable in its archives`() {
+        val wrong = mutableListOf<String>()
+        var checked = 0
+        for (row in RcConsoles.ROWS.filterIsInstance<RcConsoles.Hashable>().filter { !it.arcade }) {
+            val told = RomHashIO.RC_SINGLE.filterValues { it != null && it in row.family }.keys +
+                       row.overridesByExtension.keys + row.overridesBySize.flatMap { it.extensions }
+            for (name in listOf(row.key) + row.spellings) {
+                for (extension in told) {
+                    val plan = ConsoleChoice.choose(row, extension, Long.MAX_VALUE, insideArchive = true)
+                    if (plan !is ConsoleChoice.Plan.Hash || plan.foreign) continue
+                    checked++
+                    val picked = ArchiveSelector.select(listOf(e("readme.txt", 500), e("Game.$extension", 4096)),
+                                                        "Game.zip", CollectionRef.inferred(name))
+                    if ((picked as? ArchiveSelector.Selection.One)?.entry?.name != "Game.$extension")
+                        wrong += "$name: Game.$extension is hashed loose as console ${plan.console}, and zipped it is $picked"
+                }
+            }
+        }
+        assertEquals(emptyList(), wrong)
+        assertTrue(checked > 100, "only $checked pairs of a collection and an extension were looked at")
+    }
+
+    // The cases the rule was written for, by name, and the ones it must
+    // leave alone: a file of a console outside the family is still no game
+    // of the collection.
+    @Test fun `an archive holds what its collection's family holds, and no more`() {
+        fun picked(platform: String, vararg names: String): String =
+            when (val s = ArchiveSelector.select(names.map { e(it, 4096) }, "Game.zip", CollectionRef.inferred(platform))) {
+                is ArchiveSelector.Selection.One -> s.entry.name
+                else -> s.javaClass.simpleName
+            }
+        val expected = listOf(
+            Triple("megadrive", listOf("Game.32x"), "Game.32x"),
+            Triple("megadrive", listOf("Game.sms"), "Game.sms"),
+            Triple("megadrive", listOf("Game.gg"), "Game.gg"),
+            Triple("megadrive", listOf("Game.iso"), "Game.iso"),
+            // A Sega CD disc: the sheet leads, and its track is no cartridge.
+            Triple("megadrive", listOf("Game.bin", "Game.cue"), "Game.cue"),
+            Triple("megadrive", listOf("Disc 1.cue", "Disc 2.cue", "Game.m3u"), "Game.m3u"),
+            Triple("megadrivejp", listOf("Game.md"), "Game.md"),
+            Triple("snes", listOf("Game.gb"), "Game.gb"),
+            Triple("gba", listOf("Game.gbc"), "Game.gbc"),
+            Triple("mastersystem", listOf("Game.gg"), "Game.gg"),
+            Triple("pokemini", listOf("Game.min"), "Game.min"),
+            Triple("supervision", listOf("Game.sv"), "Game.sv"),
+            Triple("zxspectrum", listOf("Game.tzx"), "Game.tzx"),
+            Triple("channelf", listOf("Game.chf"), "Game.chf"),
+            Triple("wii", listOf("Game.gcm"), "Game.gcm"),
+            Triple("nes", listOf("Game.gg"), "NoPlayableEntry"),
+            Triple("snes", listOf("Game.sms"), "NoPlayableEntry"),
+            Triple("psx", listOf("Game.nes"), "NoPlayableEntry"),
+            // A cartridge collection gains no sheet, and so no playlist.
+            Triple("nes", listOf("Game.m3u"), "NoPlayableEntry"),
+            Triple("nes", listOf("Game.cue"), "NoPlayableEntry"))
+
+        assertEquals(emptyList(), expected.mapNotNull { (platform, names, entry) ->
+            picked(platform, *names.toTypedArray()).takeIf { it != entry }?.let { "$platform $names: $it, expected $entry" }
+        })
+    }
+
+    // A scan picks up, loose, what a collection lists in `extensions:`, and
+    // hashes it as the collection's console. The selector never looked at
+    // the line, so the same file zipped was no game of the collection. An
+    // archive listed there is not one: none is opened inside another.
+    @Test fun `what a collection declares is playable in its archives, but for an archive`() {
+        fun ref(shortName: String, vararg declared: String) =
+            CollectionRef(shortName, shortName, shortName, directory = null, declaredExtensions = declared.toSet())
+        fun picked(collection: CollectionRef, name: String): String =
+            when (val s = ArchiveSelector.select(listOf(e("readme.txt", 500), e(name, 4096)), "Game.zip", collection)) {
+                is ArchiveSelector.Selection.One -> s.entry.name
+                else -> s.javaClass.simpleName
+            }
+
+        assertEquals("NoPlayableEntry", picked(ref("nes"), "Game.prototype"))
+        assertEquals("Game.prototype", picked(ref("nes", "nes", "prototype"), "Game.prototype"))
+        assertEquals("Game.j64x", picked(ref("a machine nobody has heard of", "j64x"), "Game.j64x"))
+        assertEquals("NoPlayableEntry", picked(ref("nes", "nes", "zip", "7z"), "Inner.zip"))
+        assertEquals("NoPlayableEntry", picked(ref("nes", "nes", "zip", "7z"), "Inner.7z"))
     }
 
     // Every key in the platform table has to be in normalised form or it can never

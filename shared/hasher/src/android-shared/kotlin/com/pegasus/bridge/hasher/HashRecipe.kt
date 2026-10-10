@@ -127,10 +127,16 @@ class HashRecipe internal constructor(
          * done here. The two below are raised by hand as well, each for
          * one corner, so that [global] says which corner moved.
          *
-         * 5, after the four numbers the ledger's version had while it was a
-         * constant (their history is in [ScanLedger]).
+         * 5 came after the four numbers the ledger's version had while it
+         * was a constant (their history is in [ScanLedger]).
+         *
+         * 6: the entries of an archive are held to what the collection's
+         * row and its own metafile say it holds, beside the list of its
+         * name ([ArchiveSelector.extensionsFor]). The lists themselves did
+         * not move, so no checksum did, and an archive kept as one with
+         * nothing playable in it would have stood for its month.
          */
-        const val RULES = 5
+        const val RULES = 6
 
         /**
          * The readers this build has for the two packed formats it could

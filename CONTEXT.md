@@ -123,9 +123,15 @@ does what was decided. In a collection the console table knows, rcheevos is told
 the console: what it refuses there is kept (`UNHASHABLE`) and not tried at
 every scan, unless the file could not be opened. An arcade set is hashed by its
 name and never opened; a Neo Geo cartridge kept as one `.neo` file is the one
-file of such a collection that is, and is hashed by its ROMs. Any other zip or 7z is opened for the one entry that is
-the game, and is never hashed as the file it is: one with no game in it is
-`NO_PLAYABLE_ENTRY`. A playlist is hashed as the first file it names. Only in a
+file of such a collection that is, and is hashed by its ROMs. Any other zip or
+7z is opened for the one entry that is the game, and is never hashed as the
+file it is: one with no game in it is `NO_PLAYABLE_ENTRY`. Which entries can be
+the game is `ArchiveSelector`'s list for the collection's name with what the
+collection itself adds (`ArchiveSelector.extensionsFor`): the extensions of
+every console of its row's family, the ones the row sends to a console by name
+or by size, and the ones its metafile declares, so that a file hashed loose as
+a console of the collection is hashed the same from inside an archive. A
+playlist is hashed as the first file it names. Only in a
 collection nothing is known of is the console still left to the extension, and
 a hash rcheevos then gives under a console that is held back
 (`RcConsoles.HELD_BACK`: the PlayStation 3, which it tries an `.iso` as) is a

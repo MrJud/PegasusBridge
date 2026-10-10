@@ -1,6 +1,7 @@
 package com.pegasus.bridge.hasher
 
 import com.pegasus.bridge.core.FuzzyMatch
+import com.pegasus.bridge.core.RcConsoles
 
 /**
  * Which file inside an archive is the ROM.
@@ -25,8 +26,10 @@ import com.pegasus.bridge.core.FuzzyMatch
  *
  * MAME and Neo Geo are deliberately not served here: their archives hold a pile
  * of separately-dumped chips and their identity is the romset *name*, so there
- * is no entry to pick. `ScreenScraperSystemMap.matchedByName` decides that, and
- * a caller that reaches this for an arcade set has already gone wrong.
+ * is no entry to pick. For a scan [ConsoleChoice] decides that from the
+ * collection's row, before an archive is opened, and for the scrapers
+ * `ScreenScraperSystemMap.matchedByName` does; a caller that reaches this for
+ * an arcade set has already gone wrong.
  */
 object ArchiveSelector {
 
@@ -172,6 +175,47 @@ object ArchiveSelector {
     }
 
     /**
+     * What an archive of [collection] may hold for its game: the list of the
+     * one name a hasher is told ([CollectionRef.hasherPlatform]), and with it
+     * what the collection itself says of its files.
+     *
+     * The list alone was a second opinion on what a collection holds, and it
+     * disagreed with the first. The console table gives a row a family, the
+     * consoles a file of the collection may honestly be, and a scan hashes a
+     * loose `.gb` under `snes`, a `.sms` or a `.32x` under `megadrive`, a
+     * `.min` under `pokemini` by it. The same cartridge in a zip was held to
+     * a list that had never heard of the family, and the archive held
+     * nothing playable: kept for a month, and counted with the files that
+     * could not be hashed. A Sega CD disc zipped under `megadrive` had its
+     * sheet passed over and its track hashed as a cartridge.
+     *
+     * So there are added, from the collection's row ([RcConsoles.resolve]):
+     *
+     * - every extension rcheevos gives to one console, where that console
+     *   is of the row's family ([RomHashIO.RC_SINGLE]);
+     * - every extension the row itself sends to a console, by name or by
+     *   size: `cue` and `iso` under `megadrive`, `gcm` under `wii`;
+     * - `m3u` wherever a sheet rcheevos reads is then allowed, since a game
+     *   of several discs is packed with the playlist that orders them.
+     *
+     * And what the collection declares in its `extensions:` lines, which a
+     * scan picks up loose and hashes as the collection's console: all of it
+     * but the archives themselves, which are never opened inside another.
+     */
+    fun extensionsFor(collection: CollectionRef): Set<String> {
+        val allowed = LinkedHashSet(extensionsFor(collection.hasherPlatform))
+        val row = RcConsoles.resolve(collection.shortName, collection.dirName) as? RcConsoles.Hashable
+        if (row != null && !row.arcade) {
+            RomHashIO.RC_SINGLE.forEach { (extension, console) -> if (console != null && console in row.family) allowed += extension }
+            allowed += row.overridesByExtension.keys
+            row.overridesBySize.forEach { allowed += it.extensions }
+            if (allowed.any { it in ArchiveAwareHasher.READ_SHEETS }) allowed += "m3u"
+        }
+        allowed += collection.declaredExtensions - ArchiveReader.ARCHIVE_EXTENSIONS
+        return allowed
+    }
+
+    /**
      * The lists above on one line, the same line for the same lists however
      * they were written down: what a verdict on an archive depends on, so
      * that a change to one of them can be told from none ([HashRecipe]).
@@ -195,11 +239,23 @@ object ArchiveSelector {
      * strongly preferred, because that is the convention every ROM set follows and
      * it settles the overwhelming majority of multi-entry archives.
      */
-    fun select(entries: List<Entry>, archiveName: String, platform: String): Selection {
+    fun select(entries: List<Entry>, archiveName: String, platform: String): Selection =
+        select(entries, archiveName, CollectionRef.inferred(platform))
+
+    /**
+     * The same for an archive in [collection], whose entries are held to
+     * what the collection can hold ([extensionsFor]): the list of its short
+     * name, or of the folder's name where the folder says more of what it
+     * holds, and what its row of the console table and its own metafile
+     * add. A folder `gamegear` of a collection that calls itself
+     * `mastersystem` holds Game Gear cartridges, and by the short name's
+     * list a zipped one has nothing playable in it.
+     */
+    fun select(entries: List<Entry>, archiveName: String, collection: CollectionRef): Selection {
         val real = entries.filter { !it.isDirectory && it.size > 0 && it.extension !in NEVER_THE_ROM }
         if (real.isEmpty()) return Selection.NoPlayableEntry(entries)
 
-        val allowed = extensionsFor(platform)
+        val allowed = extensionsFor(collection)
         val playable = real.filter { it.extension in allowed }
         if (playable.isEmpty()) return Selection.NoPlayableEntry(real)
         if (playable.size == 1) return Selection.One(playable[0], "the only playable entry")
@@ -230,14 +286,4 @@ object ArchiveSelector {
         return Selection.Ambiguous(playable.sortedByDescending { it.size })
     }
 
-    /**
-     * The same for an archive in [collection], whose entries are held to one
-     * list: that of the short name, or of the folder's name where the folder
-     * says more of what it holds ([CollectionRef.hasherPlatform]). A folder
-     * `gamegear` of a collection that calls itself `mastersystem` holds Game
-     * Gear cartridges, and by the short name's list a zipped one has nothing
-     * playable in it.
-     */
-    fun select(entries: List<Entry>, archiveName: String, collection: CollectionRef): Selection =
-        select(entries, archiveName, collection.hasherPlatform)
 }

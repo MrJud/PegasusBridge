@@ -2024,14 +2024,17 @@ class RomScanPipelineTest {
     // writes the ledger and the index on its way out as every stop does, and
     // both hold what they held: a match, a miss, and nothing of the new file.
     @Test fun `a scan with no key leaves what earlier scans settled`(): Unit = runBlocking {
-        rom("nes", "Super Mario Bros. (World).nes", "hash-smb")
+        val invented = mapOf(
+            "hash-moss"  to GameMetadata(4101, "Moss Kingdom", "Invented System", "/Images/004101.png", 31),
+            "hash-rally" to GameMetadata(4102, "Paper Rally", "Invented System", "/Images/004102.png", 12))
+        rom("nes", "Moss Kingdom (World).nes", "hash-moss")
         rom("nes", "Homebrew Thing.nes", "hash-unknown")
-        pipeline(ContentHasher(), MapLookup(catalogue)).scan(listOf(romRoot.absolutePath))
-        val metadata = paths.metadata("1446").readText()
+        pipeline(ContentHasher(), MapLookup(invented)).scan(listOf(romRoot.absolutePath))
+        val metadata = paths.metadata("4101").readText()
         val entries = ledgerEntries()
         assertEquals(setOf("MATCHED", "NOT_FOUND"), entries.values.map { (it as Map<*, *>)["state"] }.toSet())
         val index = JSONObject(paths.discoveryIndex.readText())
-        rom("nes", "Contra (USA).nes", "hash-ctra")
+        rom("nes", "Paper Rally (World).nes", "hash-rally")
 
         val h = ContentHasher(); val l = NoKeyLookup()
         val s = pipeline(h, l).scan(listOf(romRoot.absolutePath))
@@ -2039,7 +2042,7 @@ class RomScanPipelineTest {
         assertTrue(s.aborted)
         assertEquals(listOf(0, 3, 1), listOf(s.processed, s.total, s.indexed))
         assertEquals(listOf(0, 0), listOf(h.calls.get(), l.calls.get()))
-        assertEquals(metadata, paths.metadata("1446").readText())
+        assertEquals(metadata, paths.metadata("4101").readText())
         assertEquals(entries, ledgerEntries())
         val after = JSONObject(paths.discoveryIndex.readText())
         assertEquals(1, after.getInt("count"))
@@ -2048,7 +2051,7 @@ class RomScanPipelineTest {
         // And with the key back the scan goes on from there: the new file
         // is the one that is read.
         val h3 = ContentHasher()
-        val s3 = pipeline(h3, MapLookup(catalogue)).scan(listOf(romRoot.absolutePath))
+        val s3 = pipeline(h3, MapLookup(invented)).scan(listOf(romRoot.absolutePath))
         assertEquals(listOf(1, 1, 1), listOf(h3.calls.get(), s3.newEntries, s3.cachedHits))
     }
 

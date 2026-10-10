@@ -296,13 +296,16 @@ count for fails its own hashes and no others.
 **Which failures count** towards the stop after 8 (below). Those where the
 source is not answering as itself: no answer, a status, a body that is no list
 at all. Each lookup that fails for one counts, with or without a request of
-its own, so a source that is down stops the scan at its eighth file and fourth
-request. A whole answer that is no list of the console, an empty array or
+its own, so a source that is down stops the scan at the eighth lookup that
+fails and the fourth request. The error can name fewer files than eight, as
+few as one: a lookup that meets a failure already known costs no time, so the
+workers that look hashes up are eight files on while the first result is still
+being counted. A whole answer that is no list of the console, an empty array or
 another console's games, does not count: it is one console's trouble, its
 files are `API_RETRY` and are hashed again at every scan, and the scan goes on
 to the collections after it. The other side of that rule is a console whose
 request fails every time while the rest answer, a 500 for that one list: it
-counts, and every scan stops at that console's eighth file and never reaches
+counts, and every scan stops at that console's eighth lookup and never reaches
 the collections after it, until the list can be had.
 
 **A miss** stands 14 days from the scan that looked. The file is then hashed

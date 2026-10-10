@@ -277,11 +277,18 @@ object RcConsoles {
         // an adapter. A descriptor or an .iso there is a Sega CD disc. So is
         // a .bin or an .img too large for any cartridge: 32 MiB is where
         // rcheevos itself starts taking a .bin for a CD track.
-        hashable("genesis", 1, "megadrive", family = setOf(1, 9, 10, 11, 15, 33),
+        //
+        // ES-DE keeps a folder for each region's name of the three: the
+        // Japanese Mega Drive, the wide-screen Genesis, the Japanese Mega-CD
+        // and the 32X of Japan and of North America. Each is the console of
+        // the row it is a spelling of, and no other: with no row they were
+        // collections nothing is known of, whose `.md` cartridges a scan
+        // does not even pick up.
+        hashable("genesis", 1, "megadrive", "megadrivejp", "genesiswide", family = setOf(1, 9, 10, 11, 15, 33),
                  byExtension = mapOf("cue" to 9, "iso" to 9, "chd" to 9, "32x" to 10, "sms" to 11),
                  bySize = listOf(BySize(setOf("bin", "img"), 32 * MIB, 9))),
-        hashable("sega32x", 10, "32x"),
-        hashable("segacd", 9, "megacd"),
+        hashable("sega32x", 10, "32x", "sega32xjp", "sega32xna"),
+        hashable("segacd", 9, "megacd", "megacdjp"),
         hashable("mastersystem", 11, "sms", family = setOf(11, 15, 33)),
         hashable("gamegear", 15, "gg", family = setOf(15, 11)),
         hashable("sg1000", 33),

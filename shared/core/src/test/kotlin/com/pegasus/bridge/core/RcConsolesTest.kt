@@ -223,6 +223,8 @@ class RcConsolesTest {
             "nds" to 18, "ds" to 18, "psx" to 12, "ps1" to 12, "psone" to 12, "ps2" to 21, "psp" to 41,
             "3do" to 43, "dreamcast" to 40, "dc" to 40, "saturn" to 39,
             "genesis" to 1, "megadrive" to 1, "sega32x" to 10, "32x" to 10, "segacd" to 9, "megacd" to 9,
+            // ES-DE's folders for the same three under their other names.
+            "megadrivejp" to 1, "genesiswide" to 1, "sega32xjp" to 10, "sega32xna" to 10, "megacdjp" to 9,
             "mastersystem" to 11, "sms" to 11, "gamegear" to 15, "gg" to 15, "sg1000" to 33,
             "pcengine" to 8, "tg16" to 8, "pcenginecd" to 76, "tgcd" to 76, "pcfx" to 49,
             "jaguar" to 17, "atarijaguar" to 17, "lynx" to 13, "atarilynx" to 13,

@@ -9,13 +9,15 @@ object RomScanner {
     /**
      * The extensions a scan recognises without being told otherwise.
      *
-     * A default and not a definition. A Pegasus collection declares its own
-     * `extensions:` line, and the two disagree more often than is comfortable —
-     * on the library this was written against every collection declares `jud`,
-     * which is not here. That happens to be harmless there, because those files
-     * are zero-byte placeholders; on a library that used a non-standard
-     * extension for real dumps, the whole platform would scan as zero files and
-     * nothing anywhere would say why.
+     * A default and not a definition. A Pegasus collection may declare its
+     * own `extensions:` line, and the two need not agree. On the library this
+     * was written against they never met: its collections declare no
+     * extension at all and name each game with a `file:` line, a placeholder
+     * called `.jud`, which a scan does not read and so does not pick up. That
+     * is harmless there, because those files stand for games that are not on
+     * the disk; on a library that used a non-standard extension for real
+     * dumps, the whole platform would scan as zero files and nothing anywhere
+     * would say why.
      *
      * So a scan adds what the file's collection declares
      * ([scanWithCollections]), for both shells alike.
@@ -25,6 +27,12 @@ object RomScanner {
      * each scanned as **zero files**, so no hash was taken and no lookup was
      * ever made — the failure this comment already predicted, found on a real
      * device rather than reasoned about.
+     *
+     * `fds` and `neo` are here because the console table has a rule for each
+     * and no scan reached either: a Famicom disk under `nes` is hashed as the
+     * Disk System's, and a Neo Geo cartridge kept as one `.neo` file is the
+     * one file of an arcade collection that is hashed by what it holds. Left
+     * out, both were found only where a collection listed them.
      *
      * `md` is not here, and it was. It is a Mega Drive cartridge and it is
      * Markdown, and a list cannot tell which: counted everywhere, it made a
@@ -44,7 +52,9 @@ object RomScanner {
         "dsk", "cpr", "cdt", "sna", "voc",
         "do", "po", "nib", "woz", "2mg",
         "d64", "t64", "tap", "prg", "crt",
-        "cv", "rom"
+        "cv", "rom",
+        // A Famicom Disk System disk, and a Neo Geo cartridge in one file.
+        "fds", "neo"
     )
 
     /** A ROM a scan found, with the collection its folder is in. */

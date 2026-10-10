@@ -743,8 +743,10 @@ lets discovery re-derive the command and lets an uninstalled emulator show up as
 `RomScanner.ROM_EXTENSIONS` is now a **default**, not a definition: a scan adds
 whatever the `extensions:` lines of a file's collection declare, on Android and
 on the desktop alike, and in the folders under the collection's own as well.
-They disagree more often than is comfortable — every collection in the
-development library declares `jud`, which the built-in list has never heard of.
+The two need not agree. In the development library they never met: its
+collections declare no extension and name each game with a `file:` line, a
+placeholder called `.jud`, and a scan does not read `file:` lines, so those are
+simply not scanned.
 
 Which collection a file is in is read where Pegasus reads it: the nearest
 `metadata.pegasus.txt` at or above the file's folder that declares a

@@ -574,6 +574,45 @@ class RomScanPipelineTest {
         assertEquals("lanternkeep|psx", JSONObject(paths.metadata("3001").readText()).getString("cacheKey"))
     }
 
+    // Three files a scan did not pick up, each for want of an entry: a
+    // Mega Drive cartridge called `.md` in the folder ES-DE keeps for the
+    // Japanese console, which had no row and so was no Mega Drive folder; a
+    // Famicom disk; and a Neo Geo cartridge in one file. The console each is
+    // handed to rcheevos as is the table's: 1, the Disk System's 81, and 27
+    // by its bytes where every other file of an arcade collection is
+    // refused or hashed by its name.
+    @Test fun `a cartridge under ES-DE's other name, a Famicom disk and a neo cartridge are hashed as the table says`(): Unit = runBlocking {
+        class Told : RomHasher {
+            val consoles = java.util.concurrent.ConcurrentHashMap<String, Int>()
+            override fun hash(path: String): HashResult? = null
+            override fun hashForConsole(path: String, consoleId: Int): HashOutcome {
+                consoles[File(path).parentFile.name + "/" + File(path).name] = consoleId
+                return HashOutcome.Ok(HashResult("hash-of-" + File(path).name, consoleId))
+            }
+        }
+        rom("megadrivejp", "Cart (Japan).md", "x")
+        rom("megadrivejp", "Cart (Japan).bin", "x")
+        rom("megacdjp", "Disc (Japan).iso", "x")
+        rom("sega32xna", "Cart (USA).bin", "x")
+        rom("nes", "Disk (Japan).fds", "x")
+        rom("arcade", "brawler.neo", "x")
+        rom("arcade", "chip.bin", "x")
+        val tmp = Files.createTempDirectory("hasher-tmp").toFile()
+        try {
+            val h = Told()
+            val s = RomScanPipeline(paths, ArchiveAwareHasher(h, tmp), MapLookup(emptyMap()), throttleMs = { 0L })
+                .scan(listOf(romRoot.absolutePath))
+
+            assertEquals(mapOf("megadrivejp/Cart (Japan).md" to 1, "megadrivejp/Cart (Japan).bin" to 1,
+                               "megacdjp/Disc (Japan).iso" to 9, "sega32xna/Cart (USA).bin" to 10,
+                               "nes/Disk (Japan).fds" to 81, "arcade/brawler.neo" to 27),
+                         h.consoles.toMap())
+            assertEquals(mapOf(ScanLedger.State.NOT_FOUND to 6, ScanLedger.State.UNSUPPORTED_FORMAT to 1), s.states)
+        } finally {
+            tmp.deleteRecursively()
+        }
+    }
+
     // And it is the short name wherever the folder says nothing more: a
     // folder called anything at all, and one named for a console that is not
     // of the short name's family, which the short name is taken to know

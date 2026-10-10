@@ -146,6 +146,12 @@ class RomScannerTest {
         touch("library/fanmade/Fifth Game.md")
         // No metafile at all: the folder is the collection its name says.
         touch("loose/megadrive/Sixth Game (USA).md")
+        // The names ES-DE gives the Mega Drive's other regions are the Mega
+        // Drive's: with no metafile, and with one that lists no extension.
+        touch("loose/megadrivejp/Seventh Game (Japan).md")
+        touch("library/genesiswide/metadata.pegasus.txt")
+            .writeText("collection: Genesis Wide\nshortname: genesiswide\n")
+        touch("library/genesiswide/Eighth Game (USA).md")
 
         // Everywhere else it is a readme, beside files that are found.
         collection("library/switch", "Nintendo Switch", "switch", "nsp, xci")
@@ -166,12 +172,14 @@ class RomScannerTest {
         val expected = listOf(
             "library/fanmade/Fifth Game.md",
             "library/genesis/Fourth Game (USA).md",
+            "library/genesiswide/Eighth Game (USA).md",
             "library/megadrive/Lantern Keep (USA).md",
             "library/megadrive/Other Game (USA)/Other Game (USA).md",
             "library/psx/Some Game/Some Game.cue",
             "library/sega32x/Third Game (USA).md",
             "library/switch/Mods/mod.zip",
-            "loose/megadrive/Sixth Game (USA).md")
+            "loose/megadrive/Sixth Game (USA).md",
+            "loose/megadrivejp/Seventh Game (Japan).md")
 
         val found = RomScanner.scanWithCollections(listOf(root.path), CollectionResolver())
         assertEquals(expected, found.map { it.file.relativeTo(root).invariantSeparatorsPath }.sorted())
@@ -183,6 +191,21 @@ class RomScannerTest {
         assertEquals(listOf("Some Game.cue", "mod.zip"), overridden.map { it.file.name }.sorted())
         assertEquals(listOf("Some Game.cue", "mod.zip"), scan())
         assertTrue("md" !in RomScanner.ROM_EXTENSIONS)
+    }
+
+    // The console table has a rule for each of these two, and a rule for a
+    // file no scan picks up is no rule: a Famicom disk under `nes` is the
+    // Disk System's, and a Neo Geo cartridge in one file is the one file of
+    // an arcade collection that is hashed by what it holds. Neither was in
+    // the list, so each was found only where a collection listed it.
+    @Test fun `a Famicom disk and a Neo Geo cartridge in one file are picked up without being listed`() {
+        touch("nes/Disk (Japan).fds")
+        touch("arcade/brawler.neo")
+        touch("somewhere/Disk (Japan).fds")
+
+        assertEquals(listOf("arcade/brawler.neo", "nes/Disk (Japan).fds", "somewhere/Disk (Japan).fds"),
+                     RomScanner.scanWithCollections(listOf(root.path), CollectionResolver())
+                         .map { it.file.relativeTo(root).invariantSeparatorsPath }.sorted())
     }
 
     // ── The same tree reached more than once ────────────────────────────────

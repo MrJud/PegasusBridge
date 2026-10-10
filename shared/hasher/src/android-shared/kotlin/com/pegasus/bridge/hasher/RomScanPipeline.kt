@@ -143,8 +143,7 @@ class RomScanPipeline(
         /**
          * The source holds the dump only under a [VirtualGameId], as one it does
          * not consider playable as it is. An answer and not a match, whether given
-         * now or still standing: a verdict of KNOWN_UNSUPPORTED, or one written
-         * before there was such a state, a NOT_FOUND under the virtual id.
+         * now or still standing: a verdict of KNOWN_UNSUPPORTED.
          */
         val incompatible: Int = 0,
         /**
@@ -223,7 +222,15 @@ class RomScanPipeline(
         // Verdicts from previous scans, including the ones that are not matches.
         // Without it a library of mostly-unknown ROMs asked the source about every
         // one of them on every run, and could never say why any of them was missing.
-        val ledger = ScanLedger(File(paths.cache, ScanLedger.FILE_NAME))
+        //
+        // Each is kept under a number worked out from what it was reached
+        // with, this hasher among the rest, and stands only while its file
+        // would be given the same number today. The line that number is made
+        // from is logged, so that two logs side by side say what changed
+        // between two builds when a scan reads a library again.
+        val recipe = HashRecipe(hasher.engine)
+        BridgeLog.i(TAG, "verdicts are kept under the recipe ${recipe.global}")
+        val ledger = ScanLedger(File(paths.cache, ScanLedger.FILE_NAME), recipe)
         val now = BridgePaths.epochSeconds()
 
         val fileQueue    = Channel<RomScanner.ScannedFile>(capacity = 64)
@@ -358,12 +365,7 @@ class RomScanPipeline(
                         // These went into none of the counts, and on a second scan of
                         // a library of misses every one of them was 0.
                         verdict != null -> when (verdict) {
-                            // A virtual id beside a miss is how a dump the source does
-                            // not support was written before it had a state of its own.
-                            // Such an entry stands until its fourteen days are over, and
-                            // is counted meanwhile as what it was.
-                            ScanLedger.State.NOT_FOUND ->
-                                if (r.virtualId) incompatible++ else unmatched++
+                            ScanLedger.State.NOT_FOUND -> unmatched++
                             ScanLedger.State.KNOWN_UNSUPPORTED -> incompatible++
                             ScanLedger.State.UNSUPPORTED,
                             ScanLedger.State.PLACEHOLDER -> skipped++
@@ -394,7 +396,7 @@ class RomScanPipeline(
                             // not written off as a miss.
                             is LookupOutcome.Failed, null -> {
                                 failedLookups++
-                                ledger.record(canonical(job.file), ScanLedger.State.API_RETRY,
+                                ledger.record(canonical(job.file), job.collection, ScanLedger.State.API_RETRY,
                                               job.fileSize, job.lastModified, now,
                                               detail = "the source did not answer")
                             }
@@ -415,14 +417,14 @@ class RomScanPipeline(
                             // in the library, and this dump earns nothing for it.
                             is LookupOutcome.IdOnly -> {
                                 incompatible++
-                                ledger.record(canonical(job.file), ScanLedger.State.KNOWN_UNSUPPORTED,
+                                ledger.record(canonical(job.file), job.collection, ScanLedger.State.KNOWN_UNSUPPORTED,
                                               job.fileSize, job.lastModified, now,
                                               gameId = outcome.gameId,
                                               detail = outcome.reason.words)
                             }
                             is LookupOutcome.Match -> {
                                 writeMetadata(job, outcome.game); newEntries++
-                                ledger.record(canonical(job.file), ScanLedger.State.MATCHED,
+                                ledger.record(canonical(job.file), job.collection, ScanLedger.State.MATCHED,
                                               job.fileSize, job.lastModified, now,
                                               gameId = outcome.game.gameId)
                             }
@@ -430,7 +432,7 @@ class RomScanPipeline(
                             // until its TTL runs out.
                             LookupOutcome.NotFound -> {
                                 unmatched++
-                                ledger.record(canonical(job.file), ScanLedger.State.NOT_FOUND,
+                                ledger.record(canonical(job.file), job.collection, ScanLedger.State.NOT_FOUND,
                                               job.fileSize, job.lastModified, now)
                             }
                         }
@@ -583,8 +585,8 @@ class RomScanPipeline(
         // standing: for whoever reads the counts it is a file there was no
         // game in to look for, and not one that failed.
         suspend fun placeholder(detail: String) {
-            ledger.record(path, ScanLedger.State.PLACEHOLDER, size, modified, now, detail = detail)
-            resultQueue.send(ResultJob(HashJob(file, "", HashResult("", 0), rawPlatform, size, modified),
+            ledger.record(path, collection, ScanLedger.State.PLACEHOLDER, size, modified, now, detail = detail)
+            resultQueue.send(ResultJob(HashJob(file, "", HashResult("", 0), collection, size, modified),
                                        preRecorded = ScanLedger.State.PLACEHOLDER))
         }
 
@@ -604,8 +606,8 @@ class RomScanPipeline(
         // The collection: nobody can hash for its console, whatever the
         // file. Counted as a platform skipped, as it always was.
         if (plan is ConsoleChoice.Plan.Unsupported) {
-            ledger.record(path, ScanLedger.State.UNSUPPORTED, size, modified, now, detail = plan.reason)
-            resultQueue.send(ResultJob(HashJob(file, "", HashResult("", 0), rawPlatform, 0, 0),
+            ledger.record(path, collection, ScanLedger.State.UNSUPPORTED, size, modified, now, detail = plan.reason)
+            resultQueue.send(ResultJob(HashJob(file, "", HashResult("", 0), collection, 0, 0),
                                        skipped = true))
             return
         }
@@ -632,10 +634,10 @@ class RomScanPipeline(
         // no hash to ask about, and is counted with the others that do
         // not.
         if (plan is ConsoleChoice.Plan.UnsupportedFormat) {
-            ledger.record(path, ScanLedger.State.UNSUPPORTED_FORMAT, size, modified, now,
+            ledger.record(path, collection, ScanLedger.State.UNSUPPORTED_FORMAT, size, modified, now,
                           detail = plan.reason)
             resultQueue.send(ResultJob(
-                HashJob(file, "", HashResult("", 0), rawPlatform, size, modified),
+                HashJob(file, "", HashResult("", 0), collection, size, modified),
                 preRecorded = ScanLedger.State.UNSUPPORTED_FORMAT))
             return
         }
@@ -651,9 +653,9 @@ class RomScanPipeline(
         val known = metaCache[cacheKey]
         if (known != null && known.hash.isNotEmpty() && known.fileMd5.isNotEmpty() &&
             known.fileSize == size && known.lastModified == modified) {
-            ledger.record(path, ScanLedger.State.MATCHED, size, modified, now)
+            ledger.record(path, collection, ScanLedger.State.MATCHED, size, modified, now)
             resultQueue.send(ResultJob(
-                HashJob(file, cacheKey, HashResult(known.hash, 0), rawPlatform, size, modified),
+                HashJob(file, cacheKey, HashResult(known.hash, 0), collection, size, modified),
                 cached = true))
             return
         }
@@ -663,13 +665,12 @@ class RomScanPipeline(
         // source about every one of them on every run, because a miss left no
         // trace to find. A refusal is never stored as a verdict, so this can only
         // ever skip an answer the source actually gave.
-        val settled = ledger.canSkip(path, size, modified, now)
+        val settled = ledger.canSkip(path, collection, size, modified, now)
         if (settled != null && settled.state != ScanLedger.State.MATCHED) {
             ledger.count(path, settled)
             resultQueue.send(ResultJob(
-                HashJob(file, cacheKey, HashResult("", 0), rawPlatform, size, modified),
-                preRecorded = settled.state,
-                virtualId = VirtualGameId.isVirtual(settled.gameId)))
+                HashJob(file, cacheKey, HashResult("", 0), collection, size, modified),
+                preRecorded = settled.state))
             return
         }
 
@@ -718,10 +719,10 @@ class RomScanPipeline(
                 // resulting miss as a game the database does not have.
                 BridgeLog.w(TAG, "${file.name}: ${outcome.candidates.size} entries could each " +
                                  "be the ROM (${outcome.candidates.take(3).joinToString(", ")})")
-                ledger.record(path, ScanLedger.State.AMBIGUOUS_ARCHIVE, size, modified, now,
+                ledger.record(path, collection, ScanLedger.State.AMBIGUOUS_ARCHIVE, size, modified, now,
                               detail = outcome.candidates.joinToString(", "))
                 resultQueue.send(ResultJob(
-                    HashJob(file, cacheKey, HashResult("", 0), rawPlatform, size, modified),
+                    HashJob(file, cacheKey, HashResult("", 0), collection, size, modified),
                     preRecorded = ScanLedger.State.AMBIGUOUS_ARCHIVE))
             }
             is HashOutcome.Failed -> {
@@ -729,31 +730,31 @@ class RomScanPipeline(
                 // hash is kept for a while, or every scan would ask the same question.
                 val state = if (outcome.retryable) ScanLedger.State.HASH_FAILED
                             else ScanLedger.State.UNHASHABLE
-                ledger.record(path, state, size, modified, now, detail = outcome.reason)
+                ledger.record(path, collection, state, size, modified, now, detail = outcome.reason)
                 resultQueue.send(ResultJob(
-                    HashJob(file, cacheKey, HashResult("", 0), rawPlatform, size, modified),
+                    HashJob(file, cacheKey, HashResult("", 0), collection, size, modified),
                     preRecorded = state))
             }
             // The two answers of an archive that was opened and gave nothing to
             // hash. Neither has a hash to ask about, and each is kept: the
             // archive will hold the same at the next scan.
             is HashOutcome.NoPlayableEntry -> {
-                ledger.record(path, ScanLedger.State.NO_PLAYABLE_ENTRY, size, modified, now,
+                ledger.record(path, collection, ScanLedger.State.NO_PLAYABLE_ENTRY, size, modified, now,
                               detail = outcome.reason)
                 resultQueue.send(ResultJob(
-                    HashJob(file, cacheKey, HashResult("", 0), rawPlatform, size, modified),
+                    HashJob(file, cacheKey, HashResult("", 0), collection, size, modified),
                     preRecorded = ScanLedger.State.NO_PLAYABLE_ENTRY))
             }
             is HashOutcome.UnsupportedFormat -> {
-                ledger.record(path, ScanLedger.State.UNSUPPORTED_FORMAT, size, modified, now,
+                ledger.record(path, collection, ScanLedger.State.UNSUPPORTED_FORMAT, size, modified, now,
                               detail = outcome.reason)
                 resultQueue.send(ResultJob(
-                    HashJob(file, cacheKey, HashResult("", 0), rawPlatform, size, modified),
+                    HashJob(file, cacheKey, HashResult("", 0), collection, size, modified),
                     preRecorded = ScanLedger.State.UNSUPPORTED_FORMAT))
             }
             is HashOutcome.Ok -> {
                 throttleMs().takeIf { it > 0 }?.let { delay(it) }
-                hashQueue.send(HashJob(file, cacheKey, outcome.result, rawPlatform, size, modified))
+                hashQueue.send(HashJob(file, cacheKey, outcome.result, collection, size, modified))
             }
         }
     }
@@ -784,7 +785,7 @@ class RomScanPipeline(
             .put("schemaVersion", SchemaVersion.CURRENT)
             .put("gameId",   meta.gameId)
             .put("title",    meta.title)
-            .put("platform", FuzzyMatch.normalizePlatform(job.platform))
+            .put("platform", FuzzyMatch.normalizePlatform(job.collection.shortName))
             .put("cacheKey", job.cacheKey)
             .put("ra", JSONObject()
                 .put("points", 0).put("progress", 0.0).put("unlocked", 0)
@@ -877,7 +878,12 @@ class RomScanPipeline(
 
     private data class HashJob(
         val file: File, val cacheKey: String, val hash: HashResult,
-        val platform: String, val fileSize: Long, val lastModified: Long
+        /**
+         * The file's collection. Its short name is the platform the metadata
+         * is written with, and the whole of it is what the collector's
+         * verdicts are kept under in the ledger, as the producer's are.
+         */
+        val collection: CollectionRef, val fileSize: Long, val lastModified: Long
     )
     private data class ResultJob(
         val job: HashJob,
@@ -892,12 +898,7 @@ class RomScanPipeline(
          * from an earlier scan. The collector records nothing for it and only
          * counts it, which takes knowing what the verdict was.
          */
-        val preRecorded: ScanLedger.State? = null,
-        /**
-         * Beside a NOT_FOUND found standing: it was a virtual id, not a miss.
-         * Only an entry written before KNOWN_UNSUPPORTED was a state is one.
-         */
-        val virtualId: Boolean = false
+        val preRecorded: ScanLedger.State? = null
     )
     private data class CachedMeta(val hash: String, val fileMd5: String,
                                   val fileSize: Long, val lastModified: Long)

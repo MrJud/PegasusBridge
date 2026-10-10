@@ -8,6 +8,7 @@ import com.pegasus.bridge.core.StderrLog
 import com.pegasus.bridge.hasher.CollectionRef
 import com.pegasus.bridge.hasher.GameMetadata
 import com.pegasus.bridge.hasher.HashOutcome
+import com.pegasus.bridge.hasher.HashRecipe
 import com.pegasus.bridge.hasher.HashResult
 import com.pegasus.bridge.hasher.LookupOutcome
 import com.pegasus.bridge.hasher.RaHashLookup
@@ -190,6 +191,26 @@ class ScanAuditTest {
         assertEquals(0, deviceAsked.get())
         // The scan's own data root is gone, and the table is all that is left.
         assertEquals(listOf("audit.tsv"), out.parentFile.list()!!.toList())
+    }
+
+    // The first line of the table says what the scan reached its verdicts
+    // with, and before anything else which library hashed. That is asked of
+    // the hasher the audit was given, through the two the audit puts
+    // around it. Left at the name a hasher has when it gives none, the line
+    // would say "none" of every build, and the audit would keep its
+    // verdicts under another number than a daemon with the same library.
+    @Test fun `the table begins with the recipe of the hasher the scan was given`() {
+        rom("snes/Known.sfc", "hash-known")
+        assertEquals(0, audit())
+        assertEquals("# recipe\t" + HashRecipe("none").global, out.readLines().first())
+
+        val named = object : RomHasher {
+            override val engine: String get() = "made up 1.0"
+            override fun hash(path: String): HashResult = HashResult("hash-known", 3)
+        }
+        assertEquals(0, audit(library = named))
+        assertEquals("# recipe\t" + HashRecipe("made up 1.0").global, out.readLines().first())
+        assertTrue("rc=made up 1.0;" in out.readLines().first(), out.readLines().first())
     }
 
     // The audit's scan reads a collection's metafile as a daemon's does: an

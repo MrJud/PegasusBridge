@@ -8,6 +8,7 @@ import com.pegasus.bridge.hasher.CollectionRef
 import com.pegasus.bridge.hasher.DeviceConnection
 import com.pegasus.bridge.hasher.GameMetadata
 import com.pegasus.bridge.hasher.HashOutcome
+import com.pegasus.bridge.hasher.HashRecipe
 import com.pegasus.bridge.hasher.HashResult
 import com.pegasus.bridge.hasher.LookupOutcome
 import com.pegasus.bridge.hasher.NativeRomHasher
@@ -160,7 +161,10 @@ object ScanAudit {
             }
 
             val rows = rows(File(paths.cache, ScanLedger.FILE_NAME), hasher.seen(), lookup)
-            outFile.writeText(table(request, oracle, summary, hasher.seen(), lookup, rows))
+            // The recipe the scan kept its verdicts under: made, as the scan
+            // makes its own, from what the hasher it was given says it is.
+            outFile.writeText(table(HashRecipe(hasher.engine).global, request, oracle, summary,
+                                    hasher.seen(), lookup, rows))
 
             println("audit: ${summary?.total ?: "?"} files found, ${rows.size} rows, " +
                     "${lookup.calls} lookups for ${lookup.distinct} hashes")
@@ -288,11 +292,18 @@ object ScanAudit {
      * The `#` lines are for a person and for the report's grouping by folder.
      * A comparison of two tables passes over them: they hold counts that
      * follow from the rows, and a time.
+     *
+     * The first of them is [recipe], what the scan reached its verdicts
+     * with ([HashRecipe.global]): the library that hashed, and a number for
+     * each table a file is judged by. Two tables whose rows differ are of
+     * two builds, and this line says in what the builds differ.
      */
-    private fun table(request: Request, oracle: OracleLookup?, summary: RomScanPipeline.Summary?,
+    private fun table(recipe: String, request: Request, oracle: OracleLookup?,
+                      summary: RomScanPipeline.Summary?,
                       seen: Map<String, RecordingHasher.Seen>, lookup: CountingLookup,
                       rows: List<List<String>>): String {
         val head = mutableListOf<List<String>>()
+        head += listOf("# recipe", recipe)
         request.roots.forEach { head += listOf("# root", canonical(it)) }
         request.largerThan?.let { head += listOf("# skip-larger-than", it.toString()) }
         request.skip.forEach { head += listOf("# skip", canonical(it)) }
@@ -368,10 +379,17 @@ object ScanAudit {
         /** What was recorded, by the canonical path of each file. */
         fun seen(): Map<String, Seen> = HashMap(seen)
 
-        // The pipeline calls neither; passed on, so that a caller that does
-        // gets the answer it would have had.
+        // The pipeline calls none of the three; passed on, so that a caller
+        // that does gets the answer it would have had.
         override fun hash(path: String): HashResult? = delegate.hash(path)
         override fun hash(path: String, platform: String): HashResult? = delegate.hash(path, platform)
+        override fun hashForConsole(path: String, consoleId: Int): HashOutcome =
+            delegate.hashForConsole(path, consoleId)
+
+        // The scan reads this for the recipe it keeps its verdicts under.
+        // Left to the interface it would say "none" for any library, and an
+        // audit would keep its verdicts under another number than a daemon.
+        override val engine: String get() = delegate.engine
 
         override fun hashDetailed(path: String, platform: String): HashOutcome =
             recorded(path, platform, "") { delegate.hashDetailed(path, platform) }

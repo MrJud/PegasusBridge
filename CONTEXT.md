@@ -153,6 +153,21 @@ data root on the desktop, the app's cache on Android) under a name that begins
 `bridge_`, and whatever of that name is more than a day old is removed when a
 scan builds its hasher: a scan that was killed removes nothing itself.
 
+Every verdict in the ledger carries a number, `algorithmVersion`, and stands
+only while its file would be given that number today. The number is worked out
+(`HashRecipe`) from what the verdict was reached with: the library's version,
+the tables a file is judged by, and for each collection its two names, its row
+of the console table and the extensions it declares. So an entry added to a
+table, or another rcheevos, has every file that did not match looked at again
+without anybody raising a number; an edit to one row of the console table has
+only those of the collections it is the row of; and a file whose folder is
+given to another collection is looked at again as well. A match is found
+through its metadata file before the ledger is asked and is never read again
+for this. What no table shows is the code that judges, and for a change to
+that a number in the recipe is still raised by hand, `HashRecipe.RULES`, with
+two beside it for one corner each: `PLACEHOLDERS` and `CONTAINERS`. The scan
+logs the line the numbers are made from, and an audit's table begins with it.
+
 Files are hashed 2 at a time on Android and 4 on the desktop. Either can be
 told otherwise, to time a library on its own storage: `hashWorkers=N` on the
 `pegasus-data://scan` URI (1–8), `--hash-workers=N` on the daemon (1–16).

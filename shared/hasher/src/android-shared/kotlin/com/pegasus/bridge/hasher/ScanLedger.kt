@@ -29,8 +29,14 @@ import java.io.File
  * that cost a whole RetroAchievements run: 85 of 913 answered, the rest refused,
  * and every refusal cached as "this game has no achievements". So it is written
  * with no TTL and always retried.
+ *
+ * [recipe] says what a verdict written here was reached with, as a number
+ * kept in every entry, and a verdict is trusted only while that number is
+ * still the one its file would be given. The scan hands in the recipe of
+ * the hasher it runs with. Left out, it is that of a hasher which says
+ * nothing of itself, as the ones tests stand in with do.
  */
-class ScanLedger(private val file: File) {
+class ScanLedger(private val file: File, private val recipe: HashRecipe = HashRecipe("none")) {
 
     enum class State {
         /** The source answered with a game. */
@@ -132,8 +138,9 @@ class ScanLedger(private val file: File) {
          * because it is decided before any I/O.
          *
          * A file the hasher cannot hash keeps for a month. Only a new hasher can
-         * change that answer, and the change that does bumps [ALGORITHM_VERSION],
-         * which redoes it at once; the TTL is the backstop for one that did not.
+         * change that answer, and the change that does gives the file another
+         * number ([HashRecipe]), which redoes it at once; the TTL is the
+         * backstop for one that did not.
          *
          * A dump the source knows and does not support keeps for a month as well,
          * twice as long as a miss. A miss ends when somebody links the hash to a
@@ -233,29 +240,41 @@ class ScanLedger(private val file: File) {
     }
 
     /**
-     * Whether [path] can be skipped, given what is on disk now.
+     * Whether [path], a file of [collection], can be skipped, given what is
+     * on disk now.
      *
      * Answers false — ask again — whenever anything the verdict depended on has
      * moved: the file's size or mtime, or the version of the hashing and archive
      * selection that produced it. That last one is what makes a policy change
      * take effect on a library that has already been scanned; without it, the
      * incremental skip would preserve every decision the old rule made.
+     *
+     * The version is the one [recipe] gives a file of [collection] today,
+     * and the entry has to carry that very number. So the verdict also
+     * goes when the file's collection is another than it was, or is
+     * described otherwise by the console table.
      */
-    fun canSkip(path: String, size: Long, modified: Long, now: Long): Entry? {
+    fun canSkip(path: String, collection: CollectionRef, size: Long, modified: Long, now: Long): Entry? {
         // Under the same lock as [record]. The producers call both at once, and an
         // unlocked read of a HashMap another thread is resizing can come back null
         // for an entry that is there — a spurious rehash at best.
         val e = synchronized(entries) { entries[path] } ?: return null
         if (!e.state.cacheable) return null
         if (e.fileSize != size || e.lastModified != modified) return null
-        if (e.algorithmVersion != ALGORITHM_VERSION) return null
+        if (e.algorithmVersion != recipe.versionFor(collection)) return null
         val ttl = e.state.retryAfterSeconds
         if (ttl != Long.MAX_VALUE && now - e.checkedAt > ttl) return null
         return e
     }
 
+    /**
+     * Keeps [state] for [path], under the number [recipe] gives a file of
+     * [collection]: the collection the scan took the file to be in when it
+     * reached the verdict.
+     */
     fun record(
         path: String,
+        collection: CollectionRef,
         state: State,
         size: Long,
         modified: Long,
@@ -264,7 +283,7 @@ class ScanLedger(private val file: File) {
         detail: String = ""
     ) {
         synchronized(entries) {
-            entries[path] = Entry(state, now, size, modified, ALGORITHM_VERSION, gameId, detail)
+            entries[path] = Entry(state, now, size, modified, recipe.versionFor(collection), gameId, detail)
         }
         count(path, state, detail)
     }
@@ -309,9 +328,12 @@ class ScanLedger(private val file: File) {
                     .also { j -> if (e.detail.isNotEmpty()) j.put("detail", e.detail) })
             }
         }
+        // The header's number is the recipe's with no collection in it. No
+        // entry is held against it: each carries the number of its own
+        // collection. It says which build wrote the file last.
         val payload = JSONObject()
             .put("schemaVersion", SCHEMA_VERSION)
-            .put("algorithmVersion", ALGORITHM_VERSION)
+            .put("algorithmVersion", recipe.versionFor(null))
             .put("updatedAt", System.currentTimeMillis() / 1000L)
             .put("count", map.length())
             .put("entries", map)
@@ -344,38 +366,40 @@ class ScanLedger(private val file: File) {
         const val FILE_NAME = "scan-ledger.json"
         const val SCHEMA_VERSION = 1
 
-        /**
-         * Bumped whenever hashing or archive selection changes what a file resolves
-         * to, which invalidates every verdict the previous rule reached.
-         *
-         * 2: archive selection stopped being "the largest entry" and became
-         * [ArchiveSelector] — extension filter, descriptor first, then the entry
-         * named after the archive. Any archive decided under version 1 has to be
-         * decided again, because the old rule could have hashed a patch or a bonus
-         * disc and recorded the result as a miss.
-         *
-         * 3: the desktop extracted every archive entry to a temp file named
-         * `.bin`, and rcheevos picks its algorithm from the extension — so a `.nes`
-         * or `.nds` inside a zip was hashed as whatever a `.bin` is taken for, and
-         * the miss that came back said nothing about the game. Those verdicts must
-         * not outlive the fix. The cost is bounded: a match is skipped through its
-         * metadata before the ledger is asked, and an unsupported platform is
-         * decided before any I/O, so what gets redone is the misses and the
-         * ambiguous archives.
-         *
-         * 4: the Android scan service had a loop of its own, which still hashed
-         * the largest entry of an archive, the rule 2 retired, and wrote the
-         * virtual ids it was answered into this ledger under the number that
-         * stood here: 3, for verdicts 3 does not describe. The service runs the
-         * pipeline now and an archive resolves there as it does on the desktop,
-         * so what that loop recorded is asked about again. The number is one
-         * for both shells: the desktop redoes its misses and its ambiguous
-         * archives once more, with nothing changed in how it reaches them.
-         *
-         * The one counter for what a file resolves to. A second version kept
-         * elsewhere for part of the same decision would drift from this one, and
-         * bumping either would leave the other's verdicts standing.
-         */
-        const val ALGORITHM_VERSION = 4
+        // The number an entry carries as `algorithmVersion` is no longer a
+        // constant kept here. It is worked out, for each collection, from
+        // what a verdict is reached with ([HashRecipe]), so that a change to
+        // any of that redoes the verdicts it touches without anybody
+        // remembering to raise a number. The key keeps its name.
+        //
+        // While it was a constant it was raised whenever hashing or archive
+        // selection changed what a file resolves to, three times:
+        //
+        // 2: archive selection stopped being "the largest entry" and became
+        // [ArchiveSelector] — extension filter, descriptor first, then the entry
+        // named after the archive. Any archive decided under version 1 had to be
+        // decided again, because the old rule could have hashed a patch or a bonus
+        // disc and recorded the result as a miss.
+        //
+        // 3: the desktop extracted every archive entry to a temp file named
+        // `.bin`, and rcheevos picks its algorithm from the extension — so a `.nes`
+        // or `.nds` inside a zip was hashed as whatever a `.bin` is taken for, and
+        // the miss that came back said nothing about the game.
+        //
+        // 4: the Android scan service had a loop of its own, which still hashed
+        // the largest entry of an archive, the rule 2 retired, and wrote the
+        // virtual ids it was answered into this ledger under the number that
+        // stood here: 3, for verdicts 3 does not describe.
+        //
+        // A derived number is never one of those four ([HashRecipe.fold]),
+        // so every verdict a ledger holds from such a build is reached again
+        // once. The cost is bounded as it was each time before: a match is
+        // skipped through its metadata before the ledger is asked, so what
+        // gets redone is everything that did not match.
+        //
+        // Still the one number for what a file resolves to. A second version
+        // kept elsewhere for part of the same decision would drift from this
+        // one, and a change to either would leave the other's verdicts
+        // standing.
     }
 }

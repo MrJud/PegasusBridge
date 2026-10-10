@@ -777,15 +777,19 @@ class ArchiveAwareHasher internal constructor(
         /** How many of an archive's entries a reason names before it counts the rest. */
         private const val NAMES_SHOWN = 5
 
-        /** The sheets rcheevos reads, and with which the tracks they name are taken out. */
-        private val READ_SHEETS = setOf("cue", "gdi")
+        /**
+         * The sheets rcheevos reads, and with which the tracks they name are
+         * taken out. Internal, as the next is, for [HashRecipe]: a sheet
+         * that changes lists changes what its archives come to.
+         */
+        internal val READ_SHEETS = setOf("cue", "gdi")
 
         /**
          * The sheets it has no reader for. `mds` is one of them, though the
          * selector does not take it for a descriptor: where it is the entry
          * chosen, it is as little use as the other two.
          */
-        private val UNREAD_SHEETS = setOf("ccd", "toc", "mds")
+        internal val UNREAD_SHEETS = setOf("ccd", "toc", "mds")
 
         /** What every copy made in the temporary folder is called by, and so what may be removed from it. */
         private const val COPY_PREFIX = "bridge_"

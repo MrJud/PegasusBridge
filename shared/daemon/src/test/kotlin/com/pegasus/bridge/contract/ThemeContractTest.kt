@@ -10,7 +10,9 @@ import com.pegasus.bridge.daemon.BridgeRouter
 import com.pegasus.bridge.daemon.JobRegistry
 import com.pegasus.bridge.daemon.MicroHttpServer
 import com.pegasus.bridge.daemon.asOutcome
+import com.pegasus.bridge.hasher.CollectionRef
 import com.pegasus.bridge.hasher.GameMetadata
+import com.pegasus.bridge.hasher.HashRecipe
 import com.pegasus.bridge.hasher.HashResult
 import com.pegasus.bridge.hasher.LookupOutcome
 import com.pegasus.bridge.hasher.RaHashLookup
@@ -37,6 +39,7 @@ import kotlin.test.BeforeTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
+import kotlin.test.assertNotEquals
 import kotlin.test.assertTrue
 
 private const val NUL = "\u0000"
@@ -1200,7 +1203,12 @@ class ThemeContractTest {
         val ledger = JSONObject(paths.cache(ScanLedger.FILE_NAME).readText())
         assertEquals(setOf("schemaVersion", "algorithmVersion", "updatedAt", "count", "entries"), ledger.keySet())
         assertEquals(ScanLedger.SCHEMA_VERSION, ledger.getInt("schemaVersion"))
-        assertEquals(ScanLedger.ALGORITHM_VERSION, ledger.getInt("algorithmVersion"))
+        // A number worked out from what the scan reaches its verdicts with,
+        // here a hasher that says nothing of itself. The file's own is that
+        // of no collection, and each entry's is its collection's, so the
+        // key is one and the numbers under it need not be.
+        val recipe = HashRecipe("none")
+        assertEquals(recipe.versionFor(null), ledger.getInt("algorithmVersion"))
         assertEquals(4, ledger.getInt("count"))
 
         // One entry per file, under its canonical path. gameId and detail are
@@ -1226,9 +1234,12 @@ class ThemeContractTest {
         assertEquals(always + "detail", entry(unsupported).keySet())
         assertEquals("UNSUPPORTED", entry(unsupported).getString("state"))
 
-        for (k in entries.keySet()) {
-            assertEquals(ScanLedger.ALGORITHM_VERSION, entries.getJSONObject(k).getInt("algorithmVersion"), k)
+        for (f in listOf(matched, missed, virtual, unsupported)) {
+            assertEquals(recipe.versionFor(CollectionRef.inferred(f.parentFile.name)),
+                         entry(f).getInt("algorithmVersion"), f.name)
         }
+        assertNotEquals(entry(matched).getInt("algorithmVersion"), entry(unsupported).getInt("algorithmVersion"))
+        assertNotEquals(recipe.versionFor(null), entry(matched).getInt("algorithmVersion"))
     }
 
     // ── The job record, built ───────────────────────────────────────────────

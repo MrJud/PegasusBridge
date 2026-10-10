@@ -296,8 +296,9 @@ class ScanLedgerTest {
 
     // What makes a policy change take effect on a library already scanned. Without
     // it, every decision the old archive rule made would be preserved forever.
-    // The version just before the current one, because that is the ledger a real
-    // library carries into an upgrade.
+    // The number is worked out from what a verdict is reached with, so one off
+    // the number the file has today is the number of some other recipe: it is
+    // not held to be older or newer, only to be the same or not.
     @Test fun `a verdict from an older algorithm version is redone`(): Unit = runBlocking {
         rom("nes", "Game.nes", "hash-unknown")
         pipeline(ContentHasher(), SaysNo()).scan(listOf(romRoot.absolutePath))
@@ -305,8 +306,10 @@ class ScanLedgerTest {
         val file = File(paths.cache, ScanLedger.FILE_NAME)
         val j = JSONObject(file.readText())
         val entries = j.getJSONObject("entries")
+        val today = HashRecipe("none").versionFor(CollectionRef.inferred("nes"))
         entries.keys().forEach { k ->
-            entries.getJSONObject(k).put("algorithmVersion", ScanLedger.ALGORITHM_VERSION - 1)
+            assertEquals(today, entries.getJSONObject(k).getInt("algorithmVersion"))
+            entries.getJSONObject(k).put("algorithmVersion", today - 1)
         }
         file.writeText(j.toString())
 
@@ -450,17 +453,18 @@ class ScanLedgerTest {
         val path = "/roms/ps2/Disc.chd"
         val ninetyDays = 90L * 24 * 60 * 60
         assertEquals(ScanLedger.State.UNSUPPORTED.retryAfterSeconds, ScanLedger.State.UNSUPPORTED_FORMAT.retryAfterSeconds)
+        val ps2 = CollectionRef.inferred("ps2")
         ScanLedger(file).apply {
-            record(path, ScanLedger.State.UNSUPPORTED_FORMAT, 10, 20, now = 1000,
+            record(path, ps2, ScanLedger.State.UNSUPPORTED_FORMAT, 10, 20, now = 1000,
                    detail = ".chd is a format this build has no reader for")
             save { f, text -> BridgePaths.writeAtomic(f, text) }
         }
 
         val read = ScanLedger(file)
-        val kept = read.canSkip(path, 10, 20, now = 1000 + ninetyDays)
+        val kept = read.canSkip(path, ps2, 10, 20, now = 1000 + ninetyDays)
         assertEquals(ScanLedger.State.UNSUPPORTED_FORMAT, kept?.state)
         assertEquals(".chd is a format this build has no reader for", kept?.detail)
-        assertNull(read.canSkip(path, 10, 20, now = 1000 + ninetyDays + 1))
+        assertNull(read.canSkip(path, ps2, 10, 20, now = 1000 + ninetyDays + 1))
     }
 
     // Kept for thirty days, as a file the hasher cannot hash is, and not
@@ -471,18 +475,19 @@ class ScanLedgerTest {
         val thirtyDays = 30L * 24 * 60 * 60
         assertTrue(ScanLedger.State.NO_PLAYABLE_ENTRY.cacheable)
         assertEquals(ScanLedger.State.UNHASHABLE.retryAfterSeconds, ScanLedger.State.NO_PLAYABLE_ENTRY.retryAfterSeconds)
+        val ps2 = CollectionRef.inferred("ps2")
         ScanLedger(file).apply {
-            record(path, ScanLedger.State.NO_PLAYABLE_ENTRY, 10, 20, now = 1000,
+            record(path, ps2, ScanLedger.State.NO_PLAYABLE_ENTRY, 10, 20, now = 1000,
                    detail = "nothing in the archive is a game of this collection: patch.7z")
             save { f, text -> BridgePaths.writeAtomic(f, text) }
         }
 
         val read = ScanLedger(file)
-        val kept = read.canSkip(path, 10, 20, now = 1000 + thirtyDays)
+        val kept = read.canSkip(path, ps2, 10, 20, now = 1000 + thirtyDays)
         assertEquals(ScanLedger.State.NO_PLAYABLE_ENTRY, kept?.state)
         assertEquals("nothing in the archive is a game of this collection: patch.7z", kept?.detail)
-        assertNull(read.canSkip(path, 10, 20, now = 1000 + thirtyDays + 1))
-        assertNull(read.canSkip(path, 11, 20, now = 1000), "another archive under the same name")
+        assertNull(read.canSkip(path, ps2, 10, 20, now = 1000 + thirtyDays + 1))
+        assertNull(read.canSkip(path, ps2, 11, 20, now = 1000), "another archive under the same name")
     }
 
     // Kept for as long as the file is the one it was: the verdict was read
@@ -494,18 +499,19 @@ class ScanLedgerTest {
         val path = "/roms/gbc/Not Here Yet.gbc"
         val aCentury = 100L * 365 * 24 * 60 * 60
         assertTrue(ScanLedger.State.PLACEHOLDER.cacheable)
+        val gbc = CollectionRef.inferred("gbc")
         ScanLedger(file).apply {
-            record(path, ScanLedger.State.PLACEHOLDER, 47, 20, now = 1000,
+            record(path, gbc, ScanLedger.State.PLACEHOLDER, 47, 20, now = 1000,
                    detail = "text file, 47 bytes: not a ROM image")
             save { f, text -> BridgePaths.writeAtomic(f, text) }
         }
 
         val read = ScanLedger(file)
-        val kept = read.canSkip(path, 47, 20, now = 1000 + aCentury)
+        val kept = read.canSkip(path, gbc, 47, 20, now = 1000 + aCentury)
         assertEquals(ScanLedger.State.PLACEHOLDER, kept?.state)
         assertEquals("text file, 47 bytes: not a ROM image", kept?.detail)
-        assertNull(read.canSkip(path, 262144, 20, now = 1000), "the game, under the placeholder's name")
-        assertNull(read.canSkip(path, 47, 21, now = 1000), "another file of the same size")
+        assertNull(read.canSkip(path, gbc, 262144, 20, now = 1000), "the game, under the placeholder's name")
+        assertNull(read.canSkip(path, gbc, 47, 21, now = 1000), "another file of the same size")
     }
 
     // A cache hit already means the file matched; the ledger must agree rather

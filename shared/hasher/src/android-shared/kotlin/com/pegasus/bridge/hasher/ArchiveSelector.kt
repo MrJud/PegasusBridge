@@ -172,6 +172,23 @@ object ArchiveSelector {
     }
 
     /**
+     * The lists above on one line, the same line for the same lists however
+     * they were written down: what a verdict on an archive depends on, so
+     * that a change to one of them can be told from none ([HashRecipe]).
+     * Every set is sorted, and each descriptor has its rank beside it.
+     */
+    internal fun describe(): String = buildString {
+        append("platforms[")
+        append(PLATFORM_EXTENSIONS.toSortedMap().entries
+            .joinToString(";") { "${it.key}:${it.value.sorted().joinToString(",")}" })
+        append("] any[").append(ANY_ROM_EXTENSION.sorted().joinToString(","))
+        append("] never[").append(NEVER_THE_ROM.sorted().joinToString(","))
+        append("] descriptors[").append(DESCRIPTOR_EXTENSIONS.sorted()
+            .joinToString(",") { "$it:${descriptorRank(Entry("disc.$it", 1))}" })
+        append(']')
+    }
+
+    /**
      * Picks the ROM out of [entries], or explains why it cannot.
      *
      * [archiveName] is the container's own file name; the entry named after it is

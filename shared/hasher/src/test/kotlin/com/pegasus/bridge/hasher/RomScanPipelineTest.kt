@@ -239,34 +239,6 @@ class RomScanPipelineTest {
         }
     }
 
-    // What a ledger written before KNOWN_UNSUPPORTED was a state holds for such
-    // a dump: a NOT_FOUND under the number as it was sent. It stands for its
-    // fourteen days like any miss, and is not a miss: counted as one, a rescan
-    // would move a file from one count to another with nothing changed.
-    @Test fun `an entry in the old form still counts as incompatible`(): Unit = runBlocking {
-        val f = rom("nes", "Metroid (Europe) (Virtual Console).nes", "hash-phantom")
-        val ledgerFile = File(paths.cache, ScanLedger.FILE_NAME)
-        ScanLedger(ledgerFile).apply {
-            record(f.canonicalPath, ScanLedger.State.NOT_FOUND, f.length(), f.lastModified(),
-                   BridgePaths.epochSeconds(), gameId = 1100001487,
-                   detail = "RetroAchievements knows this dump only by virtual id 1100001487: game 1487, untested")
-            save { file, text -> BridgePaths.writeAtomic(file, text) }
-        }
-
-        val h = ContentHasher(); val l = MapLookup(catalogue)
-        val s = pipeline(h, l).scan(listOf(romRoot.absolutePath))
-
-        assertEquals(counts(new = 0, cached = 0, skipped = 0, unmatched = 0, incompatible = 1,
-                            hashFailed = 0, failedLookups = 0), s.counts())
-        assertEquals(0, h.calls.get(), "the file was read")
-        assertEquals(0, l.calls.get(), "the source was asked")
-        // Counted, and left as it was written.
-        assertEquals(mapOf(ScanLedger.State.NOT_FOUND to 1), s.states)
-        val entry = JSONObject(ledgerFile.readText()).getJSONObject("entries").getJSONObject(f.canonicalPath)
-        assertEquals("NOT_FOUND", entry.getString("state"))
-        assertEquals(1100001487, entry.getInt("gameId"))
-    }
-
     // A real id with a title of only spaces, which RaApiHashLookup answers as a
     // failure and no lookup can answer as a match: one will not be built from
     // it. Written, it would be distrusted by the next scan's cache, asked about
@@ -590,7 +562,9 @@ class RomScanPipelineTest {
     // answers for the ROM, so the ROM is read and asked about once more, its
     // file is written over under the same id, and the index has the one key.
     // After that it is found as any other. A miss is kept by the ROM's path,
-    // which has not moved, and costs nothing.
+    // which has not moved, and is read and asked about once more all the
+    // same: it was the miss of a file in a collection nobody had heard of,
+    // left to rcheevos to guess at, and the file is a PlayStation's now.
     @Test fun `a game matched under its folder's name is read once more and then found by its collection's`(): Unit = runBlocking {
         rom("psx/Lantern Keep (USA)", "Lantern Keep (USA).bin", "hash-lantern")
         rom("psx/Unknown Game", "Unknown Game.bin", "hash-unknown")
@@ -606,8 +580,8 @@ class RomScanPipelineTest {
 
         assertEquals(counts(new = 1, cached = 0, skipped = 0, unmatched = 1, incompatible = 0,
                             hashFailed = 0, failedLookups = 0), s.counts())
-        assertEquals(1, h.calls.get(), "only the match is read again")
-        assertEquals(1, l.calls.get(), "only the match is asked about again")
+        assertEquals(2, h.calls.get(), "each is read again, once")
+        assertEquals(2, l.calls.get(), "each is asked about again, once")
         assertEquals(setOf("lanternkeep|psx"), byKey())
         assertEquals(1, s.indexed)
         assertEquals(listOf("3001.json"),
@@ -767,8 +741,8 @@ class RomScanPipelineTest {
         val answered = rom("amiga", "Lantern Keep (USA).adf", "never read")
         ScanLedger(File(paths.cache, ScanLedger.FILE_NAME)).apply {
             for (f in listOf(disk, packed))
-                record(f.canonicalPath, ScanLedger.State.NOT_FOUND, f.length(), f.lastModified(),
-                       BridgePaths.epochSeconds())
+                record(f.canonicalPath, CollectionRef.inferred(f.parentFile.name), ScanLedger.State.NOT_FOUND,
+                       f.length(), f.lastModified(), BridgePaths.epochSeconds())
             save { file, text -> BridgePaths.writeAtomic(file, text) }
         }
         paths.metadata("3001").writeText(JSONObject()
@@ -849,8 +823,9 @@ class RomScanPipelineTest {
     @Test fun `a standing verdict that the format is not read counts with the files that gave no hash`(): Unit = runBlocking {
         val f = rom("nes", "Game.nes", "hash-smb")
         ScanLedger(File(paths.cache, ScanLedger.FILE_NAME)).apply {
-            record(f.canonicalPath, ScanLedger.State.UNSUPPORTED_FORMAT, f.length(), f.lastModified(),
-                   BridgePaths.epochSeconds(), detail = "a reason of a build before this one")
+            record(f.canonicalPath, CollectionRef.inferred("nes"), ScanLedger.State.UNSUPPORTED_FORMAT,
+                   f.length(), f.lastModified(), BridgePaths.epochSeconds(),
+                   detail = "a reason of a build before this one")
             save { file, text -> BridgePaths.writeAtomic(file, text) }
         }
 
@@ -1055,32 +1030,44 @@ class RomScanPipelineTest {
     }
 
     // What a library scanned by a build before this one meets. Its stubs
-    // were hashed and asked about, and each is in the ledger as a miss. A
-    // verdict that stands is taken before a file is opened, which is what
-    // spares a rescan a read of every small file there is, a placeholder
-    // among them; so such a stub is a miss still for what is left of its
-    // fortnight, at no cost. Once that has run out it is opened, once, and
-    // is a placeholder from then on, where the older build read it and
-    // asked again.
-    @Test fun `a stub an earlier build kept as a miss becomes a placeholder when the miss runs out`(): Unit = runBlocking {
+    // were hashed and asked about, and each is in the ledger as a miss,
+    // under the number that build kept every verdict by. This build keeps
+    // its own under another, so neither miss is found standing, the one
+    // of yesterday no more than the one of last month: each stub is
+    // opened, once, and is a placeholder from then on, with nothing asked.
+    // While both builds had one number, such a stub stayed a miss for what
+    // was left of its fortnight.
+    //
+    // The third file holds the order of things on a rescan. A verdict that
+    // stands is taken before a file is opened, which is what spares a scan
+    // a read of every small file there is. So a miss under this build's own
+    // number is left a miss, though no scan of this build writes one for
+    // such a file.
+    @Test fun `a stub an earlier build kept as a miss becomes a placeholder at the next scan`(): Unit = runBlocking {
         val recent = stub("gbc", "Asked Lately.gbc")
         val old = stub("gbc", "Asked Long Ago.gbc")
+        val standing = stub("gbc", "Kept By This Build.gbc")
         val day = 24L * 60 * 60
-        ScanLedger(File(paths.cache, ScanLedger.FILE_NAME)).apply {
-            record(recent.canonicalPath, ScanLedger.State.NOT_FOUND, recent.length(), recent.lastModified(),
-                   BridgePaths.epochSeconds() - 13 * day)
-            record(old.canonicalPath, ScanLedger.State.NOT_FOUND, old.length(), old.lastModified(),
-                   BridgePaths.epochSeconds() - 15 * day)
+        val ledgerFile = File(paths.cache, ScanLedger.FILE_NAME)
+        ScanLedger(ledgerFile).apply {
+            for ((f, age) in listOf(recent to 1, old to 30, standing to 1))
+                record(f.canonicalPath, CollectionRef.inferred("gbc"), ScanLedger.State.NOT_FOUND,
+                       f.length(), f.lastModified(), BridgePaths.epochSeconds() - age * day)
             save { file, text -> BridgePaths.writeAtomic(file, text) }
         }
+        val written = JSONObject(ledgerFile.readText())
+        for (f in listOf(recent, old))
+            written.getJSONObject("entries").getJSONObject(f.canonicalPath)
+                .put("algorithmVersion", HashRecipe.LAST_BY_HAND)
+        ledgerFile.writeText(written.toString())
 
         val h = CollectionHasher()
         val s = pipeline(h, NeverAsked()).scan(listOf(romRoot.absolutePath))
 
-        assertEquals(counts(new = 0, cached = 0, skipped = 1, unmatched = 1, incompatible = 0,
+        assertEquals(counts(new = 0, cached = 0, skipped = 2, unmatched = 1, incompatible = 0,
                             hashFailed = 0, failedLookups = 0), s.counts())
-        assertEquals(listOf("NOT_FOUND", "PLACEHOLDER"),
-                     listOf(recent, old).map { ledgerEntry(it).getString("state") })
+        assertEquals(listOf("PLACEHOLDER", "PLACEHOLDER", "NOT_FOUND"),
+                     listOf(recent, old, standing).map { ledgerEntry(it).getString("state") })
         assertEquals(emptySet(), h.handed.keys, "the files the hasher was handed")
     }
 
@@ -1300,9 +1287,13 @@ class RomScanPipelineTest {
     // runs out the file is still skipped for that reason, and is counted as such.
     @Test fun `a standing verdict that the platform is not covered counts as skipped`(): Unit = runBlocking {
         val f = rom("nes", "Super Mario Bros. (World).nes", "hash-smb")
-        ScanLedger(File(paths.cache, ScanLedger.FILE_NAME)).apply {
-            record(f.canonicalPath, ScanLedger.State.UNSUPPORTED, f.length(), f.lastModified(),
-                   BridgePaths.epochSeconds())
+        // Kept as the scan keeps one: under the number of the file's
+        // collection, here the folder's name with nothing declared, and of a
+        // hasher that says nothing of itself. Under any other number the
+        // verdict is no longer standing, and the file is read.
+        ScanLedger(File(paths.cache, ScanLedger.FILE_NAME), HashRecipe("none")).apply {
+            record(f.canonicalPath, CollectionRef.inferred("nes"), ScanLedger.State.UNSUPPORTED,
+                   f.length(), f.lastModified(), BridgePaths.epochSeconds())
             save { file, text -> BridgePaths.writeAtomic(file, text) }
         }
 

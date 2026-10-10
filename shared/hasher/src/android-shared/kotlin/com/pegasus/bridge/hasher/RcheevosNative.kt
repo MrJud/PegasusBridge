@@ -116,8 +116,12 @@ internal object RcheevosNative {
         return false
     }
 
-    /** How rcheevos begins every message of something it could not open. */
-    private const val COULD_NOT_OPEN = "Could not open "
+    /**
+     * How rcheevos begins every message of something it could not open, the
+     * path of a track after it where it is a track. Internal, for the hasher
+     * that takes a disc out of an archive and has to know such a path again.
+     */
+    internal const val COULD_NOT_OPEN = "Could not open "
 
     /** What the library wrote, up to the NUL that ends it. */
     private fun text(reason: ByteArray): String {

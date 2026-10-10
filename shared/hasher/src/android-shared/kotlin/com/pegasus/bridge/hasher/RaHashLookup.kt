@@ -85,21 +85,11 @@ object VirtualGameId {
     const val UNTESTED_BASE = 1_100_000_000
     const val PATCH_REQUIRED_BASE = 1_200_000_000
 
-    fun isVirtual(gameId: Int): Boolean = gameId > INCOMPATIBLE_BASE
-
-    /** "game 1487, untested" for 1100001487: the real id and the reason, for a person to read. */
-    fun describe(gameId: Int): String = when {
-        gameId > PATCH_REQUIRED_BASE -> "game ${gameId - PATCH_REQUIRED_BASE}, patch required"
-        gameId > UNTESTED_BASE       -> "game ${gameId - UNTESTED_BASE}, untested"
-        gameId > INCOMPATIBLE_BASE   -> "game ${gameId - INCOMPATIBLE_BASE}, incompatible"
-        else                         -> "game $gameId"
-    }
-
     /**
-     * (1487, UNTESTED) for 1100001487: the real id and the reason, for code to
-     * read, or null for an id that is not virtual. The comparisons are those of
-     * [describe], strict as RAWeb's are, so a base itself belongs to the one
-     * below it and the lowest is a game's own id.
+     * (1487, UNTESTED) for 1100001487: the real id and the reason, or null
+     * for an id that is not virtual. The comparisons are strict, as RAWeb's
+     * are, so a base itself belongs to the one below it and the lowest is a
+     * game's own id.
      */
     fun decode(gameId: Int): Pair<Int, LookupOutcome.Compatibility>? = when {
         gameId > PATCH_REQUIRED_BASE -> gameId - PATCH_REQUIRED_BASE to LookupOutcome.Compatibility.PATCH_REQUIRED
@@ -209,15 +199,11 @@ class RaApiHashLookup(
                 is Step.GaveUp -> asked.failed
                 is Step.Got -> {
                     val gameId = asked.value
-                    val virtual = VirtualGameId.decode(gameId)
-                    when {
-                        gameId == 0 -> LookupOutcome.NotFound
-                        // The id alone: the Web API has no game under it to describe. Of 143
-                        // ROMs one library had that RA's hash list did not match, 65 came
-                        // back as such ids, each costing a metadata request that answered [].
-                        virtual != null -> LookupOutcome.IdOnly(virtual.first, virtual.second, virtualId = gameId)
-                        else -> fetchMetadata(gameId)
-                    }
+                    // A virtual id is answered by the id alone: the Web API has no game
+                    // under it to describe. Of 143 ROMs one library had that RA's hash
+                    // list did not match, 65 came back as such ids, each costing a
+                    // metadata request that answered [].
+                    LookupOutcome.ofIdAlone(gameId) ?: fetchMetadata(gameId)
                 }
             }
         } catch (c: CancellationException) {

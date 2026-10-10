@@ -48,10 +48,11 @@ object ConsoleChoice {
      */
     val NOT_A_ROM: Set<String> = ArchiveSelector.NEVER_THE_ROM + setOf("bml", "sbi", "lst", "elf")
 
-    private val ARCHIVES = setOf("zip", "7z")
+    /** What is opened as an archive: the reader's own list, and no second one to fall behind it. */
+    private val ARCHIVES = ArchiveReader.ARCHIVE_EXTENSIONS
 
     /** RC_CONSOLE_ARCADE. */
-    private const val ARCADE = 27
+    internal const val ARCADE = 27
 
     /** The one file of an arcade collection that is hashed by its bytes. */
     private const val NEO_GEO_CARTRIDGE = "neo"

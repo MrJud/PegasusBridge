@@ -67,6 +67,24 @@ sealed interface LookupOutcome {
         INCOMPATIBLE("incompatible"), UNTESTED("untested"), PATCH_REQUIRED("patch required")
     }
 
+    companion object {
+        /**
+         * What the number RetroAchievements answers a hash with settles by
+         * itself: 0 is a hash it does not know, and a [VirtualGameId] a dump
+         * it knows and does not let count. Null for a game's own id, which
+         * settles nothing yet: the game has still to be described, and
+         * whoever asks does that its own way.
+         *
+         * The rule was written out wherever an id comes in, the lookup, the
+         * recorded answers of an audit and the lookups tests are given, each
+         * with the two cases in the same order.
+         */
+        fun ofIdAlone(gameId: Int): LookupOutcome? {
+            if (gameId == 0) return NotFound
+            return VirtualGameId.decode(gameId)?.let { (real, reason) -> IdOnly(real, reason, virtualId = gameId) }
+        }
+    }
+
     /** What kind of failure a [Failed] was. */
     enum class Cause {
         /** The source refused the key. Nothing after it can be a match until the key changes. */

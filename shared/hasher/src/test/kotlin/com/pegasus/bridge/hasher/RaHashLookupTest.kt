@@ -209,15 +209,24 @@ class RaHashLookupTest {
         assertEquals(2, lookup.consecutiveFailures)
     }
 
-    // RAWeb compares strictly: the base itself is not virtual.
+    // RAWeb compares strictly: the base itself is not virtual. What an id
+    // settles by itself is asked in one place, by the lookup, by an audit's
+    // recorded answers and by the lookups tests are given.
     @Test fun `the virtual id bases and what they mean are RAWeb's`() {
-        assertFalse(VirtualGameId.isVirtual(1_000_000_000))
-        assertTrue(VirtualGameId.isVirtual(1_000_000_001))
-        assertEquals("game 1, incompatible", VirtualGameId.describe(1_000_000_001))
-        assertEquals("game 1487, untested", VirtualGameId.describe(1_100_001_487))
-        assertEquals("game 5, patch required", VirtualGameId.describe(1_200_000_005))
+        fun words(id: Int) = when (val outcome = LookupOutcome.ofIdAlone(id)) {
+            null -> "a game's own id"
+            LookupOutcome.NotFound -> "not known"
+            is LookupOutcome.IdOnly -> "game ${outcome.gameId}, ${outcome.reason.words}, sent as ${outcome.virtualId}"
+            else -> outcome.toString()
+        }
+        assertEquals("not known", words(0))
+        assertEquals("a game's own id", words(1487))
+        assertEquals("a game's own id", words(1_000_000_000))
+        assertEquals("game 1, incompatible, sent as 1000000001", words(1_000_000_001))
+        assertEquals("game 1487, untested, sent as 1100001487", words(1_100_001_487))
+        assertEquals("game 5, patch required, sent as 1200000005", words(1_200_000_005))
         // The second base too: RAWeb decodes 1 100 000 000 itself as incompatible.
-        assertEquals("game 100000000, incompatible", VirtualGameId.describe(1_100_000_000))
+        assertEquals("game 100000000, incompatible, sent as 1100000000", words(1_100_000_000))
     }
 
     // An error object is RA refusing the request, not describing a game: if the
@@ -603,8 +612,9 @@ class RaHashLookupTest {
         val wrong = expected.filter { (id, decoded) -> VirtualGameId.decode(id) != decoded }
             .map { (id, decoded) -> "$id: ${VirtualGameId.decode(id)}, not $decoded" }
         assertEquals(emptyList(), wrong)
-        // Never one without the other.
-        for ((id, _) in expected) assertEquals(VirtualGameId.isVirtual(id), VirtualGameId.decode(id) != null, "$id")
+        // And an id is virtual exactly when it is above the lowest base.
+        for ((id, _) in expected)
+            assertEquals(id > VirtualGameId.INCOMPATIBLE_BASE, VirtualGameId.decode(id) != null, "$id")
     }
 
     @Test fun `each of the four answers comes back as what it is`() = runTest {

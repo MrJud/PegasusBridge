@@ -803,9 +803,8 @@ class RomScanPipeline(
         buffer.copyOf(filled)
     }
 
-    /** One spelling per file, so two roots reaching it by different symlinks agree. */
-    private fun canonical(file: File): String =
-        runCatching { file.canonicalPath }.getOrDefault(file.absolutePath)
+    /** One spelling per file, so two roots reaching it by different symlinks agree: the walk's own. */
+    private fun canonical(file: File): String = RomScanner.canonical(file)
 
     private fun writeMetadata(job: HashJob, meta: GameMetadata) {
         val now = BridgePaths.epochSeconds()

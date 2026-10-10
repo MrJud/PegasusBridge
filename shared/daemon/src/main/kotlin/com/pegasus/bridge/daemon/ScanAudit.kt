@@ -17,6 +17,7 @@ import com.pegasus.bridge.hasher.RaApiHashLookup
 import com.pegasus.bridge.hasher.RaHashLookup
 import com.pegasus.bridge.hasher.RomHasher
 import com.pegasus.bridge.hasher.RomScanPipeline
+import com.pegasus.bridge.hasher.RomScanner
 import com.pegasus.bridge.hasher.ScanLedger
 import com.pegasus.bridge.hasher.VirtualGameId
 import kotlinx.coroutines.runBlocking
@@ -233,8 +234,7 @@ object ScanAudit {
     }
 
     /** One spelling per file, the one the pipeline keys its ledger by. */
-    private fun canonical(file: File): String =
-        runCatching { file.canonicalPath }.getOrDefault(file.absolutePath)
+    private fun canonical(file: File): String = RomScanner.canonical(file)
 
     /**
      * A row for every file the ledger has, and for any the hasher was handed
@@ -481,12 +481,8 @@ object ScanAudit {
                         "line ${index + 1} gives $hash a second game, $gameId after $known"
                     }
                     val title = cells.getOrNull(4)?.trim().orEmpty().ifEmpty { "game $gameId" }
-                    val virtual = VirtualGameId.decode(gameId)
-                    answers[hash] = when {
-                        gameId == 0     -> LookupOutcome.NotFound
-                        virtual != null -> LookupOutcome.IdOnly(virtual.first, virtual.second, virtualId = gameId)
-                        else            -> LookupOutcome.Match(GameMetadata(gameId = gameId, title = title))
-                    }
+                    answers[hash] = LookupOutcome.ofIdAlone(gameId)
+                        ?: LookupOutcome.Match(GameMetadata(gameId = gameId, title = title))
                 }
                 return OracleLookup(answers)
             }

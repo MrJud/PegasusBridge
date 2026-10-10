@@ -22,13 +22,8 @@ package com.pegasus.bridge.hasher
  */
 internal fun GameMetadata?.asOutcome(): LookupOutcome {
     if (this == null) return LookupOutcome.Failed(LookupOutcome.Cause.TRANSPORT)
-    val virtual = VirtualGameId.decode(gameId)
-    return when {
-        gameId == 0     -> LookupOutcome.NotFound
-        virtual != null -> LookupOutcome.IdOnly(virtual.first, virtual.second, virtualId = gameId)
-        title.isBlank() -> LookupOutcome.Failed(LookupOutcome.Cause.MALFORMED)
-        else            -> LookupOutcome.Match(this)
-    }
+    return LookupOutcome.ofIdAlone(gameId)
+        ?: if (title.isBlank()) LookupOutcome.Failed(LookupOutcome.Cause.MALFORMED) else LookupOutcome.Match(this)
 }
 
 /**

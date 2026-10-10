@@ -202,8 +202,15 @@ object RomScanner {
         return results
     }
 
-    /** The pipeline's spelling of a path too, so the scanner and the ledger agree. */
-    private fun canonical(file: File): String =
+    /**
+     * The one spelling of a path that a file is known by: to this walk, which
+     * keeps each file once however many roots and links reach it, to the
+     * ledger, which keeps a verdict under it, and to an audit, which writes a
+     * row for it. The canonical path, or the absolute one for a file whose
+     * canonical path the system will not give. It was written out in each of
+     * the three, alike; alike is what it has to stay.
+     */
+    fun canonical(file: File): String =
         runCatching { file.canonicalPath }.getOrDefault(file.absolutePath)
 
     /**

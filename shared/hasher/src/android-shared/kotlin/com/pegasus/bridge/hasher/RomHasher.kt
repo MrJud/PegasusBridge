@@ -383,7 +383,7 @@ class ArchiveAwareHasher internal constructor(
      * scanned before there were any, and read again on every scan.
      */
     private fun arcadeSet(path: String, set: File): HashOutcome =
-        named(set.name, delegate.hashForConsole(path, ARCADE)) { withPlainHashes(it, set) }
+        named(set.name, delegate.hashForConsole(path, ConsoleChoice.ARCADE)) { withPlainHashes(it, set) }
 
     private fun archive(file: File, collection: CollectionRef, row: RcConsoles.Row?): HashOutcome =
         ArchiveReader.open(file) { opened ->
@@ -646,9 +646,9 @@ class ArchiveAwareHasher internal constructor(
         val inFolder = folder.absolutePath + File.separator
         var reason = outcome.reason.replace(inFolder, "")
         var asked = reason != outcome.reason
-        val last = reason.lastIndexOf(COULD_NOT_OPEN)
+        val last = reason.lastIndexOf(RcheevosNative.COULD_NOT_OPEN)
         // A character cut in two reads as U+FFFD, once or more.
-        val cut = if (last < 0) "" else reason.substring(last + COULD_NOT_OPEN.length).trimEnd('\uFFFD')
+        val cut = if (last < 0) "" else reason.substring(last + RcheevosNative.COULD_NOT_OPEN.length).trimEnd('\uFFFD')
         if (cut.isNotEmpty() && inFolder.startsWith(cut)) {
             reason = reason.substring(0, last).trimEnd(' ', ';')
             asked = true
@@ -771,9 +771,6 @@ class ArchiveAwareHasher internal constructor(
     companion object {
         private const val TAG = "ArchiveAwareHasher"
 
-        /** RC_CONSOLE_ARCADE. */
-        private const val ARCADE = 27
-
         /** How many of an archive's entries a reason names before it counts the rest. */
         private const val NAMES_SHOWN = 5
 
@@ -796,9 +793,6 @@ class ArchiveAwareHasher internal constructor(
 
         /** The folder one disc is taken out into. */
         private const val SET_PREFIX = COPY_PREFIX + "set_"
-
-        /** How rcheevos begins what it says of a track it could not open, the track's path after it. */
-        private const val COULD_NOT_OPEN = "Could not open "
 
         /** How old a copy has to be before it is taken for one that was left behind. */
         private const val STALE_AFTER_MS = 24L * 60 * 60 * 1000

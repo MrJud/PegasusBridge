@@ -52,9 +52,7 @@ object PlaylistReader {
         } catch (e: IOException) {
             return Result.Refused(Why.UNREADABLE, "the playlist could not be read (${e.javaClass.simpleName})")
         }
-        val line = text.removePrefix("\uFEFF").lineSequence()
-            .map { it.trim() }
-            .firstOrNull { it.isNotEmpty() && !it.startsWith("#") }
+        val line = firstLine(text)
             ?: return Result.Refused(Why.EMPTY, "the playlist lists no file")
 
         val path = line.replace('\\', '/')
@@ -65,6 +63,17 @@ object PlaylistReader {
             return Result.Refused(Why.MISSING, "the playlist names ${target.name}, which is not there")
         return Result.Entry(target)
     }
+
+    /**
+     * The first entry in the [text] of a playlist, as it is written there,
+     * or null when it lists nothing. Apart from [firstEntry] for a playlist
+     * that is no file on a disk: an entry of an archive, whose first disc
+     * is another entry of it ([DescriptorSet]).
+     */
+    internal fun firstLine(text: String): String? =
+        text.removePrefix("\uFEFF").lineSequence()
+            .map { it.trim() }
+            .firstOrNull { it.isNotEmpty() && !it.startsWith("#") }
 
     /**
      * The first [READ_LIMIT] bytes as text. When the file goes on past them,

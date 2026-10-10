@@ -63,6 +63,24 @@ object ArchiveSelector {
     val DESCRIPTOR_EXTENSIONS = setOf("cue", "gdi", "m3u", "ccd", "toc")
 
     /**
+     * Which descriptor is the entry point when an archive holds more than
+     * one kind, the lower number first.
+     *
+     * A playlist names the sheets of a game's discs, so it stands above
+     * them: a game of two discs packed with its playlist has three
+     * descriptors, and only the playlist says which disc is the first. A
+     * `.cue` or a `.gdi` is a sheet rcheevos reads. A `.ccd` and a `.toc`
+     * are sheets it does not read, kept by some tools beside the `.cue` of
+     * the same disc, and one chosen ahead of that `.cue` would be a disc
+     * nobody can hash with a sheet for it lying there.
+     */
+    private fun descriptorRank(entry: Entry): Int = when (entry.extension) {
+        "m3u" -> 0
+        "cue", "gdi" -> 1
+        else -> 2
+    }
+
+    /**
      * What each platform can run, by Pegasus short name.
      *
      * Compared after [FuzzyMatch.normalizePlatform], which already folds the
@@ -72,6 +90,11 @@ object ArchiveSelector {
      * Deliberately generous within a platform and strict across them: including
      * an extension a system cannot run costs an ambiguity, while omitting one it
      * can costs a game.
+     *
+     * Every platform whose games come on discs lists `m3u`. A game of
+     * several discs is packed with the playlist that orders them, and where
+     * the list left it out the playlist was not looked at: the sheets of the
+     * discs were left to compete, and nothing could choose between them.
      */
     private val PLATFORM_EXTENSIONS: Map<String, Set<String>> = mapOf(
         "nes"          to setOf("nes", "fds", "unf", "unif", "nsf", "qd"),
@@ -91,14 +114,14 @@ object ArchiveSelector {
         "mastersystem" to setOf("sms", "bms", "bin"),
         "gamegear"     to setOf("gg", "bin"),
         "sega32x"      to setOf("32x", "bin"),
-        "segacd"       to setOf("cue", "bin", "iso", "chd", "ccd", "img"),
-        "saturn"       to setOf("cue", "bin", "iso", "chd", "ccd", "mds", "toc"),
-        "dreamcast"    to setOf("gdi", "cdi", "chd", "cue", "bin", "iso"),
-        "psx"          to setOf("cue", "bin", "img", "iso", "chd", "pbp", "ecm", "mdf", "mds", "ccd"),
-        "ps2"          to setOf("iso", "bin", "cue", "chd", "cso", "ciso", "img", "mdf", "isz"),
-        "psp"          to setOf("iso", "cso", "pbp", "prx", "elf"),
-        "pcengine"     to setOf("pce", "sgx", "cue", "chd", "ccd", "toc"),
-        "pcenginecd"   to setOf("cue", "chd", "ccd", "toc", "bin", "img", "iso"),
+        "segacd"       to setOf("cue", "bin", "iso", "chd", "ccd", "img", "m3u"),
+        "saturn"       to setOf("cue", "bin", "iso", "chd", "ccd", "mds", "toc", "m3u"),
+        "dreamcast"    to setOf("gdi", "cdi", "chd", "cue", "bin", "iso", "m3u"),
+        "psx"          to setOf("cue", "bin", "img", "iso", "chd", "pbp", "ecm", "mdf", "mds", "ccd", "m3u"),
+        "ps2"          to setOf("iso", "bin", "cue", "chd", "cso", "ciso", "img", "mdf", "isz", "m3u"),
+        "psp"          to setOf("iso", "cso", "pbp", "prx", "elf", "m3u"),
+        "pcengine"     to setOf("pce", "sgx", "cue", "chd", "ccd", "toc", "m3u"),
+        "pcenginecd"   to setOf("cue", "chd", "ccd", "toc", "bin", "img", "iso", "m3u"),
         "atari2600"    to setOf("a26", "bin"),
         "atari7800"    to setOf("a78", "bin"),
         "lynx"         to setOf("lnx"),
@@ -110,7 +133,7 @@ object ArchiveSelector {
         "virtualboy"   to setOf("vb"),
         "colecovision" to setOf("col", "cv", "rom", "bin"),
         "msx"          to setOf("rom", "mx1", "mx2", "dsk", "cas", "sc"),
-        "3do"          to setOf("iso", "cue", "bin", "chd"),
+        "3do"          to setOf("iso", "cue", "bin", "chd", "m3u"),
         "c64"          to setOf("d64", "t64", "crt", "prg", "tap", "g64", "x64"),
         "amiga"        to setOf("adf", "ipf", "hdf", "lha", "adz")
     )
@@ -164,15 +187,26 @@ object ArchiveSelector {
         if (playable.isEmpty()) return Selection.NoPlayableEntry(real)
         if (playable.size == 1) return Selection.One(playable[0], "the only playable entry")
 
+        val archiveStem = archiveName.substringAfterLast('/').substringBeforeLast('.')
+
         // A descriptor names the tracks, so it is the entry point whatever it
-        // weighs. Exactly one, or it is not settling anything.
+        // weighs, and where there are several the kind that stands above the
+        // others ([descriptorRank]). The tracks are out of it from here on.
+        // Among several sheets they used to compete for the archive's name
+        // too: in `Game.zip` with a second disc beside the first, `Game.cue`
+        // and `Game.bin` both bore the name, and neither was chosen.
         val descriptors = playable.filter { it.extension in DESCRIPTOR_EXTENSIONS }
-        if (descriptors.size == 1)
-            return Selection.One(descriptors[0], "the disc descriptor")
+        if (descriptors.isNotEmpty()) {
+            val first = descriptors.minOf { descriptorRank(it) }
+            val leading = descriptors.filter { descriptorRank(it) == first }
+            if (leading.size == 1) return Selection.One(leading[0], "the disc descriptor")
+            val named = leading.filter { it.stem.equals(archiveStem, ignoreCase = true) }
+            if (named.size == 1) return Selection.One(named[0], "the descriptor named after the archive")
+            return Selection.Ambiguous(leading.sortedByDescending { it.size })
+        }
 
         // `Contra (USA).zip` holding `Contra (USA).nes` — the convention every ROM
         // set follows, and what makes a bonus file or an included patch lose.
-        val archiveStem = archiveName.substringAfterLast('/').substringBeforeLast('.')
         val named = playable.filter { it.stem.equals(archiveStem, ignoreCase = true) }
         if (named.size == 1) return Selection.One(named[0], "named after the archive")
 

@@ -44,10 +44,34 @@ object ArchiveReader {
             val entries: List<ArchiveSelector.Entry>,
             private val stream: (index: Int) -> InputStream
         ) : Opened {
-            fun <T> read(entry: ArchiveSelector.Entry, block: (InputStream) -> T): T {
+            fun <T> read(entry: ArchiveSelector.Entry, block: (InputStream) -> T): T =
+                stream(indexOf(entry)).use(block)
+
+            /**
+             * Reads each of [chosen] once and hands it to [sink], in the
+             * order the entries lie in the archive, whatever order they are
+             * asked for in.
+             *
+             * For a disc, whose sheet and tracks have to come out together.
+             * A 7z is usually solid: its entries are compressed as one
+             * stream, and an entry is reached by decompressing all that lie
+             * before it. Going forward, each is met on the way to the next
+             * and the stream is gone through once. Going back means starting
+             * it again from its first byte, once for every step back, and
+             * for a disc of several tracks that is the disc several times.
+             *
+             * As with [read], these are entries of this listing themselves,
+             * and a zip entry whose name another shares is not read.
+             */
+            fun readMany(chosen: List<ArchiveSelector.Entry>, sink: (ArchiveSelector.Entry, InputStream) -> Unit) {
+                for (index in chosen.map { indexOf(it) }.distinct().sorted())
+                    stream(index).use { sink(entries[index], it) }
+            }
+
+            private fun indexOf(entry: ArchiveSelector.Entry): Int {
                 val index = entries.indexOfFirst { it === entry }
                 require(index >= 0) { "'${entry.name}' is not an entry of this listing" }
-                return stream(index).use(block)
+                return index
             }
         }
 

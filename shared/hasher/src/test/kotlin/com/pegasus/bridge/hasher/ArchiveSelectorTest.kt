@@ -54,6 +54,57 @@ class ArchiveSelectorTest {
         assertEquals("Final Fantasy VII (Disc 1).cue", pick.name)
     }
 
+    // A game of two discs packed with its playlist. Only the playlist says
+    // which disc is the first, and no disc platform listed `m3u`: the two
+    // sheets were left to compete, and nothing could choose between them.
+    @Test fun `a playlist is preferred over the sheets of the discs it lists`() {
+        val entries = listOf(e("Multi.m3u", 16), e("d1.cue", 80), e("d1.bin", 700L * 1024 * 1024),
+                             e("d2.cue", 80), e("d2.bin", 650L * 1024 * 1024))
+        assertEquals("Multi.m3u", selectOne(entries, "Lantern Keep (USA).zip", "psx").name)
+        // Named after the archive or not, and in a collection nobody knows.
+        assertEquals("Multi.m3u", selectOne(entries, "d1.zip", "psx").name)
+        assertEquals("Multi.m3u", selectOne(entries, "Lantern Keep (USA).zip", "").name)
+    }
+
+    @Test fun `every platform whose games come on discs takes a playlist`() {
+        val entries = listOf(e("Multi.m3u", 16), e("d1.cue", 80), e("d2.cue", 80))
+        val wrong = listOf("segacd", "saturn", "dreamcast", "psx", "ps2", "psp", "pcengine", "pcenginecd", "3do")
+            .filter { (ArchiveSelector.select(entries, "x.zip", it) as? ArchiveSelector.Selection.One)?.entry?.name != "Multi.m3u" }
+        assertEquals(emptyList(), wrong)
+    }
+
+    // A sheet rcheevos reads stands above one it does not, and one sheet of
+    // a kind is the entry point whatever lies beside it.
+    @Test fun `among descriptors a cue or a gdi comes before a ccd or a toc`() {
+        assertEquals("Disc.cue", selectOne(listOf(e("Disc.cue", 80), e("Disc.bin", 4096)), "Disc.zip", "psx").name)
+        assertEquals("Disc.ccd",
+                     selectOne(listOf(e("Disc.ccd", 900), e("Disc.img", 4096), e("Disc.sub", 96)), "Disc.zip", "psx").name)
+        assertEquals("Disc.cue",
+                     selectOne(listOf(e("Disc.ccd", 900), e("Disc.img", 4096), e("Disc.cue", 80)), "Disc.zip", "psx").name)
+        assertEquals("Disc.gdi",
+                     selectOne(listOf(e("Disc.toc", 900), e("Disc.gdi", 90), e("Disc.bin", 4096)), "Other.zip", "").name)
+    }
+
+    // Two discs and no playlist: nobody can say which is the game, and the
+    // question is between the two sheets. The tracks are not candidates.
+    @Test fun `two cues and no playlist are ambiguous between the cues only`() {
+        val entries = listOf(e("d1.cue", 80), e("d1.bin", 700L * 1024 * 1024),
+                             e("d2.cue", 90), e("d2.bin", 650L * 1024 * 1024))
+        val s = ArchiveSelector.select(entries, "Lantern Keep (USA).zip", "psx")
+        assertTrue(s is ArchiveSelector.Selection.Ambiguous, "got $s")
+        assertEquals(listOf("d2.cue", "d1.cue"), s.candidates.map { it.name })
+    }
+
+    // The sheet named after the archive is the game and the other a bonus
+    // disc. Its track bears the same name, and while tracks competed for
+    // the name with the sheets there were two of that name, and no choice.
+    @Test fun `among several sheets the one named after the archive is chosen, whatever its track is called`() {
+        val entries = listOf(e("Lantern Keep (USA).cue", 80), e("Lantern Keep (USA).bin", 700L * 1024 * 1024),
+                             e("Lantern Keep (USA) (Bonus).cue", 90), e("Lantern Keep (USA) (Bonus).bin", 100L * 1024 * 1024))
+        assertEquals("Lantern Keep (USA).cue", selectOne(entries, "Lantern Keep (USA).zip", "psx").name)
+        assertEquals("Lantern Keep (USA) (Bonus).cue", selectOne(entries, "lantern keep (usa) (bonus).7z", "psx").name)
+    }
+
     @Test fun `the entry named after the archive wins a tie`() {
         val pick = selectOne(
             listOf(e("Super Mario World (USA).sfc", 512 * 1024),

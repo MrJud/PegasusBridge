@@ -22,6 +22,15 @@ import kotlin.test.fail
  * came back with a hash to look up, and so did a disc of 1496 bytes with a
  * program of a gigabyte.
  *
+ * Each file is handed over twice where there is a console it claims to be
+ * of: with no console named, for rcheevos to go by the extension, and with
+ * that console forced, which is how a scan that knows the file's collection
+ * will ask. The two ways in meet only inside rcheevos, and a guard on one of
+ * them is not a guard on the other.
+ *
+ * One test hands over no file but a path that names none, which under one
+ * console did what these files did.
+ *
  * Every file is made here from the bytes that matter; none is a game.
  */
 class NativeCrashReproTest {
@@ -34,28 +43,38 @@ class NativeCrashReproTest {
 
     @Test
     fun `truncated files end without a hash, a crash or a hang`() {
-        // First a file that is whole. Every row below expects no hash, and no
-        // hash is also what a child gives that never got as far as rcheevos:
-        // the binding swallows whatever the call throws and answers null. A
-        // hash for this one, and the right one, is what shows the rows to be
-        // the library's own answers.
+        // First a file that is whole. Every row below expects no hash, and a
+        // library that gave no hash to anything would pass them all. A hash
+        // for this one, and the right one, is what shows the rows to be
+        // answers about the files.
         val prg = ByteArray(16 * 1024) { (it * 31 + 7).toByte() }
         val whole = file("Whole.nes", ascii("NES\u001a") + ByteArray(12) + prg)
         assertEquals(NativeChild.Result.Ok(md5(prg), 7), NativeChild.hash(whole),
                      "a whole iNES file, hashed in a child: what follows its 16-byte header, console 7")
+        // And that a console named here is the console asked: as a Super
+        // Nintendo cartridge the same file is hashed header and all. Were the
+        // number lost on the way to the child, the forced rows below would be
+        // the rows above them run twice.
+        assertEquals(NativeChild.Result.Ok(md5(whole.readBytes()), 3), NativeChild.hash(whole, console = 3),
+                     "the same file hashed in a child as console 3: all of it")
 
         // A header cut off after its magic word, for each console that takes a
         // header off before it hashes; a file shorter than the word itself;
         // and two track sheets with a field longer than its buffer.
+        val tinyNes = file("tiny.nes", ascii("NES\u001a") + byteArrayOf(1, 1))
+        val threeNes = file("three.nes", ascii("NES"))
         val rows = listOf(
-            file("tiny.nes", ascii("NES\u001a") + byteArrayOf(1, 1)),
-            file("tiny.fds", ascii("FDS\u001a") + byteArrayOf(0, 0)),
-            file("tiny.lnx", ascii("LYNX") + byteArrayOf(0, 1)),
-            file("tiny.a78", byteArrayOf(1) + ascii("ATARI7800")),
-            file("tiny.cart", ascii("EmuSCV")),
-            file("three.nes", ascii("NES")),
-            file("digits.gdi", ascii("3\n3 45000 4 " + "9".repeat(64) + " track03.bin 0\n")),
-            file("long.gdi", ascii("3\n3 45000 4 2352 " + "n".repeat(300) + " 0\n"))
+            tinyNes to 0,
+            file("tiny.fds", ascii("FDS\u001a") + byteArrayOf(0, 0)) to 0,
+            file("tiny.lnx", ascii("LYNX") + byteArrayOf(0, 1)) to 0,
+            file("tiny.a78", byteArrayOf(1) + ascii("ATARI7800")) to 0,
+            file("tiny.cart", ascii("EmuSCV")) to 0,
+            threeNes to 0,
+            file("digits.gdi", ascii("3\n3 45000 4 " + "9".repeat(64) + " track03.bin 0\n")) to 0,
+            file("long.gdi", ascii("3\n3 45000 4 2352 " + "n".repeat(300) + " 0\n")) to 0,
+            // As the NES, by number.
+            tinyNes to 7,
+            threeNes to 7
         )
 
         assertNoHash(rows)
@@ -84,10 +103,10 @@ class NativeCrashReproTest {
         // itself, the first leads to it.
         file("b.m3u", ascii("a.m3u\n"))
 
-        val rows = listOf(
-            // The table of partitions: none; more than there is room to count;
-            // two counts that add up to 1 in 32 bits; and no table, the file
-            // ending long before it.
+        // The table of partitions: none; more than there is room to count;
+        // two counts that add up to 1 in 32 bits; and no table, the file
+        // ending long before it.
+        val wiiImages = listOf(
             file("wii-no-partitions.iso", image(wiiSize, 0x18 to wii)),
             file("wii-partition-count.iso", image(wiiSize, 0x18 to wii, 0x40000 to hex("20000000"))),
             file("wii-count-wraps.iso",
@@ -104,13 +123,17 @@ class NativeCrashReproTest {
             file("wii-cluster-missing.iso",
                  image(0x60020, 0x18 to wii, 0x40000 to hex("00000001" + "00013808"),
                        wiiSize to hex("00014000" + "00000000"),
-                       0x502B8 to hex("00016000" + "FFFFFFFF"))),
-            // One sector of an OperaFS volume, which is what a 3DO disc is,
-            // with blocks of 2048 bytes and its root directory in block 16.
-            file("opera-short.iso",
-                 image(2048, 0 to hex("015A5A5A5A5A01"), 0x4C to hex("00000800"), 0x64 to hex("00000010"))),
+                       0x502B8 to hex("00016000" + "FFFFFFFF")))
+        )
+        // One sector of an OperaFS volume, which is what a 3DO disc is,
+        // with blocks of 2048 bytes and its root directory in block 16.
+        val opera = file("opera-short.iso",
+            image(2048, 0 to hex("015A5A5A5A5A01"), 0x4C to hex("00000800"), 0x64 to hex("00000010")))
+        val playlists = listOf(
             file("self.m3u", ascii("self.m3u\n")),
-            file("a.m3u", ascii("b.m3u\n")),
+            file("a.m3u", ascii("b.m3u\n"))
+        )
+        val gamecubeImages = listOf(
             // A GameCube disc's program with one segment of a gigabyte, and
             // with 18 of four.
             file("dol-one-gigabyte.iso", program(1, "40000000")),
@@ -123,20 +146,68 @@ class NativeCrashReproTest {
                  image(0x2460 + 0xD8, 0x1C to gamecube, 0x420 to hex("00002460"),
                        0x2460 + 0x90 to hex("40000000")))
         )
-        assertNoHash(rows)
+
+        assertNoHash(
+            (wiiImages + opera + playlists + gamecubeImages).map { it to 0 } +
+            // And each as the console it is made to look like, by number: the
+            // Wii, the 3DO, the GameCube, and for the playlists the
+            // PlayStation, whose discs are the ones listed that way.
+            wiiImages.map { it to 19 } + (opera to 43) + playlists.map { it to 12 } +
+            gamecubeImages.map { it to 16 }
+        )
     }
 
-    /** Hashes each file in a child of its own and fails, naming them, if any ended otherwise than with no hash. */
-    private fun assertNoHash(rows: List<File>) {
-        val wrong = rows.mapNotNull { row ->
-            val started = System.nanoTime()
-            val result = NativeChild.hash(row)
-            val ms = (System.nanoTime() - started) / 1_000_000
-            println("NativeCrashReproTest: ${row.name} -> $result in $ms ms")
-            if (result is NativeChild.Result.NoHash) null else "${row.name}: $result"
+    // Not a file made to mislead, this once, but a path: one that ends where
+    // a folder's name does. An arcade set is hashed by its file's name with
+    // the extension taken off, and of a name of no letters rcheevos takes off
+    // one more than there are, so the length it hashed was the largest there
+    // is and the process ended reading memory that was not its own. The
+    // library turns such a path away before rcheevos hears of it; rcheevos
+    // itself is as it was, which tests/native_repro_test.py keeps on record.
+    @Test
+    fun `a path that ends in a separator is turned away before it can end the process`() {
+        // That console 27 in a child is the arcade hash, and so the rows
+        // below are about the lines that crashed: the name, and no file read.
+        assertEquals(NativeChild.Result.Ok(md5(ascii("mslug")), 27),
+                     NativeChild.run(listOf(File(dir, "mslug.zip").path, "27")),
+                     "a set that is not there, hashed in a child as console 27: the MD5 of its name")
+
+        // Each stroke rcheevos reads as the end of a folder's name, on a
+        // folder that is there, on one that is not, and with nothing before
+        // it; and one of them with no console named, which crashed nothing
+        // and is refused all the same.
+        val rows = listOf(
+            "/" to 27,
+            dir.path + "/" to 27,
+            File(dir, "mslug.zip").path + "/" to 27,
+            "C:\\roms\\" to 27,
+            dir.path + "/" to 0
+        )
+        val wrong = rows.mapNotNull { (path, console) ->
+            val result = NativeChild.run(listOf(path, console.toString()))
+            println("NativeCrashReproTest: $path as console $console -> $result")
+            if (result == NativeChild.Result.NoHash("The path names no file")) null
+            else "$path as console $console: $result"
         }
         if (wrong.isNotEmpty())
-            fail("${wrong.size} of ${rows.size} files did not end with no hash:\n" +
+            fail("${wrong.size} of ${rows.size} paths were not turned away:\n" + wrong.joinToString("\n") { "  $it" })
+    }
+
+    /**
+     * Hashes each file in a child of its own, as the console beside it or as
+     * its extension suggests where that is 0, and fails, naming them, if any
+     * ended otherwise than with no hash.
+     */
+    private fun assertNoHash(rows: List<Pair<File, Int>>) {
+        val wrong = rows.mapNotNull { (row, console) ->
+            val started = System.nanoTime()
+            val result = NativeChild.hash(row, console)
+            val ms = (System.nanoTime() - started) / 1_000_000
+            println("NativeCrashReproTest: ${row.name} as console $console -> $result in $ms ms")
+            if (result is NativeChild.Result.NoHash) null else "${row.name} as console $console: $result"
+        }
+        if (wrong.isNotEmpty())
+            fail("${wrong.size} of ${rows.size} rows did not end with no hash:\n" +
                  wrong.joinToString("\n") { "  $it" })
     }
 

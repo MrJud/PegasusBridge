@@ -135,7 +135,7 @@ jobs:
 
       # Both libraries: the one in git is what the other job tests and what
       # the sentence about glibc at the top of this file is about.
-      - name: Neither library needs a newer glibc or exports more than its one function
+      - name: Neither library needs a newer glibc or exports more than its two functions
         working-directory: shared
         run: |
           ./tests/native_lib_check.sh native/out/librahasher.so

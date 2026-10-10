@@ -77,6 +77,27 @@ interface RomHasher {
     fun hash(path: String): HashResult?
 
     /**
+     * The file hashed as one console, [consoleId] as rcheevos numbers them,
+     * or as whatever its extension suggests when that is 0; and when there is
+     * no hash, why.
+     *
+     * Defaulted to [hash], with nothing to say of a failure, and the default
+     * leaves the console out on purpose. A hasher that stands in for the
+     * native one in a test answers one console for every file, and asked for
+     * another it would have to refuse files the test is not about.
+     */
+    fun hashForConsole(path: String, consoleId: Int): HashOutcome =
+        hash(path)?.let { HashOutcome.Ok(it) } ?: HashOutcome.Failed("")
+
+    /**
+     * Which hasher this is, down to the build: for the native one the
+     * rcheevos release and the local patches on it, as the library itself
+     * reports them. Two engines may answer differently for one file, so what
+     * one of them said is not to be taken for the other's.
+     */
+    val engine: String get() = "none"
+
+    /**
      * With the collection's short name, so an archive can be resolved by what
      * the platform actually runs rather than by which entry is biggest.
      *
@@ -115,6 +136,9 @@ class ArchiveAwareHasher(
 
     override fun hash(path: String, platform: String): HashResult? =
         (hashDetailed(path, platform) as? HashOutcome.Ok)?.result
+
+    /** The delegate's: taking an archive apart changes nothing of what hashes its entry. */
+    override val engine: String get() = delegate.engine
 
     override fun hashDetailed(path: String, platform: String): HashOutcome {
         val file = File(path)
@@ -200,8 +224,11 @@ class ArchiveAwareHasher(
                 // that holds two entries of one name and is otherwise fine.
                 return HashOutcome.Failed("could not extract '${entry.name}': ${t.message ?: t.javaClass.simpleName}")
             }
-            val result = delegate.hash(rom.absolutePath)
-                ?: return HashOutcome.Failed("the hasher could not read '${entry.name}'")
+            val result = when (val outcome = delegate.hashForConsole(rom.absolutePath, 0)) {
+                is HashOutcome.Ok -> outcome.result
+                is HashOutcome.Failed -> return couldNotRead("'${entry.name}'", outcome)
+                is HashOutcome.AmbiguousArchive -> return outcome
+            }
             return HashOutcome.Ok(result.copy(
                 fileMd5 = digests.md5, fileCrc32 = digests.crc32, archiveEntry = entry.name))
         } catch (t: Throwable) {
@@ -215,10 +242,24 @@ class ArchiveAwareHasher(
 
     /** [romFile] is whatever the delegate is given, so the digests describe the ROM. */
     private fun plain(romFile: File, containerFallback: Boolean = false): HashOutcome {
-        val result = delegate.hash(romFile.absolutePath)
-            ?: return HashOutcome.Failed("the hasher could not read ${romFile.name}")
+        val result = when (val outcome = delegate.hashForConsole(romFile.absolutePath, 0)) {
+            is HashOutcome.Ok -> outcome.result
+            is HashOutcome.Failed -> return couldNotRead(romFile.name, outcome)
+            is HashOutcome.AmbiguousArchive -> return outcome
+        }
         return HashOutcome.Ok(withPlainHashes(result, romFile).copy(containerFallback = containerFallback))
     }
+
+    /**
+     * The delegate's failure, under the name the scan knows the file by.
+     *
+     * The delegate was handed a path, and for an entry out of an archive a
+     * temporary one, so what it says is added and not passed on alone: the
+     * name first, as it always was, then the reason where there is one.
+     */
+    private fun couldNotRead(what: String, failure: HashOutcome.Failed): HashOutcome.Failed =
+        failure.copy(reason = "the hasher could not read $what" +
+                              if (failure.reason.isEmpty()) "" else ": ${failure.reason}")
 
     private fun withPlainHashes(result: HashResult, romFile: File): HashResult = try {
         val digests = RomHashIO.digest(romFile)

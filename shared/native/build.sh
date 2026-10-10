@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Builds librahasher for the host platform from the rcheevos sources that the
-# Android module already vendors, so both platforms hash from the same C.
+# Android module already vendors and the JNI file beside them, so both
+# platforms hash from the same C and are entered the same way.
 #
 # Output goes to native/out/ on purpose: anything under a module's build/
 # directory is deleted by `gradle clean`, which silently removed the library.
@@ -102,7 +103,9 @@ if [[ "$(uname -s)" == Linux ]]; then
     flags_said+=" ${ldflags[*]}"
 fi
 
-sources=("shared/native/rahasher_jni.c" "${rhash[@]}")
+# The file with the functions the JVM calls is beside the sources, where the
+# Android build compiles the same one.
+sources=("$cpp/rahasher_jni.c" "${rhash[@]}")
 
 sha256() {
     if command -v sha256sum >/dev/null 2>&1; then sha256sum "$1" | cut -d' ' -f1

@@ -415,3 +415,28 @@ the track asked for goes the same way where a folder can be opened as a file,
 since the name is then empty and what is opened is the sheet's own folder:
 `cut-1.gdi` to `cut-3.gdi` do, and so does the first of the two tries at
 `valid-first-data.gdi`, which then hashes.
+
+## Not patched: an arcade set's name of no letters
+
+`rc_hash_arcade` in `src/rhash/hash_rom.c` hashes the name of the file without
+its extension, and works out how long that is as `ext - filename - 1`, the one
+being for the dot. A path that ends in `/` or `\` has an empty name and no
+dot, so the length is one below zero, which in a `size_t` is the largest there
+is; `rc_hash_buffer` cuts it down to 64 MiB and hashes that much memory from
+where the name would be, and the process ends with a signal when it reaches
+memory that is not its own.
+
+No file does this, only a path, and only under console 27, which a caller has
+to name: left to the extension, rcheevos tries a file as an arcade set when
+the name ends in `.zip` or `.7z`, and then the name has letters before the
+dot or none, never one fewer. So it is stopped where paths come in:
+`../rahasher_jni.c` refuses a path that ends in either separator, for every
+console, before rcheevos is asked. `NativeCrashReproTest` holds that, in a
+JVM of its own. rcheevos is as upstream has it, and the one known gap of
+`shared/tests/native_repro_test.py` is this, on the program that has no JNI
+file in front of it.
+
+**Upstream.** 12.5.0 hashes the whole name when it has no extension, so the
+subtraction is no longer reached with an empty name: the same path gives the
+MD5 of no bytes there, and a name with no dot in it is hashed whole where
+12.3.0 leaves off its last letter.

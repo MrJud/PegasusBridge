@@ -13,8 +13,9 @@
  * and with the address and undefined-behaviour sanitizers.
  *
  * Console 0 asks every console rcheevos takes the extension for, in its order
- * and up to the first that answers, as the library does today. A console above
- * 0 is hashed as that console and no other.
+ * and up to the first that answers. A console above 0 is hashed as that
+ * console and no other. The library's hashForConsole takes its console the
+ * same way, and like this program sets the callback for errors and no other.
  *
  * It ends in one of three ways, and a test may count on them:
  *   0  one line on stdout, "<md5>|<console>"

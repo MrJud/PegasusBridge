@@ -1,8 +1,9 @@
 # The rcheevos sources the hasher is made of, one to a line, from this folder.
-# shared/native/build.sh compiles these and no others, beside its own JNI
-# file, and links with every symbol resolved: a name missing here is a link
-# error on the machine that builds, where it used to be a library that loaded
-# and ended the process at the first file of the console left out.
+# shared/native/build.sh, for the desktop, and CMakeLists.txt here, for
+# Android, both read this list and compile these and no others, beside
+# rahasher_jni.c, and link with every symbol resolved: a name missing here is
+# a link error on the machine that builds, where it used to be a library that
+# loaded and ended the process at the first file of the console left out.
 #
 # What is not here, and why: hash_encrypted.c is the 3DS, switched off by
 # RC_HASH_NO_ENCRYPTED, and aes.c is used by nothing else. rc_compat.c and

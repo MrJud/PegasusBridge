@@ -486,7 +486,10 @@ Android `hasher/` module is what only Android has:
 - `HasherService` — the foreground service, the wake lock, the notification
   with its Cancel, the thermal back-off, and the writing of the job's record
   and marker;
-- `NativeHasher` — the JNI entry into the rcheevos library built for the device;
+- `NativeHasher` — loads the rcheevos library built for the device. The
+  library's functions are declared once for both shells, in `RcheevosNative`
+  under `android-shared`, and one C file, `hasher/src/main/cpp/rahasher_jni.c`,
+  is compiled into the tablet's library and the desktop's;
 - `DeviceNetwork` — what Android's `ConnectivityManager` says of the
   connection, asked when a lookup's request has failed;
 - `ScanCollaborators` and `RomScanExtensions` — where the service gets its

@@ -41,9 +41,13 @@ game. Two kinds of row:
               allocator's and the kernel's business. The day a row here ends
               with exit 1 and a reason the gap is closed, the row fails, and
               whoever closed it moves it to the rows that must pass. There is
-              none at present. The kind is kept for the next defect that is
-              found before its patch is written, and for an upgrade of
-              rcheevos that brings one.
+              one at present, and it is about a path and not a file: one that
+              ends in a separator, hashed as an arcade set. The library's JNI
+              file turns such a path away before rcheevos is asked, which
+              this program, being rcheevos with nothing in front of it, does
+              not. The kind is also for the next defect that is found before
+              its patch is written, and for an upgrade of rcheevos that
+              brings one.
 
 Before any row, the sanitized build is given two faults of its own making
 (rahash_cli --fault) and has to report each. "No report" from a program built
@@ -538,8 +542,8 @@ def write_fixtures(directory):
         # a Dreamcast disc before it is tried as this one. The file above that
         # is hashed with no console is taken by the first console asked, so
         # these two are what holds the going on to the next, and the console
-        # printed being the one that answered: the path every known gap below
-        # is run through.
+        # printed being the one that answered: the path every row below with
+        # no console given is run through.
         ("the same cue with no console given is refused by three consoles and taken by the fourth",
          0, "Repro CD.cue", f"{sega_cd}|9"),
         ("the same playlist with no console given",
@@ -1060,10 +1064,22 @@ def write_fixtures(directory):
     must_pass.append(("8 KiB of nothing with the GameCube magic word",
                       16, "gamecube-magic-only.iso", REFUSED))
 
-    # (what the row shows, file). All with no console given, which is how the
-    # library is asked today. None at present: the six there were are rows
-    # above since local patches 0001 to 0004.
-    known_gaps = []
+    # (what the row shows, console, path from the folder of fixtures). The six
+    # files there were are rows above since local patches 0001 to 0004.
+    #
+    # What is left is not a file. An arcade set's hash is the MD5 of its
+    # file's name without the extension, and rcheevos finds the length of that
+    # by taking one off for the dot. A path that ends in a separator has a
+    # name of no letters and no dot, the length is one below zero, which is
+    # the most a size can hold, and rcheevos hashes the 64 MiB it cuts that
+    # down to, starting where the name would be: a signal as soon as the
+    # memory there is runs out. Not patched: rahasher_jni.c refuses a path
+    # that ends in either separator before rcheevos sees it, which is held by
+    # NativeCrashReproTest, and upstream has since rewritten these lines.
+    known_gaps = [
+        ("a path that ends in a separator, under console 27",
+         27, "mslug.zip/"),
+    ]
     return must_pass, known_gaps
 
 
@@ -1256,8 +1272,9 @@ def main(argv):
             print("known gaps, plain build (each of these is a defect still there):")
         else:
             print("known gaps: none")
-        for what, name in known_gaps:
-            outcome = run(plain, 0, files / name)
+        for what, console, name in known_gaps:
+            # Joined as text: a Path would drop the separator a row may end with.
+            outcome = run(plain, console, f"{files}{os.sep}{name}")
             wrong = check_known_gap(outcome)
             if wrong:
                 failures += 1

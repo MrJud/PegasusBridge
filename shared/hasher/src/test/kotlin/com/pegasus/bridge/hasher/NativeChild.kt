@@ -28,8 +28,8 @@ internal object NativeChild {
 
         /**
          * The library was asked and gave no hash. [reason] is what it said of
-         * the file, which today is nothing: [NativeRomHasher.hash] answers
-         * null and no more.
+         * the file, as [RcheevosNative.hash] hands it on. It is never empty:
+         * where rcheevos gave up without a word, the library says so.
          */
         data class NoHash(val reason: String) : Result
 
@@ -87,12 +87,21 @@ internal object NativeChild {
     /** The shell that lowers the child's limit; where there is none, the child starts without. */
     private val SHELL = File("/bin/sh")
 
-    fun hash(path: File, limitSeconds: Long = LIMIT_SECONDS): Result =
-        run(listOf(path.absolutePath), limitSeconds)
+    /**
+     * [console] as rcheevos numbers them, for the file to be hashed as that
+     * console and no other; 0 leaves the choice to the file's extension.
+     */
+    fun hash(path: File, console: Int = 0, limitSeconds: Long = LIMIT_SECONDS): Result =
+        run(listOf(path.absolutePath, console.toString()), limitSeconds)
 
-    /** Starts a child with [arguments], which [hash] makes the file's path, and reads how it ended. */
-    fun run(arguments: List<String>, limitSeconds: Long = LIMIT_SECONDS): Result {
-        val library = System.getProperty(LIBRARY_PROPERTY)
+    /**
+     * Starts a child with [arguments], which [hash] makes the file's path and
+     * a console, and reads how it ended. [library] is the file the child is
+     * to load, the tests' own unless a test is about a library that is not
+     * the hasher's.
+     */
+    fun run(arguments: List<String>, limitSeconds: Long = LIMIT_SECONDS, library: String? = null): Result {
+        val library = library ?: System.getProperty(LIBRARY_PROPERTY)
             ?: fail("$LIBRARY_PROPERTY is not set: run this through Gradle, whose test task sets it")
         val classpath = System.getProperty(CLASSPATH_PROPERTY)
             ?: fail("$CLASSPATH_PROPERTY is not set: run this through Gradle, whose test task sets it")
@@ -156,11 +165,16 @@ internal object NativeChild {
 
 /**
  * The child's side of [NativeChild]: loads the library named by
- * [NativeChild.LIBRARY_PROPERTY], hashes the one file it is given and prints
- * one line, `native-child: hash <md5>|<console>` or `native-child: nohash`.
+ * [NativeChild.LIBRARY_PROPERTY], hashes the one file it is given, as the
+ * console that follows the path or as console 0 when none does, and prints
+ * one line, `native-child: hash <md5>|<console>` or `native-child: nohash`
+ * with the reason after it.
  *
  * The library is loaded from the path given and no other, as the golden tests
- * load it, so that what runs here is what they ran.
+ * load it, so that what runs here is what they ran. The call is the one the
+ * daemon's hasher makes, [RcheevosNative.hash], and nothing here catches what
+ * that throws: a child that never reached rcheevos ends without an answer,
+ * and is a crash and not a file with no hash.
  *
  * Given one of the three modes in place of a path it loads nothing and ends
  * as that mode says, with no line of answer.
@@ -185,13 +199,20 @@ internal object NativeChildMain {
         }
 
         val library = File(System.getProperty(NativeChild.LIBRARY_PROPERTY) ?: "")
-        val hasher = NativeRomHasher.tryLoad(library)
-        if (hasher == null) {
+        if (NativeRomHasher.tryLoad(library) == null) {
             System.err.println("could not load $library: ${NativeRomHasher.lastError()}")
             exitProcess(NativeChild.EXIT_NO_LIBRARY)
         }
-        val result = hasher.hash(args[0])
-        println(if (result != null) "${NativeChild.ANSWER} hash ${result.hash}|${result.consoleId}"
-                else "${NativeChild.ANSWER} nohash")
+        when (val outcome = RcheevosNative.hash(args[0], args.getOrNull(1)?.toInt() ?: 0)) {
+            is HashOutcome.Ok ->
+                println("${NativeChild.ANSWER} hash ${outcome.result.hash}|${outcome.result.consoleId}")
+            // On one line whatever the reason holds: the parent reads the
+            // answer by its line.
+            is HashOutcome.Failed ->
+                println("${NativeChild.ANSWER} nohash ${outcome.reason.replace(Regex("[\\r\\n]+"), " ")}")
+            // The native hasher has no other answer; one that came would be
+            // no line here, and a crash to the parent.
+            else -> System.err.println("neither a hash nor a failure: $outcome")
+        }
     }
 }

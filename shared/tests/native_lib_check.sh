@@ -21,7 +21,8 @@ set -uo pipefail
 glibc_floor="2.14"
 
 # Exactly these, one to a line.
-expected_exports="Java_com_pegasus_bridge_hasher_NativeRomHasher_hashFile"
+expected_exports="Java_com_pegasus_bridge_hasher_RcheevosNative_hashForConsole
+Java_com_pegasus_bridge_hasher_RcheevosNative_version"
 
 if [[ $# -ne 1 ]]; then
     echo "usage: native_lib_check.sh <librahasher.so>" >&2

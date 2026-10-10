@@ -37,7 +37,7 @@ TWO = f"{CPP}/rcheevos/src/rhash/two.c"
 HEADER = f"{CPP}/rcheevos/include/one.h"
 MAP = f"{CPP}/jni.map"
 SCRIPT = "shared/native/build.sh"
-JNI = "shared/native/rahasher_jni.c"
+JNI = f"{CPP}/rahasher_jni.c"
 LIBRARY = "librahasher.so"
 
 NO_JNI = f"the manifest lists no C file but those {LIST} names"

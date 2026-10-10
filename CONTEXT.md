@@ -104,6 +104,16 @@ Each shell supplies what stands around it:
   `shared/daemon`, with `NativeRomHasher` and what the JVM can tell of the
   connection (`HostNetwork`).
 
+Both hash with the same library: rcheevos behind one JNI file,
+`hasher/src/main/cpp/rahasher_jni.c`, whose two functions are declared once, in
+`RcheevosNative`. `hashForConsole` takes the console to hash the file as, or 0
+to leave that to the file's extension, and hands back what rcheevos said of a
+file it gave no hash for; the scan records that after the file's name
+(`the hasher could not read X: <reason>`). `version` is the rcheevos release and
+the number of local patches on it (`12.3.0+pb6`). `NativeHasher` and
+`NativeRomHasher` only load the library, and each holds that version against
+the one it was built for before any file is hashed.
+
 Files are hashed 2 at a time on Android and 4 on the desktop. Either can be
 told otherwise, to time a library on its own storage: `hashWorkers=N` on the
 `pegasus-data://scan` URI (1–8), `--hash-workers=N` on the daemon (1–16).

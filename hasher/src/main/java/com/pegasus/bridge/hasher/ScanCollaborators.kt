@@ -25,12 +25,13 @@ internal object ScanCollaborators {
      * The native hasher, with one call made into it before it is handed over.
      *
      * A library that is not there fails when [NativeHasher] is first touched,
-     * and one that loaded without the function at the call
-     * [NativeHasher.verifyLinked] makes. Both are thrown from here, before any
-     * file is read, and end the scan as the error they are. Met file by file
-     * they would not be an error at all: the pipeline takes what a hasher
-     * throws as the failure of that one file, and the scan would finish, every
-     * file in the library counted as one that could not be hashed.
+     * and one that loaded without its functions, or is of another build than
+     * this code, at the call [NativeHasher.verifyLinked] makes. Each is
+     * thrown from here, before any file is read, and ends the scan as the
+     * error it is. Met file by file the first two would not be an error at
+     * all: the pipeline takes what a hasher throws as the failure of that one
+     * file, and the scan would finish, every file in the library counted as
+     * one that could not be hashed.
      */
     @Volatile
     var hasher: () -> RomHasher = { NativeHasher.also { it.verifyLinked() } }

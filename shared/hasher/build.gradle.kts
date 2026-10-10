@@ -1,3 +1,5 @@
+import java.time.Duration
+
 dependencies {
     api(project(":core"))
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
@@ -55,6 +57,14 @@ tasks.named<Test>("test") {
     jvmArgumentProviders.add(CommandLineArgumentProvider {
         listOf("-Dpegasus.bridge.testClasspath=${testClasspath.asPath}")
     })
+
+    // NativeConsoleHashTest and the golden tests call the library inside the
+    // worker's own JVM, where a call that never comes back has nobody to end
+    // it. The files they hand over are ones rcheevos is done with in
+    // milliseconds, and the whole task in well under a minute; were one of
+    // them to hang all the same, this ends the task with a failure, where CI
+    // would have held it until the job's own limit.
+    timeout.set(Duration.ofMinutes(10))
 }
 
 // src/android-shared holds the files the Android shell compiles too. Keeping them in

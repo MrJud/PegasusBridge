@@ -37,14 +37,17 @@ val buildNative by tasks.registering(Exec::class) {
     // whole of native/ used to be the input and native/out the output, one
     // inside the other, so that the library the task had just written was a
     // change to what it is built from. rc_compat.h is the one header the
-    // sources include from above their own folder.
+    // sources include from above their own folder, and rc_version.h and
+    // pb_patchlevel.h are where the JNI file takes the version it reports.
     inputs.file(script)
-    inputs.file("$rootDir/native/rahasher_jni.c")
+    inputs.file(File(cpp, "rahasher_jni.c"))
+    inputs.file(File(cpp, "pb_patchlevel.h"))
     inputs.file(File(cpp, "rahasher.sources"))
     inputs.file(File(cpp, "jni.map"))
     inputs.dir(File(cpp, "rcheevos/src/rhash"))
     inputs.dir(File(cpp, "rcheevos/include"))
     inputs.file(File(cpp, "rcheevos/src/rc_compat.h"))
+    inputs.file(File(cpp, "rcheevos/src/rc_version.h"))
     outputs.files(File(nativeDir, libraryName),
                   File(nativeDir, libraryName.substringBeforeLast('.') + ".manifest"))
     commandLine("bash", script.absolutePath)

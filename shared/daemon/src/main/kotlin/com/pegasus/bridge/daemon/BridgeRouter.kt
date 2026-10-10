@@ -49,6 +49,11 @@ class BridgeRouter(
 
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
 
+    // The scan this router started last, and the lock a request for one takes
+    // to look at it. See [scan].
+    private val scanStart = Any()
+    private var runningScan: JobRegistry.Job? = null
+
     fun handle(req: Request): Response = when (req.path) {
         "/", "/health"    -> health()
         "/scrape"         -> scrape(req)
@@ -403,9 +408,43 @@ class BridgeRouter(
             ?: return Response.badRequest("missing roots")
         if (roots.isEmpty()) return Response.badRequest("no usable root in roots")
 
-        // Honour a client-supplied id so a theme that reloads mid-scan can keep
-        // polling the same job instead of losing track of it.
-        val job = jobs.createWithClientId(req.param("jobId"), "scan")
+        // One scan at a time. Two on one data root write the same temporary
+        // ledger file every ten seconds, and each ends by saving a ledger
+        // without what the other settled. A request that finds a scan running
+        // is answered with that scan and starts nothing: the caller wanted the
+        // library scanned and it is being scanned, so it follows the one there
+        // is. Its status is `running` and not `started`, which is how a caller
+        // that reads it knows the roots being scanned may not be the ones it
+        // sent.
+        //
+        // The theme does send such a request. After a reload it asks for the
+        // job it remembers, has no answer yet, takes the scan for gone and
+        // starts another under a new id. It polls that id whatever the answer
+        // says, so the id is made a second name for the scan that is running.
+        //
+        // Looked for and started under one lock, since the server answers
+        // several requests at once. A scan counts as running until its job is
+        // finished or failed, and both come after the pipeline has returned.
+        val requested = req.param("jobId")
+        val (job, started) = synchronized(scanStart) {
+            val running = runningScan?.takeIf { it.state == JobRegistry.State.RUNNING }
+            if (running != null) {
+                jobs.alias(requested, running)
+                running to false
+            } else {
+                // Honour a client-supplied id so a theme that reloads mid-scan can
+                // keep polling the same job instead of losing track of it.
+                jobs.createWithClientId(requested, "scan").also { runningScan = it } to true
+            }
+        }
+        if (!started) {
+            BridgeLog.i(TAG, "scan ${job.id} is running: a second request was given that one")
+            return Response.json(JSONObject()
+                .put("schemaVersion", SchemaVersion.CURRENT)
+                .put("status", "running")
+                .put("jobId", job.id)
+                .toString())
+        }
         scope.launch {
             try {
                 val summary = make().scan(roots) { p ->

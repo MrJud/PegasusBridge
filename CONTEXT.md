@@ -105,6 +105,15 @@ Each shell supplies what stands around it:
   `shared/daemon`, with `NativeRomHasher` and what the JVM can tell of the
   connection (`HostNetwork`).
 
+Each runs one scan at a time, since two on one data root would write the one
+ledger. On Android a start request that finds a scan running is logged and
+dropped, and leaves no record under its id. The daemon answers such a
+`GET /scan` with the scan that is running: `status` is `running` where it is
+`started` for a scan the request began, `jobId` is that scan's, and the id the
+request carried becomes a second name for it, so that `GET /jobs/{id}` under
+either is the one record. The theme polls the id it chose and never the one in
+the answer. The roots of the second request are not scanned.
+
 Both hash with the same library: rcheevos behind one JNI file,
 `hasher/src/main/cpp/rahasher_jni.c`, whose two functions are declared once, in
 `RcheevosNative`. `hashForConsole` takes the console to hash the file as, or 0

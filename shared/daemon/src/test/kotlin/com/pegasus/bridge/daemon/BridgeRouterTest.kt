@@ -17,7 +17,9 @@ import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONObject
 import java.io.File
 import java.nio.file.Files
+import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicInteger
 import kotlin.test.AfterTest
 import kotlin.test.BeforeTest
 import kotlin.test.Test
@@ -467,6 +469,91 @@ class BridgeRouterTest {
             .use { JSONObject(it.body!!.string()).getString("jobId") }
         assertEquals("my_own_id", id)
         get("/jobs/my_own_id").use { r -> assertEquals(200, r.code) }
+    }
+
+    // Two scans on one data root write one ledger. The second caller here is
+    // the theme after a reload: it has lost track of the scan it started, asks
+    // for another under a new id, and polls that id whatever it is answered.
+    // So no second pipeline is built, the answer names the scan that is
+    // running, and the id the caller chose leads to it. The hasher holds the
+    // first scan in its one file until the test lets go.
+    @Test fun `a scan request while one is running starts none and leads to the one running`() {
+        File(romRoot, "nes").mkdirs()
+        File(romRoot, "nes/Lantern Keep (World).nes").writeText(romText("hash-smb"))
+
+        val hashing = CountDownLatch(1)
+        val letGo = CountDownLatch(1)
+        val held = object : RomHasher {
+            override fun hash(path: String): HashResult {
+                hashing.countDown()
+                letGo.await(30, TimeUnit.SECONDS)
+                return HashResult("hash-smb", 7)
+            }
+        }
+        val built = AtomicInteger()
+        val router = BridgeRouter(paths, config, JobRegistry(paths), scanPipeline = {
+            built.incrementAndGet()
+            RomScanPipeline(paths, held, FixedLookup(), throttleMs = { 0L })
+        })
+        val one = MicroHttpServer(handler = router::handle).also { it.start() }
+        try {
+            fun ask(p: String) = client.newCall(
+                Request.Builder().url("http://127.0.0.1:${one.port}$p").build()).execute()
+            fun scan(jobId: String?) =
+                ask("/scan?roots=" + romRoot.absolutePath + (jobId?.let { "&jobId=$it" } ?: "")).use { r ->
+                    assertEquals(200, r.code)
+                    JSONObject(r.body!!.string())
+                }
+            fun job(id: String) = ask("/jobs/$id").use { r ->
+                assertEquals(200, r.code, "job $id")
+                JSONObject(r.body!!.string())
+            }
+            fun ended(id: String): JSONObject {
+                var body = JSONObject()
+                for (attempt in 0 until 200) {
+                    body = job(id)
+                    if (body.getString("status") != "running") break
+                    Thread.sleep(50)
+                }
+                return body
+            }
+
+            val first = scan("first_caller")
+            assertEquals("started", first.getString("status"))
+            assertEquals("first_caller", first.getString("jobId"))
+            assertTrue(hashing.await(30, TimeUnit.SECONDS), "the first scan never reached its file")
+
+            val second = scan("second_caller")
+            assertEquals("running", second.getString("status"), "$second")
+            assertEquals("first_caller", second.getString("jobId"), "$second")
+            // And for a caller that sends no id and goes by the one it is given.
+            assertEquals("first_caller", scan(null).getString("jobId"))
+
+            val followed = job("second_caller")
+            assertEquals("running", followed.getString("status"), "$followed")
+            assertEquals("first_caller", followed.getString("jobId"), "$followed")
+            assertFalse(paths.pending("second_caller").exists(), "one job, one record on disk")
+
+            letGo.countDown()
+            val seenBySecond = ended("second_caller")
+            assertEquals("done", seenBySecond.getString("status"), "$seenBySecond")
+            assertEquals(1, seenBySecond.getJSONObject("result").getInt("newEntries"), "$seenBySecond")
+            assertEquals("done", job("first_caller").getString("status"))
+
+            // The scan is over, so the next request is a scan of its own.
+            val third = scan("third_caller")
+            assertEquals("started", third.getString("status"), "$third")
+            assertEquals("third_caller", third.getString("jobId"), "$third")
+            val rescan = ended("third_caller")
+            assertEquals("done", rescan.getString("status"), "$rescan")
+            assertEquals(1, rescan.getJSONObject("result").getInt("cachedHits"), "$rescan")
+            // Four requests, two scans: had the second or the third started
+            // one, it would have been built by now.
+            assertEquals(2, built.get())
+        } finally {
+            letGo.countDown()
+            one.stop()
+        }
     }
 
     @Test fun `a job id that could escape the directory is refused`() {

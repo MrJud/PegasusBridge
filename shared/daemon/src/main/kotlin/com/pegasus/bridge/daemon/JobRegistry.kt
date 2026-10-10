@@ -72,13 +72,32 @@ class JobRegistry(private val paths: BridgePaths) {
      * across a reload. Rejected if it could escape the jobs directory or collide
      * with a live job, in which case the caller gets a generated one.
      */
-    fun createWithClientId(requested: String?, verb: String): Job {
-        val safe = requested?.trim()?.takeIf { id ->
-            id.isNotEmpty() && id.length <= 100 &&
-            id.all { it.isLetterOrDigit() || it == '_' || it == '-' } &&
-            jobs[id]?.state != State.RUNNING
-        }
-        return create(safe ?: newId(verb.substringBefore('-')), verb)
+    fun createWithClientId(requested: String?, verb: String): Job =
+        create(usable(requested) ?: newId(verb.substringBefore('-')), verb)
+
+    /**
+     * Makes the id a caller chose a second name for [job], which was running
+     * before the caller asked.
+     *
+     * The theme picks the id of a scan itself, polls that id and never reads
+     * the one in the answer. So when its request is answered with a scan that
+     * is already running, telling it that scan's id is not enough: the id it
+     * sent has to lead there, or its first poll is a 404 and its popup says
+     * the job is unknown while the scan goes on. An id that cannot be used,
+     * for the reasons [createWithClientId] gives, is left alone, and that
+     * caller has the id in the answer to go by.
+     *
+     * Only the map knows the second name. The copy in `pending/` and the
+     * marker in `done/` are written under the job's own id and no other.
+     */
+    fun alias(requested: String?, job: Job) {
+        usable(requested)?.let { jobs[it] = job }
+    }
+
+    private fun usable(requested: String?): String? = requested?.trim()?.takeIf { id ->
+        id.isNotEmpty() && id.length <= 100 &&
+        id.all { it.isLetterOrDigit() || it == '_' || it == '-' } &&
+        jobs[id]?.state != State.RUNNING
     }
 
     fun get(id: String): Job? = jobs[id]

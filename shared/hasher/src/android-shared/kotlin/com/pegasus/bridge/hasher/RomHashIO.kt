@@ -103,6 +103,33 @@ object RomHashIO {
     )
 
     /**
+     * The console each of those extensions means to rcheevos, from the same
+     * table: the one console of an extension that has one, and null for the
+     * ten that several consoles write (`bin`, `chd`, `cue`, `d88`, `dsk`,
+     * `iso`, `m3u`, `nib`, `rom`, `tap`), where rcheevos tries a list of its
+     * own in turn and a collection has to say instead.
+     *
+     * An extension with a console is evidence of what a file is that does not
+     * depend on where it was put: a `.gb` among Game Boy Advance cartridges
+     * is still a Game Boy one. A test reads the table in hash.c and fails
+     * when this copy is behind it.
+     */
+    internal val RC_SINGLE: Map<String, Int?> = mapOf(
+        "2d" to 64, "3ds" to 62, "3dsx" to 62, "83g" to 79, "83p" to 79, "a26" to 25, "a78" to 51,
+        "app" to 62, "arduboy" to 71, "axf" to 62, "bin" to null, "bs" to 3, "cart" to 55, "cas" to 29,
+        "cci" to 62, "chd" to null, "chf" to 57, "cia" to 62, "col" to 44, "csw" to 59, "cue" to null,
+        "cxi" to 62, "d64" to 30, "d88" to null, "dosz" to 26, "dsk" to null, "elf" to 62, "fd" to 66,
+        "fds" to 7, "fig" to 3, "gb" to 4, "gba" to 5, "gbc" to 6, "gdi" to 40, "gg" to 15, "hex" to 71,
+        "iso" to null, "jag" to 17, "k7" to 66, "lnx" to 13, "m3u" to null, "m5" to 66, "m7" to 66,
+        "md" to 1, "min" to 24, "mx1" to 29, "mx2" to 29, "n64" to 2, "ndd" to 2, "nds" to 18, "nes" to 7,
+        "ngc" to 14, "nib" to null, "pbp" to 41, "pce" to 8, "pgm" to 75, "pzx" to 59, "ri" to 29,
+        "rom" to null, "sap" to 66, "scl" to 59, "sfc" to 3, "sg" to 33, "sgx" to 8, "smc" to 3,
+        "sv" to 63, "swc" to 3, "tap" to null, "tic" to 65, "trd" to 59, "tvc" to 75, "tzx" to 59,
+        "uze" to 80, "v64" to 2, "vb" to 28, "wad" to 19, "wasm" to 72, "woz" to 38, "wsc" to 53,
+        "z64" to 2
+    )
+
+    /**
      * Rethrows [t] when it is a cancellation, or what an interrupt looks like from
      * inside IO.
      *

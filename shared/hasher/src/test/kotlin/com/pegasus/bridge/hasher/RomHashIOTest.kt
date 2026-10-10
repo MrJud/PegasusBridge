@@ -1,5 +1,6 @@
 package com.pegasus.bridge.hasher
 
+import com.pegasus.bridge.core.RcConsoles
 import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
 import java.io.File
@@ -10,6 +11,7 @@ import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertTrue
+import kotlin.test.fail
 
 /** The one MD5/CRC32 loop both hashers now share, and the name rcheevos is handed. */
 class RomHashIOTest {
@@ -118,6 +120,33 @@ class RomHashIOTest {
         val handled = Regex("""\{\s*"([^"]+)"""").findAll(table).map { it.groupValues[1] }.toSet()
         assertTrue(handled.size > 50, "the table was not found in ${hashC.absolutePath}: $handled")
         assertEquals(handled - setOf("zip", "7z"), RomHashIO.RCHEEVOS_EXTENSIONS)
+    }
+
+    /**
+     * The same table gives each extension its console, or a function that
+     * tries several. The copy of that is what says a .gb among Game Boy
+     * Advance cartridges is a Game Boy one, so it is read back the same way.
+     */
+    @Test fun `each handled extension maps to the console rcheevos gives it`() {
+        val hashC = File("../../hasher/src/main/cpp/rcheevos/src/rhash/hash.c")
+        assertTrue(hashC.isFile, "the vendored rcheevos is not at ${hashC.absolutePath}")
+        val table = hashC.readText().substringAfter("rc_hash_iterator_ext_handlers[] = {").substringBefore("};")
+        val ids = RcConsoles.CONSOLES.associate { it.constant to it.id }
+        val inTable = Regex("""\{\s*"([^"]+)"\s*,\s*(\w+)\s*,\s*(\w+)\s*\}""").findAll(table).associate { row ->
+            val (extension, handler, data) = row.destructured
+            extension to if (handler == "rc_hash_initialize_iterator_single")
+                ids[data] ?: fail("$extension is sent to $data, which the console table lacks")
+            else null.also { assertEquals("0", data, "$extension has a handler of its own and a console") }
+        }
+        assertTrue(inTable.size > 50, "the table was not found in ${hashC.absolutePath}: $inTable")
+        assertEquals(inTable - setOf("zip", "7z"), RomHashIO.RC_SINGLE)
+
+        assertEquals(RomHashIO.RCHEEVOS_EXTENSIONS, RomHashIO.RC_SINGLE.keys)
+        assertEquals(setOf("bin", "chd", "cue", "d88", "dsk", "iso", "m3u", "nib", "rom", "tap"),
+                     RomHashIO.RC_SINGLE.filterValues { it == null }.keys)
+        // Both archives are arcade sets to rcheevos, and are never handed to it under those names.
+        assertEquals(27, inTable["zip"])
+        assertEquals(27, inTable["7z"])
     }
 
     @Test fun `a suffix it produces is one the JDK will create`() {

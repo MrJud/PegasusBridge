@@ -132,8 +132,11 @@ object ArchiveSelector {
      * `md` is deliberately **absent**: it is Markdown to most software and a Mega
      * Drive cartridge here, and excluding it would drop a whole platform's dumps
      * to tidy away a readme that the extension filter already refuses anyway.
+     *
+     * Internal, and not private, for [ConsoleChoice]: a file that is never
+     * the ROM inside an archive is not one outside it either.
      */
-    private val NEVER_THE_ROM = setOf(
+    internal val NEVER_THE_ROM = setOf(
         "txt", "nfo", "diz", "html", "htm", "jpg", "jpeg", "png", "gif", "bmp",
         "pdf", "doc", "url", "sfv", "md5", "sha1", "dat", "xml", "json", "log",
         "ips", "bps", "ups", "xdelta", "ppf",     // patches, not games

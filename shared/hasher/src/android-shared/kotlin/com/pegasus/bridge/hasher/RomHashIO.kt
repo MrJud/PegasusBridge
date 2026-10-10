@@ -1,6 +1,7 @@
 package com.pegasus.bridge.hasher
 
 import java.io.File
+import java.io.IOException
 import java.io.InputStream
 import java.io.OutputStream
 import java.security.MessageDigest
@@ -56,6 +57,36 @@ object RomHashIO {
         }
         checkCancelled()
         return Digests(md5.digest().toHex(), crc32.value.toString(16).padStart(8, '0'), size)
+    }
+
+    /**
+     * Copies [input] to [output] and digests nothing: for the tracks of a
+     * disc taken out of an archive, hundreds of megabytes whose MD5 nobody
+     * keeps. [checkCancelled] runs before every buffer, as it does where
+     * the bytes are digested.
+     *
+     * No more than [limit] bytes are written. An entry that gives more than
+     * its archive listed is not what was planned for, and one made to do so
+     * would fill the disk: it ends in an IOException.
+     */
+    fun copy(
+        input: InputStream,
+        output: OutputStream,
+        limit: Long = Long.MAX_VALUE,
+        checkCancelled: () -> Unit = ::checkInterrupted
+    ): Long {
+        val buffer = ByteArray(64 * 1024)
+        var size = 0L
+        while (true) {
+            checkCancelled()
+            val count = input.read(buffer)
+            if (count < 0) break
+            size += count
+            if (size > limit) throw IOException("it holds more than the $limit bytes the archive lists for it")
+            output.write(buffer, 0, count)
+        }
+        checkCancelled()
+        return size
     }
 
     /**

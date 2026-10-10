@@ -13,6 +13,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertIs
+import kotlin.test.assertTrue
 import kotlin.test.fail
 
 /**
@@ -258,43 +259,90 @@ class GoldenHashTest {
         assertFalse(File(dir, "tmp").exists(), "an entry of a set was copied out")
     }
 
-    // ------------------------------------------------- known gaps (phase 2)
+    // ---------------------------------------------------------------- discs
     //
-    // This pins what happens today, which is wrong, and says what is right. It
-    // asserts today's behaviour rather than being @Disabled. check_test_counts.py
-    // would count a disabled test as run just the same, but only an asserting one
-    // notices the fix: it turns red, and whoever made the fix rewrites it as a
-    // golden row instead of leaving a disabled test behind to describe a bug that
-    // is gone.
-
-    // A disc is its descriptor plus the tracks the descriptor names, and rcheevos
-    // reads the tracks from beside it. ArchiveSelector rightly picks the `.cue` as
-    // the entry point, but only the `.cue` would be extracted, the track would not
-    // be there, and every console rcheevos tries for a cue would fail. So it is
-    // not tried: the outcome says why, and that it will not change by asking
-    // again. Correct: what the pair gives loose, which for this Sega CD disc is
-    // the MD5 of the first 512 bytes of sector 0 with console 9 (rc_hash_sega_cd,
-    // hash_disc.c).
+    // A disc is its sheet plus the tracks the sheet names, and rcheevos reads
+    // the tracks from beside it. ArchiveSelector rightly picks the `.cue` as
+    // the entry point of an archive, but only the `.cue` was copied out, with
+    // no track beside it: for a while that gave the MD5 of the sheet's text,
+    // then a failure known in advance, pinned here as a known gap. The tracks
+    // are taken out with the sheet now, and the archive gives what the pair
+    // gives loose, which for this Sega CD disc is the MD5 of the first 512
+    // bytes of sector 0 with console 9 (rc_hash_sega_cd, hash_disc.c).
     @Test
-    fun `known gap (phase 2) - a cue and its bin inside a zip or 7z cannot be hashed`() {
+    fun `a cue and its bin inside a zip or 7z hash as the loose pair`() {
         val name = "Golden Sega CD (Japan)"
         val track = segaCdTrack()
         val cue = cueFor(name)
         assertEquals(SEGA_CD, md5(track.copyOfRange(16, 16 + 512)), "the rule for a Sega CD disc")
 
-        // Loose, the pair hashes, and that is the answer an archive should give too.
+        // Loose, the pair hashes, and that is the answer an archive is held to.
         val loose = File(dir, "segacd").apply { mkdirs() }
         File(loose, "$name.bin").writeBytes(track)
         val looseCue = File(loose, "$name.cue").apply { writeBytes(cue) }
         val r = assertIs<HashOutcome.Ok>(hasher.hashDetailed(looseCue.absolutePath, "segacd")).result
         assertEquals("$SEGA_CD|9", "${r.hash}|${r.consoleId}")
 
-        // Today: a failure known in advance, and marked as not worth retrying.
-        for (archive in listOf(zip(File(dir, "$name.zip"), "$name.cue" to cue, "$name.bin" to track),
-                               sevenZ(File(dir, "$name.7z"), "$name.cue" to cue, "$name.bin" to track))) {
-            assertEquals(HashOutcome.Failed(ArchiveAwareHasher.DESCRIPTOR_IN_ARCHIVE, retryable = false),
-                         hasher.hashDetailed(archive.absolutePath, "segacd"), archive.name)
+        // The sheet of the last row spells its track in capitals, and the
+        // entry is not spelt so: the track has to lie under the sheet's
+        // spelling, or on a system that tells the two apart it is not found.
+        val shouted = ("FILE \"${name.uppercase()}.BIN\" BINARY\r\n" +
+                       "  TRACK 01 MODE1/2352\r\n    INDEX 01 00:00:00\r\n").toByteArray()
+        val rows = listOf(
+            zip(File(dir, "$name.zip"), "$name.cue" to cue, "$name.bin" to track) to cue,
+            sevenZ(File(dir, "$name.7z"), "$name.cue" to cue, "$name.bin" to track) to cue,
+            // Solid, and in the order 7-Zip packs them: the track first.
+            SolidSevenZ.write(File(dir, "solid/$name.7z"), README to "x".toByteArray(), "$name.bin" to track,
+                              "$name.cue" to cue) to cue,
+            SolidSevenZ.write(File(dir, "shouted/$name.7z"), "disc/$name.bin" to track,
+                              "disc/$name.cue" to shouted) to shouted)
+
+        val wrong = rows.mapNotNull { (archive, sheet) ->
+            val where = archive.relativeTo(dir).path
+            val outcome = hasher.hashDetailed(archive.absolutePath, "segacd")
+            val result = (outcome as? HashOutcome.Ok)?.result
+                ?: return@mapNotNull "$where: expected $SEGA_CD|9, got $outcome"
+            when {
+                "${result.hash}|${result.consoleId}" != "$SEGA_CD|9" ->
+                    "$where: expected $SEGA_CD|9, got ${result.hash}|${result.consoleId}"
+                // The digests beside the hash are the sheet's, as loose.
+                result.fileMd5 != md5(sheet) -> "$where: the file MD5 ${result.fileMd5} is not the sheet's"
+                result.fileMd5 == result.hash -> "$where: the hash is the MD5 of the sheet's text"
+                !result.archiveEntry.endsWith("$name.cue") -> "$where: the entry recorded is '${result.archiveEntry}'"
+                else -> null
+            }
         }
+        if (wrong.isNotEmpty()) fail("discs in archives miss their golden hash:\n" + wrong.joinToString("\n") { "  $it" })
+        assertEquals(emptyList(), File(dir, "tmp").listFiles().orEmpty().map { it.name }, "a disc was left behind")
+    }
+
+    // What rcheevos itself says of a disc taken out whose sheet it reads for
+    // another name than was written: two blanks after FILE, which it takes
+    // for the start of a bare name. It asks for a file that was never in the
+    // archive, by its path. Loose, those words mean a track that may be there
+    // tomorrow; here they are a verdict, or the disc would be taken out again
+    // at every scan to hear them.
+    @Test
+    fun `a sheet rcheevos reads for another name than was written is refused once`() {
+        val name = "Golden Sega CD (Japan)"
+        val sheet = ("FILE  \"$name.bin\" BINARY\r\n  TRACK 01 MODE1/2352\r\n    INDEX 01 00:00:00\r\n").toByteArray()
+        val archive = zip(File(dir, "$name.zip"), "$name.cue" to sheet, "$name.bin" to segaCdTrack())
+
+        val outcome = assertIs<HashOutcome.Failed>(hasher.hashDetailed(archive.absolutePath, "segacd"))
+        assertEquals("the hasher could not read '$name.cue': Could not open  \"Golden; Could not open track",
+                     outcome.reason)
+        assertFalse(outcome.retryable, "it would be taken out again at every scan")
+
+        // In a collection nobody knows rcheevos tries every console a .cue
+        // may be of, and each says the same with the path. They do not all
+        // fit in what the library keeps of a reason, so the last path is cut
+        // short wherever the room ends, and no part of it is to stay.
+        val guessed = assertIs<HashOutcome.Failed>(hasher.hashDetailed(archive.absolutePath, ""))
+        assertTrue(guessed.reason.startsWith("the hasher could not read '$name.cue': Could not open  \"Golden; " +
+                                             "Could not open track"), guessed.reason)
+        assertFalse(File.separator in guessed.reason || "bridge_" in guessed.reason, guessed.reason)
+        assertFalse(guessed.retryable, "it would be taken out again at every scan")
+        assertEquals(emptyList(), File(dir, "tmp").listFiles().orEmpty().map { it.name })
     }
 
     // ---------------------------------------------------------------- ROMs

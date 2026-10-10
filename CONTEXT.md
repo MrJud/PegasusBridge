@@ -124,6 +124,19 @@ the game, and is never hashed as the file it is: one with no game in it is
 `NO_PLAYABLE_ENTRY`. A playlist is hashed as the first file it names. Only in a
 collection nothing is known of is the console still left to the extension.
 
+A disc in an archive is a `.cue` or a `.gdi` and the tracks it names, and
+rcheevos opens the tracks from beside the sheet. `DescriptorSet` reads the names
+out of the sheet and finds each among the archive's entries; the sheet and its
+tracks are then written into a folder made for that one disc, each track under
+the name the sheet uses, hashed there, and removed. A playlist in an archive
+leads to the entry it names first. A sheet that names a file the archive does
+not hold, or a file anywhere but beside itself, and a `.ccd`, `.toc` or `.mds`,
+which rcheevos does not read, are `UNHASHABLE` with the reason, and nothing is
+taken out. Every copy is made in the hasher's temporary folder (`tmp` under the
+data root on the desktop, the app's cache on Android) under a name that begins
+`bridge_`, and whatever of that name is more than a day old is removed when a
+scan builds its hasher: a scan that was killed removes nothing itself.
+
 Files are hashed 2 at a time on Android and 4 on the desktop. Either can be
 told otherwise, to time a library on its own storage: `hashWorkers=N` on the
 `pegasus-data://scan` URI (1–8), `--hash-workers=N` on the daemon (1–16).

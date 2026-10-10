@@ -189,14 +189,15 @@ class ScanLedgerTest {
 
     // ── A file the hasher knows it cannot hash ──────────────────────────────
 
-    // A cue taken out of an archive without its tracks. As HASH_FAILED it was
-    // retried on every scan, and in a solid 7z each retry decompressed the disc.
-    @Test fun `a disc descriptor in an archive is kept as unhashable, not retried every scan`(): Unit = runBlocking {
+    // A disc in an archive whose sheet is a .ccd, which rcheevos does not
+    // read. As HASH_FAILED such a file was retried on every scan, and in a
+    // solid 7z each retry decompressed the disc.
+    @Test fun `a disc in an archive whose sheet nobody reads is kept as unhashable, not retried every scan`(): Unit = runBlocking {
         val dir = File(romRoot, "psx").apply { mkdirs() }
         val zip = File(dir, "Disc.zip")
         ZipOutputStream(zip.outputStream()).use { z ->
-            z.putNextEntry(ZipEntry("Disc.cue")); z.write("FILE \"Disc.bin\" BINARY".toByteArray()); z.closeEntry()
-            z.putNextEntry(ZipEntry("Disc.bin")); z.write(ByteArray(4096)); z.closeEntry()
+            z.putNextEntry(ZipEntry("Disc.ccd")); z.write("[CloneCD]".toByteArray()); z.closeEntry()
+            z.putNextEntry(ZipEntry("Disc.img")); z.write(ByteArray(4096)); z.closeEntry()
         }
         val opened = AtomicInteger()
         val archives = object : RomHasher {
@@ -213,7 +214,7 @@ class ScanLedgerTest {
         assertNull(s.states[ScanLedger.State.HASH_FAILED])
         val e = ledgerEntry(zip)!!
         assertEquals("UNHASHABLE", e.getString("state"))
-        assertEquals(ArchiveAwareHasher.DESCRIPTOR_IN_ARCHIVE, e.getString("detail"))
+        assertEquals("'Disc.ccd' in the archive is a .ccd sheet, which rcheevos does not read", e.getString("detail"))
 
         val l2 = SaysNo()
         val s2 = pipeline(archives, l2).scan(listOf(romRoot.absolutePath))

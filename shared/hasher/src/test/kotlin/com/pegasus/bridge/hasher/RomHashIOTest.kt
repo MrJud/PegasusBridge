@@ -4,6 +4,7 @@ import com.pegasus.bridge.core.RcConsoles
 import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
 import java.io.File
+import java.io.IOException
 import java.nio.file.Files
 import java.util.concurrent.CancellationException
 import kotlin.test.Test
@@ -74,6 +75,30 @@ class RomHashIOTest {
             Thread.interrupted()
             f.delete()
         }
+    }
+
+    // The tracks of a disc are copied and not digested, and an entry is held
+    // to the size its archive listed: the room for it was counted by that.
+    @Test fun `a plain copy is whole, stops at its limit, and can be cancelled`() {
+        val bytes = ByteArray(200_000) { (it * 31).toByte() }
+        val whole = ByteArrayOutputStream()
+        assertEquals(200_000L, RomHashIO.copy(ByteArrayInputStream(bytes), whole))
+        assertContentEquals(bytes, whole.toByteArray())
+        assertEquals(200_000L, RomHashIO.copy(ByteArrayInputStream(bytes), ByteArrayOutputStream(), limit = 200_000))
+
+        val cut = ByteArrayOutputStream()
+        val over = assertFailsWith<IOException> { RomHashIO.copy(ByteArrayInputStream(bytes), cut, limit = 199_999) }
+        assertEquals("it holds more than the 199999 bytes the archive lists for it", over.message)
+        assertTrue(cut.size() <= 199_999, "${cut.size()} bytes were written past the limit")
+
+        var checks = 0
+        val stopped = ByteArrayOutputStream()
+        assertFailsWith<CancellationException> {
+            RomHashIO.copy(ByteArrayInputStream(bytes), stopped) {
+                if (++checks == 2) throw CancellationException("stop")
+            }
+        }
+        assertEquals(64 * 1024, stopped.size())
     }
 
     @Test fun `temporary suffix uses only the archive entry file extension`() {

@@ -1006,7 +1006,7 @@ class RomScanPipelineTest {
      * One of everything a scan can meet, in numbers no two of which are alike, so
      * that a file counted under the wrong name shows: four matches, six misses,
      * one virtual id, three files that give no hash (one unreadable, a zip with
-     * two ROMs in it, a zip whose ROM is a disc descriptor), five under a
+     * two ROMs in it, a zip of a disc whose sheet nobody reads), five under a
      * platform RetroAchievements does not cover, and two lookups that brought
      * nothing usable back (one unanswered, one a real id with no title). And
      * a fourth file that gives no hash, added when it became an answer of its
@@ -1027,7 +1027,7 @@ class RomScanPipelineTest {
         rom("nes", "Metroid (Europe) (Virtual Console).nes", "hash-virtual")
         rom("nes", "Broken.nes", "UNHASHABLE")
         zip("nes", "Two Games.zip", "first.nes" to "hash-first", "second.nes" to "hash-second")
-        zip("psx", "Disc.zip", "Disc.cue" to "FILE \"Disc.bin\" BINARY", "Disc.bin" to "x".repeat(4096))
+        zip("psx", "Disc.zip", "Disc.ccd" to "[CloneCD]", "Disc.img" to "x".repeat(4096))
         zip("nes", "Patch.zip", "Patch.ips" to "x".repeat(64), "readme.txt" to "x")
         repeat(5) { rom("switch", "Game $it.nes", "hash-switch-$it") }
         rom("nes", "Silent.nes", "hash-silent")

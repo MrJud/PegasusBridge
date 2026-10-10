@@ -50,9 +50,12 @@ object DescriptorSet {
      * the folder is still in the list, for [match] to refuse.
      *
      * Read as rcheevos reads them (cdreader.c), so that the names found
-     * here are the names it will open. Nothing for any other extension: a
-     * `.ccd` and a `.toc` name their tracks by rules rcheevos has no reader
-     * for.
+     * here are the names it will open, and where the two could differ this
+     * is the more forgiving: of blanks, of tabs, of a quote left open. A
+     * name rcheevos would have made out otherwise is then taken out for
+     * nothing, and the console says so, which [ArchiveAwareHasher] keeps as
+     * an answer. Nothing for any other extension: a `.ccd` and a `.toc`
+     * name their tracks by rules rcheevos has no reader for.
      */
     fun references(name: String, bytes: ByteArray): List<String> {
         val text = String(bytes, Charsets.UTF_8)

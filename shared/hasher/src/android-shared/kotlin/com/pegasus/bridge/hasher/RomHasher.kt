@@ -2,7 +2,9 @@ package com.pegasus.bridge.hasher
 
 import com.pegasus.bridge.core.BridgeLog
 import com.pegasus.bridge.core.RcConsoles
+import java.io.ByteArrayOutputStream
 import java.io.File
+import java.nio.file.Files
 
 /**
  * [hash] is the RetroAchievements one, from rcheevos, which transforms the data
@@ -46,10 +48,10 @@ sealed interface HashOutcome {
      *
      * [retryable] false means the hasher knew before trying that it cannot hash
      * this file, and will answer the same until the hasher itself changes — a
-     * disc descriptor inside an archive, whose tracks are not extracted. Asking
-     * again on every scan costs work and changes nothing, so the pipeline keeps
-     * that answer like a verdict instead of retrying it as a file that might be
-     * fixed.
+     * disc inside an archive whose sheet is a `.ccd`, which rcheevos does not
+     * read, or names a track the archive does not hold. Asking again on every
+     * scan costs work and changes nothing, so the pipeline keeps that answer
+     * like a verdict instead of retrying it as a file that might be fixed.
      *
      * It is false as well for a file that was read and refused by the console
      * its collection names, which will refuse it again, and for an archive
@@ -170,11 +172,47 @@ interface RomHasher {
  * 7z it is told nothing about for an arcade set and hashes its name, so the
  * answer was the MD5 of a file name, with console 27: asked about, refused,
  * and kept for a fortnight as a game the database lacks.
+ *
+ * A disc in an archive is a sheet and the tracks it names, and rcheevos
+ * opens the tracks from beside the sheet. So where the entry chosen is a
+ * `.cue` or a `.gdi`, the tracks are found among the entries
+ * ([DescriptorSet]) and taken out with it, into a folder made for the one
+ * disc and removed when it has been hashed. A playlist in an archive leads
+ * to the entry it names first, and to that entry's disc.
+ *
+ * [tempDir] is where copies are made, and it is not this class's alone: on
+ * Android it is the app's whole cache. Everything made in it has a name that
+ * begins `bridge_`, and nothing of another name is touched.
  */
-class ArchiveAwareHasher(
+class ArchiveAwareHasher internal constructor(
     private val delegate: RomHasher,
-    private val tempDir: File
+    private val tempDir: File,
+    /** How many bytes can still be written under a folder. A test says a number of its own. */
+    private val usableSpace: (File) -> Long
 ) : RomHasher {
+
+    constructor(delegate: RomHasher, tempDir: File) : this(delegate, tempDir, { it.usableSpace })
+
+    // A copy is removed when its file has been hashed, in a `finally`. A
+    // process that is killed runs none: the daemon stopped in the middle of
+    // a scan, the app ended by the system. What it was copying stays, and a
+    // disc is hundreds of megabytes. Both shells build one of these for each
+    // scan, so this is where a scan starts, as far as the copies go. A day
+    // old, because another scan may be running beside this one with a copy
+    // of its own in the making, and none takes a day over one file.
+    init {
+        try {
+            val stale = System.currentTimeMillis() - STALE_AFTER_MS
+            tempDir.listFiles()
+                ?.filter { it.name.startsWith(COPY_PREFIX) && it.lastModified() < stale }
+                ?.forEach {
+                    BridgeLog.i(TAG, "removing ${it.name}, left behind by an earlier scan")
+                    remove(it)
+                }
+        } catch (e: Exception) {
+            BridgeLog.w(TAG, "could not look for copies an earlier scan left behind: ${e.message}")
+        }
+    }
 
     override fun hash(path: String): HashResult? = hash(path, "")
 
@@ -367,32 +405,53 @@ class ArchiveAwareHasher(
         }
 
     /**
-     * The one entry that is the game. A descriptor is asked for first, and
-     * only an entry that is none is planned for by its own name. The other
-     * way round a `.ccd` or a `.toc`, which are descriptors and are also
+     * The one entry that is the game, or with [namedByPlaylist] the entry a
+     * playlist in the archive names first. What kind of descriptor it is, is
+     * asked first, and only then is it planned for by its own name. The
+     * other way round a `.ccd` or a `.toc`, which are sheets and are also
      * formats rcheevos does not read, would be turned away as a format, and
-     * a playlist would be followed to files that were not taken out with it.
+     * a playlist would be a file to hash.
      */
     private fun chosen(
         archive: File,
         opened: ArchiveReader.Opened.Entries,
         entry: ArchiveSelector.Entry,
-        row: RcConsoles.Row?
+        row: RcConsoles.Row?,
+        namedByPlaylist: Boolean = false
     ): HashOutcome {
-        if (entry.extension in ArchiveSelector.DESCRIPTOR_EXTENSIONS) return descriptorAlone(archive, entry)
+        when (entry.extension) {
+            // A sheet rcheevos has no reader for. The image beside it may be
+            // a disc any console would hash, but which entry that is, the
+            // sheet says, in words nobody here reads. It will be no
+            // different at the next scan.
+            in UNREAD_SHEETS -> {
+                BridgeLog.w(TAG, "not hashed: '${entry.name}' in ${archive.name} is a sheet rcheevos does not read")
+                return HashOutcome.Failed("'${entry.name}' in the archive is a .${entry.extension} sheet, " +
+                                          "which rcheevos does not read", retryable = false)
+            }
+            "m3u" ->
+                return if (namedByPlaylist)
+                    HashOutcome.Failed("a playlist named by a playlist is not followed", retryable = false)
+                else playlistInside(archive, opened, entry, row)
+        }
+        val sheet = entry.extension in READ_SHEETS
         return when (val plan = ConsoleChoice.choose(row, entry.extension, entry.size, insideArchive = true)) {
             // A packed disc image, say, zipped once more: copied out and
             // handed over it would come back as the hash of its container.
+            // Or a sheet in a collection of cartridges, which is found out
+            // here, before its disc is taken out for nothing.
             is ConsoleChoice.Plan.UnsupportedFormat ->
                 HashOutcome.UnsupportedFormat("'${entry.name}' in the archive: ${plan.reason}")
             is ConsoleChoice.Plan.Unsupported ->
                 HashOutcome.UnsupportedFormat(plan.reason)
-            is ConsoleChoice.Plan.Hash -> extracted(archive, opened, entry, plan)
-            ConsoleChoice.Plan.Guess -> extracted(archive, opened, entry, null)
-            // No entry gets one of these today: an archive or an arcade set
-            // inside an archive is refused as a format, and a playlist is a
-            // descriptor. Said in full so that a plan added to the list does
-            // not compile until it has been given an answer here.
+            is ConsoleChoice.Plan.Hash ->
+                if (sheet) disc(archive, opened, entry, plan) else extracted(archive, opened, entry, plan)
+            ConsoleChoice.Plan.Guess ->
+                if (sheet) disc(archive, opened, entry, null) else extracted(archive, opened, entry, null)
+            // No entry gets one of these: an archive or an arcade set inside
+            // an archive is refused as a format, and a playlist has been
+            // followed above. Said in full so that a plan added to the list
+            // does not compile until it has been given an answer here.
             ConsoleChoice.Plan.ArcadeSet, ConsoleChoice.Plan.OpenArchive, ConsoleChoice.Plan.ResolvePlaylist ->
                 HashOutcome.UnsupportedFormat("'${entry.name}' in the archive is not a file to hash")
         }
@@ -421,22 +480,206 @@ class ArchiveAwareHasher(
     }
 
     /**
-     * A disc descriptor ([ArchiveSelector.DESCRIPTOR_EXTENSIONS]) chosen out of
-     * an archive, which cannot be hashed yet and is not tried.
+     * A playlist chosen out of an archive: the game is the first entry it
+     * names, which is another entry of the archive and is found among them
+     * as a sheet's track is, by the last part of what the playlist writes.
+     * A playlist names its discs with a folder as readily as without, and
+     * unlike a track's name this one is only looked up: nothing is written
+     * under it, so a folder in it leads nowhere. That entry is then what
+     * [chosen] makes of it, a disc to take out whole or a single image.
      *
-     * A descriptor names its tracks and rcheevos reads them from beside it, but
-     * only the descriptor would be extracted: every console rcheevos tries for it
-     * fails, and the answer came back as a failure the next scan retried. In a
-     * solid 7z the descriptor usually comes after its tracks, so each of those
-     * attempts decompressed the disc ahead of it first — some 25 s for one PSX
-     * disc, on every scan. The outcome is known from the listing alone, so
-     * nothing is extracted and rcheevos is not called. The fix proper, Phase 2,
-     * is extracting the tracks too.
+     * As for a playlist on a disk, the digests beside the hash are the
+     * playlist's, and so is the entry they are recorded under.
      */
-    private fun descriptorAlone(archive: File, entry: ArchiveSelector.Entry): HashOutcome {
-        BridgeLog.w(TAG, "not hashed: '${entry.name}' in ${archive.name} is a disc descriptor, " +
-                         "and its tracks are not extracted from an archive yet")
-        return HashOutcome.Failed(DESCRIPTOR_IN_ARCHIVE, retryable = false)
+    private fun playlistInside(
+        archive: File,
+        opened: ArchiveReader.Opened.Entries,
+        playlist: ArchiveSelector.Entry,
+        row: RcConsoles.Row?
+    ): HashOutcome {
+        val text = try {
+            sheetBytes(opened, playlist)
+        } catch (t: Throwable) {
+            RomHashIO.rethrowIfCancelled(t)
+            return couldNotExtract(archive, playlist, t)
+        } ?: return tooLong(playlist)
+        val named = DescriptorSet.references(playlist.name, text)
+            .map { it.substringAfterLast('/').substringAfterLast('\\') }
+        val first = when (val match = DescriptorSet.match(named, opened.entries)) {
+            is DescriptorSet.Match.Refused ->
+                return HashOutcome.Failed("'${playlist.name}' in the archive: ${match.reason}", retryable = false)
+            is DescriptorSet.Match.Found -> match.tracks.single().entry
+        }
+        return when (val outcome = chosen(archive, opened, first, row, namedByPlaylist = true)) {
+            is HashOutcome.Ok -> {
+                val digests = RomHashIO.copyAndDigest(text.inputStream())
+                HashOutcome.Ok(outcome.result.copy(fileMd5 = digests.md5, fileCrc32 = digests.crc32,
+                                                   archiveEntry = playlist.name))
+            }
+            else -> outcome
+        }
+    }
+
+    /**
+     * A `.cue` or a `.gdi` chosen out of an archive, taken out with the
+     * tracks it names and hashed where it then lies.
+     *
+     * Taken out by itself, as any other entry is, a sheet has no tracks
+     * beside it and every console fails on it. For a while it was hashed
+     * all the same, as the text it is, and then it was refused unread; a
+     * disc somebody had packed was a file nobody could hash either way.
+     *
+     * What comes out of the archive is decided before anything does. The
+     * sheet is read and its tracks found among the entries; a sheet that
+     * names a file the archive does not hold, or a file anywhere but beside
+     * itself, is refused, and so is one this collection's console would not
+     * hash as a disc. That will be so at the next scan too. Then the room
+     * for it is looked at, which may be different tomorrow.
+     *
+     * Each track is written under the name the sheet uses for it, which is
+     * the name rcheevos will open, into a folder made for this disc alone:
+     * two scans, or two workers of one, never write to the same place, and
+     * a name out of an archive cannot land on a file that was there before.
+     * The sheet gets a name of ours. Nothing reads that name but the
+     * extension, and an entry may be called what no file can be.
+     *
+     * The folder is removed whichever way this ends, and a cancellation
+     * passes straight through.
+     */
+    private fun disc(
+        archive: File,
+        opened: ArchiveReader.Opened.Entries,
+        sheet: ArchiveSelector.Entry,
+        plan: ConsoleChoice.Plan.Hash?
+    ): HashOutcome {
+        var folder: File? = null
+        try {
+            val text = try {
+                sheetBytes(opened, sheet)
+            } catch (t: Throwable) {
+                RomHashIO.rethrowIfCancelled(t)
+                return couldNotExtract(archive, sheet, t)
+            } ?: return tooLong(sheet)
+
+            fun refused(reason: String): HashOutcome {
+                BridgeLog.w(TAG, "not hashed: '${sheet.name}' in ${archive.name}: $reason")
+                return HashOutcome.Failed("'${sheet.name}' in the archive: $reason", retryable = false)
+            }
+            val tracks = when (val match = DescriptorSet.match(DescriptorSet.references(sheet.name, text), opened.entries)) {
+                is DescriptorSet.Match.Refused -> return refused(match.reason)
+                is DescriptorSet.Match.Found -> match.tracks
+            }
+            val sheetName = "disc.${sheet.extension}"
+            if (tracks.any { it.entry === sheet }) return refused("it names itself")
+            // On a system that tells no case apart, the track would be written over the sheet.
+            tracks.firstOrNull { it.name.equals(sheetName, ignoreCase = true) }
+                ?.let { return refused("it names '${it.name}', which is what its own copy is called") }
+
+            tempDir.mkdirs()
+            val needed = text.size + tracks.sumOf { it.entry.size }
+            val free = usableSpace(tempDir)
+            if (free < needed)
+                return HashOutcome.Failed("no room to take '${sheet.name}' and its tracks out of the archive: " +
+                                          "$needed bytes needed, $free free")
+
+            val made = Files.createTempDirectory(tempDir.toPath(), SET_PREFIX).toFile()
+            folder = made
+            val sheetFile = File(made, sheetName).apply { writeBytes(text) }
+            var taking = tracks[0].entry
+            try {
+                opened.readMany(tracks.map { it.entry }) { entry, input ->
+                    taking = entry
+                    val name = tracks.first { it.entry === entry }.name
+                    // No more than the listing said: the room was counted by it.
+                    File(made, name).outputStream().use { RomHashIO.copy(input, it, limit = entry.size) }
+                }
+            } catch (t: Throwable) {
+                RomHashIO.rethrowIfCancelled(t)
+                return couldNotExtract(archive, taking, t)
+            }
+
+            val outcome = if (plan != null) asConsoles(sheetFile.absolutePath, plan)
+                          else delegate.hashForConsole(sheetFile.absolutePath, 0)
+            val digests = RomHashIO.copyAndDigest(text.inputStream())
+            return named("'${sheet.name}'", settled(outcome, made, listOf(sheetName) + tracks.map { it.name })) {
+                it.copy(fileMd5 = digests.md5, fileCrc32 = digests.crc32, archiveEntry = sheet.name)
+            }
+        } catch (t: Throwable) {
+            RomHashIO.rethrowIfCancelled(t)
+            BridgeLog.e(TAG, "archive failed: ${archive.name}", t)
+            return HashOutcome.Failed(t.message ?: t.javaClass.simpleName)
+        } finally {
+            folder?.let { remove(it) }
+        }
+    }
+
+    /**
+     * What a console said of a disc taken out into [folder], as it is to be
+     * kept.
+     *
+     * A console that cannot open a track says which, by its path, and of a
+     * disc lying loose that is a failure to try again: the track may be
+     * there tomorrow. Here every file the sheet names was written a moment
+     * ago. If the console asked for another all the same, it reads the sheet
+     * otherwise than [DescriptorSet] does, and it will again: tried at every
+     * scan, that is the whole disc taken out each time to be told the same.
+     * Unless a file written has gone since, with a cache that was cleared
+     * under the scan, and then nothing has been found out.
+     *
+     * The folder's own name is taken out of the reason. It is made up anew
+     * for every disc, and says nothing to whoever reads the ledger. The
+     * library has room for so many bytes of reason and no more, and where
+     * several consoles each named a path the last may stop in the middle of
+     * the folder's name: that is a path of the folder as well, and goes too.
+     */
+    private fun settled(outcome: HashOutcome, folder: File, written: List<String>): HashOutcome {
+        if (outcome !is HashOutcome.Failed) return outcome
+        val inFolder = folder.absolutePath + File.separator
+        var reason = outcome.reason.replace(inFolder, "")
+        var asked = reason != outcome.reason
+        val last = reason.lastIndexOf(COULD_NOT_OPEN)
+        // A character cut in two reads as U+FFFD, once or more.
+        val cut = if (last < 0) "" else reason.substring(last + COULD_NOT_OPEN.length).trimEnd('\uFFFD')
+        if (cut.isNotEmpty() && inFolder.startsWith(cut)) {
+            reason = reason.substring(0, last).trimEnd(' ', ';')
+            asked = true
+        }
+        val whole = written.all { File(folder, it).isFile }
+        return outcome.copy(reason = reason, retryable = outcome.retryable && !(asked && whole))
+    }
+
+    /**
+     * The whole of a sheet or a playlist out of an archive, or null when it
+     * is longer than any is ([DescriptorSet.SHEET_LIMIT]) and so is something
+     * else under that name.
+     */
+    private fun sheetBytes(opened: ArchiveReader.Opened.Entries, sheet: ArchiveSelector.Entry): ByteArray? {
+        if (sheet.size > DescriptorSet.SHEET_LIMIT) return null
+        return opened.read(sheet) { input ->
+            // Read to the limit and a byte past it, whatever the listing
+            // said the size was: it is not taken at its word.
+            val bytes = ByteArrayOutputStream()
+            val buffer = ByteArray(8 * 1024)
+            while (bytes.size() <= DescriptorSet.SHEET_LIMIT) {
+                val count = input.read(buffer)
+                if (count < 0) break
+                bytes.write(buffer, 0, count)
+            }
+            if (bytes.size() > DescriptorSet.SHEET_LIMIT) null else bytes.toByteArray()
+        }
+    }
+
+    private fun tooLong(sheet: ArchiveSelector.Entry): HashOutcome =
+        HashOutcome.Failed("'${sheet.name}' in the archive is too long to be what its name says", retryable = false)
+
+    /**
+     * An entry that would not come out of [archive]. With the cause: "could
+     * not extract" alone says nothing about a zip that holds two entries of
+     * one name and is otherwise fine.
+     */
+    private fun couldNotExtract(archive: File, entry: ArchiveSelector.Entry, t: Throwable): HashOutcome {
+        BridgeLog.w(TAG, "could not extract '${entry.name}' from ${archive.name}: ${t.message}")
+        return HashOutcome.Failed("could not extract '${entry.name}': ${t.message ?: t.javaClass.simpleName}")
     }
 
     /**
@@ -464,16 +707,13 @@ class ArchiveAwareHasher(
             // a whole-file Mega Drive hash. `.bin` for the rest, which tempSuffix
             // explains. Told a console it still reads the name, for what kind of
             // image a disc is.
-            val rom = File.createTempFile("bridge_", RomHashIO.tempSuffix(entry.name), tempDir)
+            val rom = File.createTempFile(COPY_PREFIX, RomHashIO.tempSuffix(entry.name), tempDir)
             copy = rom
             val digests = try {
                 opened.read(entry) { input -> rom.outputStream().use { RomHashIO.copyAndDigest(input, it) } }
             } catch (t: Throwable) {
                 RomHashIO.rethrowIfCancelled(t)
-                BridgeLog.w(TAG, "could not extract '${entry.name}' from ${archive.name}: ${t.message}")
-                // With the cause: "could not extract" alone says nothing about a zip
-                // that holds two entries of one name and is otherwise fine.
-                return HashOutcome.Failed("could not extract '${entry.name}': ${t.message ?: t.javaClass.simpleName}")
+                return couldNotExtract(archive, entry, t)
             }
             val outcome = if (plan != null) asConsoles(rom.absolutePath, plan)
                           else delegate.hashForConsole(rom.absolutePath, 0)
@@ -500,6 +740,15 @@ class ArchiveAwareHasher(
         failure.copy(reason = "the hasher could not read $what" +
                               if (failure.reason.isEmpty()) "" else ": ${failure.reason}")
 
+    /**
+     * Removes [file], and what is in it when it is a folder. A link is
+     * removed and not followed: what it leads to was not made here.
+     */
+    private fun remove(file: File) {
+        if (!Files.isSymbolicLink(file.toPath())) file.listFiles()?.forEach { remove(it) }
+        file.delete()
+    }
+
     private fun withPlainHashes(result: HashResult, romFile: File): HashResult = try {
         val digests = RomHashIO.digest(romFile)
         result.copy(fileMd5 = digests.md5, fileCrc32 = digests.crc32)
@@ -519,7 +768,26 @@ class ArchiveAwareHasher(
         /** How many of an archive's entries a reason names before it counts the rest. */
         private const val NAMES_SHOWN = 5
 
-        /** The reason a disc descriptor chosen out of an archive is not hashed. */
-        const val DESCRIPTOR_IN_ARCHIVE = "disc descriptor inside an archive: its tracks are not extracted yet"
+        /** The sheets rcheevos reads, and with which the tracks they name are taken out. */
+        private val READ_SHEETS = setOf("cue", "gdi")
+
+        /**
+         * The sheets it has no reader for. `mds` is one of them, though the
+         * selector does not take it for a descriptor: where it is the entry
+         * chosen, it is as little use as the other two.
+         */
+        private val UNREAD_SHEETS = setOf("ccd", "toc", "mds")
+
+        /** What every copy made in the temporary folder is called by, and so what may be removed from it. */
+        private const val COPY_PREFIX = "bridge_"
+
+        /** The folder one disc is taken out into. */
+        private const val SET_PREFIX = COPY_PREFIX + "set_"
+
+        /** How rcheevos begins what it says of a track it could not open, the track's path after it. */
+        private const val COULD_NOT_OPEN = "Could not open "
+
+        /** How old a copy has to be before it is taken for one that was left behind. */
+        private const val STALE_AFTER_MS = 24L * 60 * 60 * 1000
     }
 }

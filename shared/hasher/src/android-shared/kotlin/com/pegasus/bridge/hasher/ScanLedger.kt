@@ -56,6 +56,11 @@ class ScanLedger(private val file: File) {
          *
          * Also a file called `.zip` or `.7z` that does not open as one. That
          * one is broken, and stays so until it is another file.
+         *
+         * And a file the console of its collection was handed and refused:
+         * a cartridge cut short, a disc image with no game of that console
+         * on it. The console will say the same at every scan, until the
+         * file is another.
          */
         UNHASHABLE,
         /**

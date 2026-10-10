@@ -114,6 +114,16 @@ the number of local patches on it (`12.3.0+pb6`). `NativeHasher` and
 `NativeRomHasher` only load the library, and each holds that version against
 the one it was built for before any file is hashed.
 
+What a file is hashed as is decided before rcheevos sees it, from the file's
+collection and its name (`RcConsoles`, `ConsoleChoice`), and `ArchiveAwareHasher`
+does what was decided. In a collection the console table knows, rcheevos is told
+the console: what it refuses there is kept (`UNHASHABLE`) and not tried at
+every scan, unless the file could not be opened. An arcade set is hashed by its
+name and never opened. Any other zip or 7z is opened for the one entry that is
+the game, and is never hashed as the file it is: one with no game in it is
+`NO_PLAYABLE_ENTRY`. A playlist is hashed as the first file it names. Only in a
+collection nothing is known of is the console still left to the extension.
+
 Files are hashed 2 at a time on Android and 4 on the desktop. Either can be
 told otherwise, to time a library on its own storage: `hashWorkers=N` on the
 `pegasus-data://scan` URI (1–8), `--hash-workers=N` on the daemon (1–16).

@@ -2,6 +2,7 @@ package com.pegasus.bridge.hasher
 
 import org.junit.jupiter.api.Assumptions.assumeTrue
 import java.io.File
+import java.io.RandomAccessFile
 import java.nio.ByteBuffer
 import java.nio.charset.CharacterCodingException
 import java.nio.charset.Charset
@@ -338,10 +339,18 @@ class NativeConsoleHashTest {
         val hasher = ArchiveAwareHasher(native, File(dir, "tmp"))
 
         assertEquals(HashOutcome.Failed(reason), native.hashForConsole(short.path, 0), "rcheevos' own words")
-        assertEquals(HashOutcome.Failed("the hasher could not read ${short.name}: $reason"),
+        // In a collection whose console is known the console has spoken,
+        // and will say the same of this file at every scan.
+        assertEquals(HashOutcome.Failed("the hasher could not read ${short.name}: $reason", retryable = false),
                      hasher.hashDetailed(short.path, "nes"), "loose")
-        assertEquals(HashOutcome.Failed("the hasher could not read '${short.name}': $reason"),
+        assertEquals(HashOutcome.Failed("the hasher could not read '${short.name}': $reason", retryable = false),
                      hasher.hashDetailed(archive.path, "nes"), "out of a zip")
+        // In one nothing is known of, rcheevos went by the extension, and
+        // the failure is one to try again, as it always was.
+        assertEquals(HashOutcome.Failed("the hasher could not read ${short.name}: $reason"),
+                     hasher.hashDetailed(short.path, "somewhere"), "loose, in a collection nobody knows")
+        assertEquals(HashOutcome.Failed("the hasher could not read '${short.name}': $reason"),
+                     hasher.hashDetailed(archive.path, "somewhere"), "out of a zip, in a collection nobody knows")
 
         // A hasher with nothing to say of a failure adds nothing: no colon
         // with nothing after it.
@@ -362,6 +371,315 @@ class NativeConsoleHashTest {
                      settled.hashDetailed(short.path, "nes"), "loose, and not to be tried again")
         assertEquals(HashOutcome.Failed("the hasher could not read '${short.name}': not a cartridge", retryable = false),
                      settled.hashDetailed(archive.path, "nes"), "out of a zip, and not to be tried again")
+    }
+
+    // ------------------------------------------- the collection's console
+    //
+    // What a scan gets, through ArchiveAwareHasher: the file hashed as the
+    // console its collection says. Left to itself rcheevos takes the console
+    // from the extension, tries one after another where several write it,
+    // and for an extension it has never heard of answers as the Game Boy.
+
+    @Test
+    fun `a file is hashed as its collection's console and not as its extension suggests`() {
+        val cartridge = noise(8 * 1024, seed = 40)
+        val hasher = ArchiveAwareHasher(native, File(dir, "tmp"))
+
+        // What the extension alone comes to: three that rcheevos has no
+        // console for, and one it takes for a Mega Drive cartridge.
+        for ((name, console) in listOf("x.gen" to 4, "x.sms" to 4, "x.j64" to 4, "x.bin" to 1))
+            assertEquals(HashOutcome.Ok(HashResult(md5(cartridge), console)),
+                         native.hashForConsole(file(name, cartridge).path, 0), "$name left to its extension")
+
+        val zipped = File(dir, "mastersystem/Zipped.zip").also { zip ->
+            zip.parentFile.mkdirs()
+            ZipOutputStream(zip.outputStream()).use {
+                it.putNextEntry(ZipEntry("Zipped.sms")); it.write(cartridge); it.closeEntry()
+            }
+        }
+        val rows = listOf(
+            Triple(inCollection("megadrive", "x.gen", cartridge), "megadrive", "${md5(cartridge)}|1"),
+            Triple(inCollection("mastersystem", "x.sms", cartridge), "mastersystem", "${md5(cartridge)}|11"),
+            Triple(inCollection("atarijaguar", "x.j64", cartridge), "atarijaguar", "${md5(cartridge)}|17"),
+            Triple(inCollection("adam", "x.bin", cartridge), "adam", "${md5(cartridge)}|44"),
+            // A cartridge of another console that has strayed in is still
+            // what its extension says, where the extension says one thing:
+            // hashed as the NES, with the header taken off.
+            Triple(inCollection("snes", "x.nes", ines + prg), "snes", "${md5(prg)}|7"),
+            // An entry out of an archive is copied to a file called .bin,
+            // since rcheevos has no handler for .sms, and a .bin left to
+            // its extension is a Mega Drive cartridge.
+            Triple(zipped, "mastersystem", "${md5(cartridge)}|11"),
+            // And where nothing is known of the collection, the guess.
+            Triple(inCollection("somewhere", "x.gen", cartridge), "somewhere", "${md5(cartridge)}|4"))
+
+        val wrong = rows.mapNotNull { (rom, collection, expected) ->
+            val where = rom.relativeTo(dir).path
+            val outcome = hasher.hashDetailed(rom.path, collection)
+            val r = (outcome as? HashOutcome.Ok)?.result ?: return@mapNotNull "$where: expected $expected, got $outcome"
+            val bytes = if (rom === zipped) cartridge else rom.readBytes()
+            when {
+                "${r.hash}|${r.consoleId}" != expected -> "$where: expected $expected, got ${r.hash}|${r.consoleId}"
+                r.fileMd5 != md5(bytes) -> "$where: the file MD5 ${r.fileMd5} is not the ROM's"
+                else -> null
+            }
+        }
+        if (wrong.isNotEmpty()) fail(wrong.joinToString("\n"))
+    }
+
+    // rcheevos follows a playlist for the consoles that have them, hashes
+    // its text for the others, and told a console follows one only where
+    // that console has playlists. So the first entry is read here, and
+    // hashed as the collection says a file of its name is: a sheet in a
+    // Mega Drive collection is a Sega CD disc, and the disc is the one the
+    // golden tests pin.
+    @Test
+    fun `a playlist is hashed as the first file it names, in the playlist's collection`() {
+        val hasher = ArchiveAwareHasher(native, File(dir, "tmp"))
+        val track = segaCdTrack()
+        val sheet = ascii("FILE \"x.bin\" BINARY\r\n  TRACK 01 MODE1/2352\r\n    INDEX 01 00:00:00\r\n")
+        inCollection("megadrive", "x.bin", track)
+        inCollection("megadrive", "x.cue", sheet)
+        val disc = inCollection("megadrive", "x.m3u", ascii("#EXTM3U\r\nx.cue\r\ny.cue\r\n"))
+
+        val ofDisc = assertIs<HashOutcome.Ok>(hasher.hashDetailed(disc.path, "megadrive")).result
+        assertEquals("$SEGA_CD|9", "${ofDisc.hash}|${ofDisc.consoleId}")
+        assertTrue(ofDisc.hash != md5(sheet) && ofDisc.hash != md5(disc.readBytes()),
+                   "the hash is of the text of the sheet or of the playlist")
+        // The digests beside it are of the file the scan has.
+        assertEquals(md5(disc.readBytes()), ofDisc.fileMd5)
+
+        // A console that has no playlists of its own, and hashes whole
+        // whatever file it is told is one of its cartridges.
+        val cartridge = noise(8 * 1024, seed = 41)
+        inCollection("gba", "y.gba", cartridge)
+        val listed = inCollection("gba", "x.m3u", ascii("y.gba\n"))
+
+        val ofCartridge = assertIs<HashOutcome.Ok>(hasher.hashDetailed(listed.path, "gba")).result
+        assertEquals("${md5(cartridge)}|5", "${ofCartridge.hash}|${ofCartridge.consoleId}")
+        assertEquals(md5(listed.readBytes()), ofCartridge.fileMd5)
+
+        // And the file named is hashed as the collection's console, as it
+        // would be had the scan met it: rcheevos, following the playlist by
+        // itself, has no console for an .sms and answers as the Game Boy.
+        inCollection("mastersystem", "y.sms", cartridge)
+        val eightBit = inCollection("mastersystem", "x.m3u", ascii("y.sms\n"))
+
+        assertEquals(HashOutcome.Ok(HashResult(md5(cartridge), 4)), native.hashForConsole(eightBit.path, 0),
+                     "the playlist left to rcheevos")
+        val ofEightBit = assertIs<HashOutcome.Ok>(hasher.hashDetailed(eightBit.path, "mastersystem")).result
+        assertEquals("${md5(cartridge)}|11", "${ofEightBit.hash}|${ofEightBit.consoleId}")
+
+        // A playlist may name an archive, a disk of a home computer zipped
+        // as it was sold. It is opened as any archive of the collection is,
+        // for the one entry that is the game. rcheevos, handed the playlist,
+        // would hash the name of the zip as an arcade set's.
+        File(dir, "mastersystem/z.zip").let { zip ->
+            ZipOutputStream(zip.outputStream()).use {
+                it.putNextEntry(ZipEntry("z.sms")); it.write(cartridge); it.closeEntry()
+                it.putNextEntry(ZipEntry("readme.txt")); it.write(ascii("read me")); it.closeEntry()
+            }
+        }
+        val ofZipped = inCollection("mastersystem", "zipped.m3u", ascii("z.zip\n"))
+
+        val ofEntry = assertIs<HashOutcome.Ok>(hasher.hashDetailed(ofZipped.path, "mastersystem")).result
+        assertEquals("${md5(cartridge)}|11", "${ofEntry.hash}|${ofEntry.consoleId}")
+        assertEquals(md5(ofZipped.readBytes()), ofEntry.fileMd5)
+    }
+
+    // A playlist that leads nowhere is answered for from its text, and
+    // nothing is handed to rcheevos: one that names itself used to be a
+    // call that never came back.
+    @Test
+    fun `a playlist that names no file to hash fails without a native call`() {
+        val counting = object : RomHasher {
+            var calls = 0
+            override fun hash(path: String): HashResult? { calls++; return native.hash(path) }
+            override fun hashForConsole(path: String, consoleId: Int): HashOutcome {
+                calls++
+                return native.hashForConsole(path, consoleId)
+            }
+        }
+        val hasher = ArchiveAwareHasher(counting, File(dir, "tmp"))
+        inCollection("psx", "Packed.chd", noise(64, seed = 42))
+
+        val rows = listOf(
+            inCollection("psx", "self.m3u", ascii("self.m3u\n"))
+                to HashOutcome.Failed("the playlist names another playlist, self.m3u", retryable = false),
+            inCollection("psx", "other.m3u", ascii("Discs/first.m3u\n"))
+                to HashOutcome.Failed("the playlist names another playlist, first.m3u", retryable = false),
+            inCollection("psx", "empty.m3u", ascii("#EXTM3U\n\n"))
+                to HashOutcome.Failed("the playlist lists no file", retryable = false),
+            // The disc may be on its way: a copy still running lists it first.
+            inCollection("psx", "gone.m3u", ascii("Disc 1.cue\n"))
+                to HashOutcome.Failed("the playlist names Disc 1.cue, which is not there", retryable = true),
+            inCollection("psx", "packed.m3u", ascii("Packed.chd\n"))
+                to HashOutcome.UnsupportedFormat("Packed.chd, the first file the playlist names: " +
+                                                 ".chd is a format this build has no reader for"))
+        val wrong = rows.mapNotNull { (playlist, expected) ->
+            val outcome = hasher.hashDetailed(playlist.path, "psx")
+            if (outcome == expected) null else "${playlist.name}: expected $expected, got $outcome"
+        }
+        if (wrong.isNotEmpty()) fail(wrong.joinToString("\n"))
+        assertEquals(0, counting.calls, "calls into the library")
+
+        // Nor does a collection nobody knows the console of have its
+        // playlists handed over as they are.
+        assertEquals(HashOutcome.Failed("the playlist names another playlist, self.m3u", retryable = false),
+                     hasher.hashDetailed(File(dir, "psx/self.m3u").path, "somewhere"))
+        assertEquals(0, counting.calls)
+    }
+
+    // What a console says of a file it is handed, it says at every scan: a
+    // file of the wrong kind in a disc collection is kept as one that
+    // cannot be hashed. "Could not open track" is among those answers,
+    // though it reads like a file that is missing: it is what a disc
+    // console says of an image whose size fits no kind of sector. Only a
+    // file that could not be opened, a sheet's track that is not there, is
+    // tried again.
+    //
+    // And a disc image that is there and will not open, which the scan is
+    // not allowed to read, say. A disc console has the same three words for
+    // it as for the image of no sector size, so the file is opened once
+    // more before the answer is kept.
+    @Test
+    fun `what a console refuses is kept, and what could not be opened is tried again`() {
+        val hasher = ArchiveAwareHasher(native, File(dir, "tmp"))
+        inCollection("psx", "Lost.cue",
+                     ascii("FILE \"Lost.bin\" BINARY\r\n  TRACK 01 MODE2/2352\r\n    INDEX 01 00:00:00\r\n"))
+        val locked = inCollection("psx", "Locked.bin", noise(2352 * 4, seed = 49))
+        val shut = locked.setReadable(false, false) && runCatching { locked.inputStream().close() }.isFailure
+        if (!shut) println("NativeConsoleHashTest: no file could be made unreadable here, so none was tried")
+
+        val rows = listOfNotNull(
+            if (shut) Triple(locked, "Could not open track", true) else null,
+            // Opens as sectors of 2048 bytes, and is no disc of the console.
+            Triple(inCollection("3do", "bios.bin", noise(4096, seed = 43)), "Not a 3DO CD", false),
+            // 5000 bytes are no whole number of sectors of any size.
+            Triple(inCollection("3do", "other.bin", noise(5000, seed = 44)), "Could not open track", false),
+            // The audio track of a disc, met by a scan as a file of its own.
+            Triple(inCollection("psx", "Track 2.bin", noise(2352 * 4, seed = 45)),
+                   "Could not locate primary executable", false),
+            Triple(File(dir, "psx/Lost.cue"), "Lost.bin; Could not open track", true),
+            Triple(File(dir, "psx/Absent.bin"), "no such file", true))
+
+        val wrong = rows.mapNotNull { (rom, said, again) ->
+            val collection = rom.parentFile.name
+            val outcome = hasher.hashDetailed(rom.path, collection)
+            when {
+                outcome !is HashOutcome.Failed -> "$collection/${rom.name}: $outcome"
+                said !in outcome.reason -> "$collection/${rom.name}: said '${outcome.reason}'"
+                outcome.retryable != again ->
+                    "$collection/${rom.name}: retryable is ${outcome.retryable}: ${outcome.reason}"
+                else -> null
+            }
+        }
+        if (wrong.isNotEmpty()) fail(wrong.joinToString("\n"))
+    }
+
+    // The rule itself, over what the library and its JNI file can say. The
+    // messages are rcheevos' own, and the tests above meet four of them on
+    // real files.
+    @Test
+    fun `only a file that could not be opened is worth another try`() {
+        val rows = listOf(
+            "" to true,
+            "Could not open file" to true,
+            "Could not open playlist" to true,
+            "Could not open /roms/psx/Some Game/Some Game (Track 1).bin; Could not open track" to true,
+            "Could not open C:\\roms\\psx\\Some Game.bin; Could not open track" to true,
+            "Could not open /roms/psx/track 01.bin; Could not open track" to true,
+            "No console mapping specified for xyz file extension - trying full file hash; Could not open file" to true,
+            "Not a 3DO CD; Could not open file" to true,
+            "Could not open track; Could not open file" to true,
+            "Could not open track" to false,
+            "Could not open track; Could not open track" to false,
+            "Not a supported Wii file; Could not open track" to false,
+            "Not a 3DO CD" to false,
+            "File is not longer than a NES or FDS header (16 bytes)" to false,
+            "Failed to get first item from playlist" to false,
+            "rcheevos gave no hash and no reason" to false,
+            "The path names no file" to false,
+            "The path is empty" to false,
+            "nothing in the file is hashed for console 4: the answer was the MD5 of no bytes" to false)
+        val wrong = rows.filter { (reason, expected) -> RcheevosNative.isTransient(reason) != expected }
+        assertEquals(emptyList(), wrong)
+    }
+
+    // The console is the plan's and the plan is made of the file's size
+    // too. A hasher that keeps what it was asked stands in for the library:
+    // a disc image of two consoles, each as large as a disc, is nothing to
+    // build for a test.
+    @Test
+    fun `the consoles a file is tried as are its plan's, once each and in its order`() {
+        class Told(private val answers: Map<Int, HashOutcome>) : RomHasher {
+            val asked = mutableListOf<Int>()
+            override fun hash(path: String): HashResult? = null
+            override fun hashForConsole(path: String, consoleId: Int): HashOutcome {
+                asked += consoleId
+                return answers[consoleId] ?: HashOutcome.Ok(HashResult("hash-as-$consoleId", consoleId))
+            }
+        }
+        fun tried(collection: String, rom: File,
+                  answers: Map<Int, HashOutcome> = emptyMap()): Pair<List<Int>, HashOutcome> {
+            val told = Told(answers)
+            val outcome = ArchiveAwareHasher(told, File(dir, "tmp")).hashDetailed(rom.path, collection)
+            return told.asked.toList() to outcome
+        }
+        fun hash(outcome: HashOutcome) = (outcome as? HashOutcome.Ok)?.result?.hash ?: outcome.toString()
+        val notWii = HashOutcome.Failed("Not a supported Wii file")
+        val notGameCube = HashOutcome.Failed("Not a Gamecube disc")
+        val disc = inCollection("wii", "Disc.iso", noise(64, seed = 46))
+
+        // Both consoles write .iso, and a disc of one is often filed with
+        // the other's: refused by the collection's own, it is tried once
+        // as the other.
+        tried("wii", disc).let { (asked, outcome) ->
+            assertEquals(listOf(19) to "hash-as-19", asked to hash(outcome), "a Wii disc among the Wii's")
+        }
+        tried("wii", disc, mapOf(19 to notWii)).let { (asked, outcome) ->
+            assertEquals(listOf(19, 16) to "hash-as-16", asked to hash(outcome), "a GameCube disc among the Wii's")
+        }
+        tried("gc", disc, mapOf(16 to notGameCube)).let { (asked, outcome) ->
+            assertEquals(listOf(16, 19) to "hash-as-19", asked to hash(outcome), "a Wii disc among the GameCube's")
+        }
+        tried("wii", disc, mapOf(19 to notWii, 16 to notGameCube)).let { (asked, outcome) ->
+            assertEquals(listOf(19, 16), asked, "a disc of neither")
+            assertEquals(HashOutcome.Failed("the hasher could not read Disc.iso: Not a supported Wii file; " +
+                                            "as console 16: Not a Gamecube disc", retryable = false), outcome)
+        }
+        // A file that could not be opened is no likelier to open as
+        // another console, and is tried again at the next scan.
+        tried("wii", disc, mapOf(19 to HashOutcome.Failed("Could not open file"))).let { (asked, outcome) ->
+            assertEquals(listOf(19), asked, "a disc that could not be opened")
+            assertEquals(HashOutcome.Failed("the hasher could not read Disc.iso: Could not open file"), outcome)
+        }
+        // Nor is one that the first console read and refused, and the second
+        // could not open: the card it is on went between the two.
+        tried("wii", disc, mapOf(19 to notWii, 16 to HashOutcome.Failed("Could not open file"))).let { (asked, outcome) ->
+            assertEquals(listOf(19, 16), asked, "a disc that could not be opened the second time")
+            assertEquals(HashOutcome.Failed("the hasher could not read Disc.iso: Could not open file"), outcome)
+        }
+        // One console and no other where the collection has no second.
+        tried("psx", inCollection("psx", "Disc.iso", noise(64, seed = 47)),
+              mapOf(12 to HashOutcome.Failed("Not a PlayStation disc"))).let { (asked, outcome) ->
+            assertEquals(listOf(12), asked, "a disc the one console refuses")
+            assertEquals(HashOutcome.Failed("the hasher could not read Disc.iso: Not a PlayStation disc",
+                                            retryable = false), outcome)
+        }
+        // Never the guess, for a collection that is known: console 0 is
+        // for one nothing is known of.
+        assertEquals(listOf(0), tried("somewhere", disc).first, "a collection nobody knows")
+
+        // A .bin in a Mega Drive collection is a cartridge, and one too
+        // large for any cartridge is the track of a Sega CD disc. The file
+        // is all zeros, and is never written out in full.
+        val small = inCollection("megadrive", "Small.bin", noise(64, seed = 48))
+        val large = File(dir, "megadrive/Large.bin").apply {
+            RandomAccessFile(this, "rw").use { it.setLength(32L * 1024 * 1024 + 1) }
+        }
+        assertEquals(listOf(1), tried("megadrive", small).first, "a cartridge")
+        assertEquals(listOf(9), tried("megadrive", large).first, "a file larger than any cartridge")
     }
 
     // ------------------------------------------------------------ the engine
@@ -443,6 +761,10 @@ class NativeConsoleHashTest {
     private val prg = ByteArray(16 * 1024) { (it * 29 + 11).toByte() }
 
     private fun file(name: String, bytes: ByteArray) = File(dir, name).apply { writeBytes(bytes) }
+
+    /** A file in a folder named as its collection is, as a library keeps it. */
+    private fun inCollection(collection: String, name: String, bytes: ByteArray) =
+        File(dir, "$collection/$name").apply { parentFile.mkdirs(); writeBytes(bytes) }
 
     /**
      * The Sega CD data track GoldenHashTest builds, byte for byte, so that the

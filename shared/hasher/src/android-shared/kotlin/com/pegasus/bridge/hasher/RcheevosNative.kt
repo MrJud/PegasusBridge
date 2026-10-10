@@ -86,6 +86,39 @@ internal object RcheevosNative {
         }
     }
 
+    /**
+     * Whether a file that gave no hash for [reason] may give one tomorrow
+     * with nothing about it changed: it could not be opened, which a card
+     * taken out or a copy still running also look like. [reason] is what
+     * the library said, with no words of ours around it.
+     *
+     * Three of rcheevos' messages say so. "Could not open file" and "Could
+     * not open playlist" are a file that is not there or not to be read,
+     * and "Could not open <path>" is a track that a `.cue` or a `.gdi` names
+     * and that is missing. "Could not open track" on its own is not one of
+     * them, though it reads like one: it is what a disc console answers for
+     * an image it can make no disc of, a `.bin` whose size fits no sector
+     * format, and it will answer so at every scan. After a missing track's
+     * path rcheevos says it too, and there the path has already settled it.
+     *
+     * A reason of no words at all is a hasher that had nothing to say, one
+     * standing in for the library in a test or a library of another build.
+     * Nothing is known against asking again, so that is what is done.
+     */
+    fun isTransient(reason: String): Boolean {
+        if (reason.isEmpty()) return true
+        var at = reason.indexOf(COULD_NOT_OPEN)
+        while (at >= 0) {
+            val what = reason.substring(at + COULD_NOT_OPEN.length)
+            if (what != "track" && !what.startsWith("track; ")) return true
+            at = reason.indexOf(COULD_NOT_OPEN, at + 1)
+        }
+        return false
+    }
+
+    /** How rcheevos begins every message of something it could not open. */
+    private const val COULD_NOT_OPEN = "Could not open "
+
     /** What the library wrote, up to the NUL that ends it. */
     private fun text(reason: ByteArray): String {
         val end = reason.indexOf(0).let { if (it < 0) reason.size else it }

@@ -906,6 +906,57 @@ class RomScanPipelineTest {
         }
     }
 
+    // In a collection whose console is known, rcheevos is told the console
+    // and what it says of a file is its last word: a cartridge cut short is
+    // cut short at every scan, and is kept as a file that cannot be hashed
+    // and not read again. A file that could not be opened says nothing of
+    // itself and is tried again. So is every failure in a collection nobody
+    // knows the console of, where rcheevos went by the extension, as before.
+    @Test fun `a file its console refuses is kept, and one that could not be opened is read again`(): Unit = runBlocking {
+        class Refusing : RomHasher {
+            val read: MutableList<String> = java.util.Collections.synchronizedList(mutableListOf())
+            override fun hash(path: String): HashResult? = null
+            override fun hashForConsole(path: String, consoleId: Int): HashOutcome {
+                read += File(path).parentFile.name + "/" + File(path).name + " as " + consoleId
+                return HashOutcome.Failed(File(path).readText())
+            }
+        }
+        val refused = rom("nes", "Cut Short (World).nes", "File is not longer than a NES or FDS header (16 bytes)")
+        val locked = rom("nes", "Locked (World).nes", "Could not open file")
+        val unknown = rom("somewhere", "Cut Short (World).nes",
+                          "File is not longer than a NES or FDS header (16 bytes)")
+        val tmp = Files.createTempDirectory("hasher-tmp").toFile()
+        val expected = counts(new = 0, cached = 0, skipped = 0, unmatched = 0, incompatible = 0,
+                              hashFailed = 3, failedLookups = 0)
+        val states = mapOf(ScanLedger.State.UNHASHABLE to 1, ScanLedger.State.HASH_FAILED to 2)
+        try {
+            val h = Refusing()
+            val s = RomScanPipeline(paths, ArchiveAwareHasher(h, tmp), NeverAsked(), throttleMs = { 0L })
+                .scan(listOf(romRoot.absolutePath))
+
+            assertEquals(expected, s.counts())
+            assertEquals(states, s.states)
+            assertEquals(listOf("nes/Cut Short (World).nes as 7", "nes/Locked (World).nes as 7",
+                                "somewhere/Cut Short (World).nes as 0"), h.read.sorted())
+            assertEquals(listOf("UNHASHABLE", "HASH_FAILED", "HASH_FAILED"),
+                         listOf(refused, locked, unknown).map { ledgerEntry(it).getString("state") })
+            assertEquals("the hasher could not read Cut Short (World).nes: " +
+                         "File is not longer than a NES or FDS header (16 bytes)",
+                         ledgerEntry(refused).getString("detail"))
+
+            val h2 = Refusing()
+            val s2 = RomScanPipeline(paths, ArchiveAwareHasher(h2, tmp), NeverAsked(), throttleMs = { 0L })
+                .scan(listOf(romRoot.absolutePath))
+
+            assertEquals(expected, s2.counts())
+            assertEquals(states, s2.states)
+            assertEquals(listOf("nes/Locked (World).nes as 7", "somewhere/Cut Short (World).nes as 0"),
+                         h2.read.sorted(), "the files read again")
+        } finally {
+            tmp.deleteRecursively()
+        }
+    }
+
     // Several files sharing a hash should cost one network call, not one each.
     @Test fun `identical hashes are looked up once`(): Unit = runBlocking {
         rom("nes", "Copy A.nes", "hash-smb")

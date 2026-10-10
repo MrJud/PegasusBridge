@@ -50,6 +50,11 @@ sealed interface HashOutcome {
      * again on every scan costs work and changes nothing, so the pipeline keeps
      * that answer like a verdict instead of retrying it as a file that might be
      * fixed.
+     *
+     * It is false as well for a file that was read and refused by the console
+     * its collection names, which will refuse it again, and for an archive
+     * that does not open as one. A file that could not be opened at all is
+     * never one of these: nothing has been seen of it.
      */
     data class Failed(val reason: String, val retryable: Boolean = true) : HashOutcome
 
@@ -150,7 +155,9 @@ interface RomHasher {
  * native hasher works on plain files.
  *
  * What is done with a file is [ConsoleChoice]'s decision, from the row of
- * its collection and its name. Which entry of an archive is copied out is
+ * its collection and its name, and where the collection is known that
+ * includes the console: rcheevos is told which one, and is not left to take
+ * it from the extension. Which entry of an archive is copied out is
  * [ArchiveSelector]'s, by what the platform can run, then by the entry named
  * after the archive. The rule that one replaced, "the largest entry", is
  * right for one ROM plus a readme and silently wrong for a bonus disc, an
@@ -196,18 +203,125 @@ class ArchiveAwareHasher(
         if (!file.isFile) return HashOutcome.Failed("no such file")
 
         val row = RcConsoles.resolve(collection.shortName, collection.dirName)
+        return planned(path, file, collection, row, namedByPlaylist = false)
+    }
+
+    /**
+     * [file] as its plan says, in the collection whose row is [row].
+     * [namedByPlaylist] is true for the first entry of a playlist, which is
+     * planned for as any other file of the collection is.
+     */
+    private fun planned(
+        path: String,
+        file: File,
+        collection: CollectionRef,
+        row: RcConsoles.Row?,
+        namedByPlaylist: Boolean
+    ): HashOutcome {
+        // The MD5 and CRC of the file the delegate is given, so that they
+        // describe the ROM. Not for what a playlist names: the digests kept
+        // are the playlist's, and the first disc of a game would be read to
+        // its end for two numbers nobody keeps.
+        val digests: (HashResult) -> HashResult =
+            if (namedByPlaylist) { result -> result } else { result -> withPlainHashes(result, file) }
+
         return when (val plan = ConsoleChoice.choose(row, file.extension, file.length(), insideArchive = false)) {
             // A scan has turned both away before it gets here, without a
-            // look at the file. These are for a caller that has not.
+            // look at the file. These are for a caller that has not, and
+            // for what a playlist names.
             is ConsoleChoice.Plan.Unsupported -> HashOutcome.UnsupportedFormat(plan.reason)
             is ConsoleChoice.Plan.UnsupportedFormat -> HashOutcome.UnsupportedFormat(plan.reason)
             ConsoleChoice.Plan.ArcadeSet -> arcadeSet(path, file)
             ConsoleChoice.Plan.OpenArchive -> archive(file, collection, row)
-            // The console a plan names is not handed on yet: a file that is
-            // no archive is hashed as rcheevos takes its extension, as before.
-            ConsoleChoice.Plan.ResolvePlaylist, is ConsoleChoice.Plan.Hash, ConsoleChoice.Plan.Guess -> plain(file)
+            ConsoleChoice.Plan.ResolvePlaylist ->
+                // The reader refuses a playlist that names a playlist, so
+                // this is one it let through, and it is not followed.
+                if (namedByPlaylist)
+                    HashOutcome.Failed("a playlist named by a playlist is not followed", retryable = false)
+                else playlist(file, collection, row)
+            is ConsoleChoice.Plan.Hash -> named(file.name, asConsoles(file.absolutePath, plan), digests)
+            // Nothing is known of the collection: rcheevos takes the console
+            // from the extension, as it did for every file before a
+            // collection could say. What it answers is kept as it is, a
+            // failure as one to try again.
+            ConsoleChoice.Plan.Guess -> named(file.name, delegate.hashForConsole(file.absolutePath, 0), digests)
         }
     }
+
+    /**
+     * A playlist is hashed as the first file it names, read here and not by
+     * rcheevos, which follows a playlist for some consoles and hashes its
+     * text for the others, and for a console it is told follows one only
+     * where that console has playlists. The entry is planned for with the
+     * playlist's collection: a `.cue` under `megadrive` is a Sega CD disc
+     * whether the scan met it or a playlist named it.
+     *
+     * The digests beside the hash stay the playlist's: it is the file the
+     * scan has, and the one its size and date are kept for.
+     *
+     * A playlist that names a file which is not there may be whole again
+     * tomorrow, a disc still being copied. One that lists nothing, or
+     * another playlist, will say the same until it is edited, and that
+     * shows in its size and date.
+     */
+    private fun playlist(file: File, collection: CollectionRef, row: RcConsoles.Row?): HashOutcome =
+        when (val first = PlaylistReader.firstEntry(file)) {
+            is PlaylistReader.Result.Refused -> HashOutcome.Failed(
+                first.reason,
+                retryable = first.why == PlaylistReader.Why.MISSING || first.why == PlaylistReader.Why.UNREADABLE)
+            is PlaylistReader.Result.Entry ->
+                when (val outcome = planned(first.file.path, first.file, collection, row, namedByPlaylist = true)) {
+                    is HashOutcome.Ok -> HashOutcome.Ok(withPlainHashes(outcome.result, file))
+                    // Decided from the entry's name, which the reason has not.
+                    is HashOutcome.UnsupportedFormat ->
+                        HashOutcome.UnsupportedFormat("${first.file.name}, the first file the playlist names: " +
+                                                      outcome.reason)
+                    else -> outcome
+                }
+        }
+
+    /**
+     * [path] hashed as the console of [plan], and when that console refuses
+     * the file, as each of the plan's alternates in turn. rcheevos is never
+     * left to guess for a collection that is known: its guess is the
+     * extension's console, and for an extension it has never heard of the
+     * Game Boy, and either way a hash comes out.
+     *
+     * A file that could not be opened is not tried as another console, and
+     * may be tried again at the next scan ([RcheevosNative.isTransient]),
+     * whichever of the consoles it was that could not open it. Anything
+     * else the console said of it, it will say again, and the failure is
+     * one to keep.
+     *
+     * With one more look before it is kept. The disc consoles have no words
+     * of their own for a file they could not open: "Could not open track"
+     * is what they say of it, and of an image whose size fits no kind of
+     * sector too. So a file every console has refused is opened here, once,
+     * and one that will not open is a failure to try again.
+     */
+    private fun asConsoles(path: String, plan: ConsoleChoice.Plan.Hash): HashOutcome {
+        var reason = ""
+        for (console in listOf(plan.console) + plan.alternates) {
+            val failure = when (val outcome = delegate.hashForConsole(path, console)) {
+                is HashOutcome.Failed -> outcome
+                else -> return outcome
+            }
+            if (failure.retryable && RcheevosNative.isTransient(failure.reason)) return failure
+            reason = if (console == plan.console) failure.reason else "$reason; as console $console: ${failure.reason}"
+        }
+        return HashOutcome.Failed(reason, retryable = !opens(File(path)))
+    }
+
+    /**
+     * What the delegate answered, as the scan is to have it: a hash with
+     * [digests] added, a failure under the name the scan knows the file by.
+     */
+    private fun named(what: String, outcome: HashOutcome, digests: (HashResult) -> HashResult): HashOutcome =
+        when (outcome) {
+            is HashOutcome.Ok -> HashOutcome.Ok(digests(outcome.result))
+            is HashOutcome.Failed -> couldNotRead(what, outcome)
+            else -> outcome
+        }
 
     /**
      * An arcade game is known to RetroAchievements by the name of its set,
@@ -222,11 +336,7 @@ class ArchiveAwareHasher(
      * scanned before there were any, and read again on every scan.
      */
     private fun arcadeSet(path: String, set: File): HashOutcome =
-        when (val outcome = delegate.hashForConsole(path, ARCADE)) {
-            is HashOutcome.Ok -> HashOutcome.Ok(withPlainHashes(outcome.result, set))
-            is HashOutcome.Failed -> couldNotRead(set.name, outcome)
-            else -> outcome
-        }
+        named(set.name, delegate.hashForConsole(path, ARCADE)) { withPlainHashes(it, set) }
 
     private fun archive(file: File, collection: CollectionRef, row: RcConsoles.Row?): HashOutcome =
         ArchiveReader.open(file) { opened ->
@@ -277,7 +387,8 @@ class ArchiveAwareHasher(
                 HashOutcome.UnsupportedFormat("'${entry.name}' in the archive: ${plan.reason}")
             is ConsoleChoice.Plan.Unsupported ->
                 HashOutcome.UnsupportedFormat(plan.reason)
-            is ConsoleChoice.Plan.Hash, ConsoleChoice.Plan.Guess -> extracted(archive, opened, entry)
+            is ConsoleChoice.Plan.Hash -> extracted(archive, opened, entry, plan)
+            ConsoleChoice.Plan.Guess -> extracted(archive, opened, entry, null)
             // No entry gets one of these today: an archive or an arcade set
             // inside an archive is refused as a format, and a playlist is a
             // descriptor. Said in full so that a plan added to the list does
@@ -334,18 +445,25 @@ class ArchiveAwareHasher(
      *
      * A cancellation passes straight through, and the copy is deleted
      * whichever way this ends.
+     *
+     * The copy is hashed as [plan] says, which was made for the entry's own
+     * name and size, or left to rcheevos where there is none because nothing
+     * is known of the collection.
      */
     private fun extracted(
         archive: File,
         opened: ArchiveReader.Opened.Entries,
-        entry: ArchiveSelector.Entry
+        entry: ArchiveSelector.Entry,
+        plan: ConsoleChoice.Plan.Hash?
     ): HashOutcome {
         var copy: File? = null
         try {
             tempDir.mkdirs()
-            // The entry's own extension when rcheevos has a handler for it: it picks
-            // its algorithm by it, and an iNES ROM named `.bin` gets a whole-file
-            // Mega Drive hash. `.bin` for the rest, which tempSuffix explains.
+            // The entry's own extension when rcheevos has a handler for it: left to
+            // itself it picks its algorithm by it, and an iNES ROM named `.bin` gets
+            // a whole-file Mega Drive hash. `.bin` for the rest, which tempSuffix
+            // explains. Told a console it still reads the name, for what kind of
+            // image a disc is.
             val rom = File.createTempFile("bridge_", RomHashIO.tempSuffix(entry.name), tempDir)
             copy = rom
             val digests = try {
@@ -357,13 +475,11 @@ class ArchiveAwareHasher(
                 // that holds two entries of one name and is otherwise fine.
                 return HashOutcome.Failed("could not extract '${entry.name}': ${t.message ?: t.javaClass.simpleName}")
             }
-            val result = when (val outcome = delegate.hashForConsole(rom.absolutePath, 0)) {
-                is HashOutcome.Ok -> outcome.result
-                is HashOutcome.Failed -> return couldNotRead("'${entry.name}'", outcome)
-                else -> return outcome
+            val outcome = if (plan != null) asConsoles(rom.absolutePath, plan)
+                          else delegate.hashForConsole(rom.absolutePath, 0)
+            return named("'${entry.name}'", outcome) {
+                it.copy(fileMd5 = digests.md5, fileCrc32 = digests.crc32, archiveEntry = entry.name)
             }
-            return HashOutcome.Ok(result.copy(
-                fileMd5 = digests.md5, fileCrc32 = digests.crc32, archiveEntry = entry.name))
         } catch (t: Throwable) {
             RomHashIO.rethrowIfCancelled(t)
             BridgeLog.e(TAG, "archive failed: ${archive.name}", t)
@@ -371,16 +487,6 @@ class ArchiveAwareHasher(
         } finally {
             copy?.delete()
         }
-    }
-
-    /** [romFile] is whatever the delegate is given, so the digests describe the ROM. */
-    private fun plain(romFile: File): HashOutcome {
-        val result = when (val outcome = delegate.hashForConsole(romFile.absolutePath, 0)) {
-            is HashOutcome.Ok -> outcome.result
-            is HashOutcome.Failed -> return couldNotRead(romFile.name, outcome)
-            else -> return outcome
-        }
-        return HashOutcome.Ok(withPlainHashes(result, romFile))
     }
 
     /**

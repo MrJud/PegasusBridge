@@ -651,6 +651,172 @@ class RomScanPipelineTest {
         assertEquals("lanternkeep|psx", JSONObject(paths.metadata("3001").readText()).getString("cacheKey"))
     }
 
+    // ── What nobody can hash ────────────────────────────────────────────────
+
+    /** Answers no for the hashes it is told to expect, and fails the scan on any other. */
+    private class AskedOnlyAbout(private vararg val expected: String) : RaHashLookup {
+        val asked: MutableList<String> = java.util.Collections.synchronizedList(mutableListOf())
+        override suspend fun lookup(hash: String): LookupOutcome {
+            if (hash !in expected) throw AssertionError("the source was asked about $hash")
+            asked += hash
+            return LookupOutcome.NotFound
+        }
+    }
+
+    // Two kinds of file a scan can say no to from a name alone. One is every
+    // file of a collection nobody can hash for: RetroAchievements has no such
+    // console, or it has and rcheevos no algorithm for it. The other is a
+    // file that cannot be hashed in a collection that can: a disc image
+    // packed in a way nothing here reads, a chip of an arcade set, a readme.
+    // Each was read to its end, the disc images too, given the hash of
+    // something that is not the game, and asked about; and the answer, no,
+    // was kept as a game the database lacks.
+    //
+    // The last file is the other side of it: a collection the list of
+    // platforms never had and the table does, hashed and asked about.
+    @Test fun `collections and formats nobody can hash cost no read and no request`(): Unit = runBlocking {
+        collection("ps3", "PlayStation 3", "ps3")
+        collection("switch", "Nintendo Switch", "switch")
+        // A short name the table has never heard of leaves it to the folder.
+        collection("bbcmicro", "BBC Micro", "beeb", extensions = "ssd")
+        collection("chailove", "ChaiLove", "chailove", extensions = "chailove")
+        collection("n3ds", "Nintendo 3DS", "3ds", extensions = "cci")
+        val unsupported = mapOf(
+            rom("ps3/Some Game/PS3_GAME/USRDIR", "EBOOT.BIN", "never read")
+                to "RetroAchievements has no console for ps3",
+            rom("switch/Mods", "x.zip", "never read") to "RetroAchievements has no console for switch",
+            rom("amiga", "x.adf", "never read") to "rcheevos has no hashing algorithm for RC_CONSOLE_AMIGA (id 35)",
+            rom("cdimono1", "x.bin", "never read") to "rcheevos has no hashing algorithm for RC_CONSOLE_CDI (id 42)",
+            rom("bbcmicro", "x.ssd", "never read") to "RetroAchievements has no console for bbcmicro",
+            rom("chailove", "x.chailove", "never read") to "RetroAchievements has no console for chailove",
+            rom("n3ds", "x.cci", "never read")
+                to "rcheevos' algorithm for RC_CONSOLE_NINTENDO_3DS (id 62) is not built in: it needs decryption keys")
+        val unsupportedFormat = mapOf(
+            rom("wii", "x.wbfs", "never read") to ".wbfs is a format this build has no reader for",
+            rom("ps2", "x.chd", "never read") to ".chd is a format this build has no reader for",
+            rom("psp", "x.cso", "never read") to ".cso is a format rcheevos does not read",
+            rom("arcade", "chip.bin", "never read") to "an arcade set is a .zip or a .7z, and this is a .bin",
+            rom("psx", "README.md", "never read") to "a .md file in this collection is not a Mega Drive cartridge")
+        val hashed = rom("adam", "x.bin", "hash-adam")
+
+        val expected = counts(new = 0, cached = 0, skipped = 7, unmatched = 1, incompatible = 0,
+                              hashFailed = 5, failedLookups = 0)
+        val states = mapOf(ScanLedger.State.UNSUPPORTED to 7, ScanLedger.State.UNSUPPORTED_FORMAT to 5,
+                           ScanLedger.State.NOT_FOUND to 1)
+
+        val h = CollectionHasher(); val l = AskedOnlyAbout("hash-adam")
+        val s = pipeline(h, l).scan(listOf(romRoot.absolutePath))
+
+        assertEquals(13, s.total)
+        assertEquals(expected, s.counts())
+        assertEquals(states, s.states)
+        assertEquals(setOf("x.bin"), h.handed.keys, "the files the hasher was handed")
+        assertEquals("adam", h.handed.getValue("x.bin").shortName)
+        assertEquals(1, h.inner.calls.get())
+        assertEquals(listOf("hash-adam"), l.asked.toList())
+        for ((file, reason) in unsupported) {
+            assertEquals("UNSUPPORTED" to reason,
+                         ledgerEntry(file).let { it.getString("state") to it.getString("detail") }, file.path)
+        }
+        for ((file, reason) in unsupportedFormat) {
+            assertEquals("UNSUPPORTED_FORMAT" to reason,
+                         ledgerEntry(file).let { it.getString("state") to it.getString("detail") }, file.path)
+        }
+        assertEquals("NOT_FOUND", ledgerEntry(hashed).getString("state"))
+
+        // And again on a rescan, each file in the count it was in, with
+        // nothing read and nothing asked: the miss is found standing.
+        val h2 = CollectionHasher()
+        val s2 = pipeline(h2, AskedOnlyAbout()).scan(listOf(romRoot.absolutePath))
+
+        assertEquals(expected, s2.counts())
+        assertEquals(states, s2.states)
+        assertEquals(0, h2.inner.calls.get(), "a file was read on the rescan")
+    }
+
+    // What a library scanned by a build before this one meets at its next
+    // scan. That build hashed an Amiga disk as a Game Boy cartridge and a
+    // packed disc image as its container, asked about both, and kept the two
+    // answers as misses, good for a fortnight; and a metadata file can be
+    // lying there that answers to the key of a file nobody can hash. The
+    // table is asked before either is looked at, or the old answer would
+    // stand in its place: the miss until it ran out, the metadata file for
+    // as long as the ROM was not touched.
+    @Test fun `what an earlier scan kept for a file nobody can hash gives way at once`(): Unit = runBlocking {
+        val disk = rom("amiga", "Kept.adf", "never read")
+        val packed = rom("ps2", "Packed.chd", "never read")
+        val answered = rom("amiga", "Lantern Keep (USA).adf", "never read")
+        ScanLedger(File(paths.cache, ScanLedger.FILE_NAME)).apply {
+            for (f in listOf(disk, packed))
+                record(f.canonicalPath, ScanLedger.State.NOT_FOUND, f.length(), f.lastModified(),
+                       BridgePaths.epochSeconds())
+            save { file, text -> BridgePaths.writeAtomic(file, text) }
+        }
+        paths.metadata("3001").writeText(JSONObject()
+            .put("gameId", 3001).put("title", "Lantern Keep").put("platform", "amiga")
+            .put("cacheKey", "lanternkeep|amiga")
+            .put("ra", JSONObject().put("total", 30))
+            .put("rom", JSONObject().put("hash", "hash-lantern").put("fileMd5", "md5-hash-lantern")
+                .put("fileSize", answered.length()).put("lastModified", answered.lastModified()))
+            .toString())
+
+        val h = ContentHasher()
+        val s = pipeline(h, NeverAsked()).scan(listOf(romRoot.absolutePath))
+
+        assertEquals(counts(new = 0, cached = 0, skipped = 2, unmatched = 0, incompatible = 0,
+                            hashFailed = 1, failedLookups = 0), s.counts())
+        assertEquals(mapOf(ScanLedger.State.UNSUPPORTED to 2, ScanLedger.State.UNSUPPORTED_FORMAT to 1), s.states)
+        assertEquals(0, h.calls.get(), "a file was read")
+        assertEquals(listOf("UNSUPPORTED", "UNSUPPORTED_FORMAT", "UNSUPPORTED"),
+                     listOf(disk, packed, answered).map { ledgerEntry(it).getString("state") })
+    }
+
+    // The short name is the collection's own word and is asked first. A
+    // folder named for something nobody can hash, whose collection calls
+    // itself by a name the table can hash for, is hashed; and a folder
+    // `neogeo` that declares `ngpc` holds Neo Geo Pocket cartridges, which
+    // are not to be turned away as the loose chips of an arcade set. The
+    // folder decides only where the short name says nothing, as `bbcmicro`
+    // does above. Asked in the other order, both collections here are lost
+    // without a word.
+    @Test fun `a short name the table knows is taken at its word whatever the folder is called`(): Unit = runBlocking {
+        collection("switch", "Nintendo 8-bit", "nes")
+        collection("neogeo", "Neo Geo Pocket Color", "ngpc")
+        rom("switch", "Lantern Keep (USA).nes", "hash-lantern")
+        val pocket = rom("neogeo", "Pocket.ngc", "hash-pocket")
+
+        val h = CollectionHasher()
+        val s = pipeline(h, MapLookup(nested)).scan(listOf(romRoot.absolutePath))
+
+        assertEquals(counts(new = 1, cached = 0, skipped = 0, unmatched = 1, incompatible = 0,
+                            hashFailed = 0, failedLookups = 0), s.counts())
+        assertEquals(setOf("Lantern Keep (USA).nes", "Pocket.ngc"), h.handed.keys)
+        assertEquals("NOT_FOUND", ledgerEntry(pocket).getString("state"))
+        assertEquals("lanternkeep|nes", JSONObject(paths.metadata("3001").readText()).getString("cacheKey"))
+    }
+
+    // Such a verdict is reached again on every scan, before the ledger is
+    // asked, so one is found standing only for a file the lists have let go
+    // of since. Until it runs out the file is counted as it was, with the
+    // files that gave no hash, and not as a platform skipped.
+    @Test fun `a standing verdict that the format is not read counts with the files that gave no hash`(): Unit = runBlocking {
+        val f = rom("nes", "Game.nes", "hash-smb")
+        ScanLedger(File(paths.cache, ScanLedger.FILE_NAME)).apply {
+            record(f.canonicalPath, ScanLedger.State.UNSUPPORTED_FORMAT, f.length(), f.lastModified(),
+                   BridgePaths.epochSeconds(), detail = "a reason of a build before this one")
+            save { file, text -> BridgePaths.writeAtomic(file, text) }
+        }
+
+        val h = ContentHasher(); val l = MapLookup(catalogue)
+        val s = pipeline(h, l).scan(listOf(romRoot.absolutePath))
+
+        assertEquals(counts(new = 0, cached = 0, skipped = 0, unmatched = 0, incompatible = 0,
+                            hashFailed = 1, failedLookups = 0), s.counts())
+        assertEquals(mapOf(ScanLedger.State.UNSUPPORTED_FORMAT to 1), s.states)
+        assertEquals(0, h.calls.get(), "the file was read")
+        assertEquals(0, l.calls.get(), "the source was asked")
+    }
+
     // Several files sharing a hash should cost one network call, not one each.
     @Test fun `identical hashes are looked up once`(): Unit = runBlocking {
         rom("nes", "Copy A.nes", "hash-smb")

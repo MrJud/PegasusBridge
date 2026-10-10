@@ -433,6 +433,26 @@ class ScanLedgerTest {
         assertEquals("NOT_FOUND", ledgerEntry(later)!!.getString("state"), "what this build made of the file")
     }
 
+    // Kept for ninety days, as a platform nobody covers is, to the second,
+    // and read back under its name by the ledger that comes after.
+    @Test fun `a format nobody reads is a verdict kept for a season`() {
+        val file = File(paths.cache, ScanLedger.FILE_NAME).apply { parentFile.mkdirs() }
+        val path = "/roms/ps2/Disc.chd"
+        val ninetyDays = 90L * 24 * 60 * 60
+        assertEquals(ScanLedger.State.UNSUPPORTED.retryAfterSeconds, ScanLedger.State.UNSUPPORTED_FORMAT.retryAfterSeconds)
+        ScanLedger(file).apply {
+            record(path, ScanLedger.State.UNSUPPORTED_FORMAT, 10, 20, now = 1000,
+                   detail = ".chd is a format this build has no reader for")
+            save { f, text -> BridgePaths.writeAtomic(f, text) }
+        }
+
+        val read = ScanLedger(file)
+        val kept = read.canSkip(path, 10, 20, now = 1000 + ninetyDays)
+        assertEquals(ScanLedger.State.UNSUPPORTED_FORMAT, kept?.state)
+        assertEquals(".chd is a format this build has no reader for", kept?.detail)
+        assertNull(read.canSkip(path, 10, 20, now = 1000 + ninetyDays + 1))
+    }
+
     // A cache hit already means the file matched; the ledger must agree rather
     // than reporting it as never having been looked at.
     @Test fun `a cached match is still counted as matched`(): Unit = runBlocking {

@@ -3,6 +3,7 @@ package com.pegasus.bridge.hasher
 import com.pegasus.bridge.core.BridgeLog
 import com.pegasus.bridge.core.BridgePaths
 import com.pegasus.bridge.core.FuzzyMatch
+import com.pegasus.bridge.core.RcConsoles
 import com.pegasus.bridge.core.SchemaVersion
 import kotlinx.coroutines.*
 import kotlinx.coroutines.channels.Channel
@@ -20,8 +21,8 @@ import java.io.File
  * back-off and the desktop daemon can simply not throttle.
  *
  * Shape: feeder → N hash producers → API workers → collector. Files unchanged
- * since the last scan, and platforms RetroAchievements does not cover, bypass
- * both hashing and the network.
+ * since the last scan, files of a collection nobody can hash for and files of
+ * a format nobody reads bypass both hashing and the network.
  */
 class RomScanPipeline(
     private val paths: BridgePaths,
@@ -146,8 +147,9 @@ class RomScanPipeline(
         val incompatible: Int = 0,
         /**
          * Files that gave no hash to ask about: unreadable, an archive with
-         * several entries that could each be the ROM, or one the hasher knows it
-         * cannot hash. [states] keeps the three apart.
+         * several entries that could each be the ROM, one the hasher knows it
+         * cannot hash, or one of a format that is not read at all and was not
+         * opened. [states] keeps the four apart.
          */
         val hashFailed: Int = 0,
         /**
@@ -364,6 +366,7 @@ class RomScanPipeline(
                             ScanLedger.State.UNSUPPORTED -> skipped++
                             ScanLedger.State.HASH_FAILED,
                             ScanLedger.State.UNHASHABLE,
+                            ScanLedger.State.UNSUPPORTED_FORMAT,
                             ScanLedger.State.AMBIGUOUS_ARCHIVE -> hashFailed++
                             // Neither arrives this way: a match is found through its
                             // metadata or hashed again, and a retry is never left
@@ -572,16 +575,38 @@ class RomScanPipeline(
         val size        = file.length()
         val modified    = file.lastModified()
 
-        // By either name. A folder `psvita` whose collection calls itself
-        // `vita` is no more covered for the short name not being on the list.
-        val uncovered = listOf(rawPlatform, collection.dirName).map(FuzzyMatch::normalizePlatform)
-            .firstOrNull { it in UNSUPPORTED_PLATFORMS }
-        if (uncovered != null) {
-            ledger.record(path, ScanLedger.State.UNSUPPORTED, size, modified, now,
-                          detail = "RetroAchievements does not cover $uncovered")
-            resultQueue.send(ResultJob(HashJob(file, "", HashResult("", 0), rawPlatform, 0, 0),
-                                       skipped = true))
-            return
+        // Whether the file can be hashed at all, from the table of consoles
+        // and from its name, before a byte of it is read. Ahead of the two
+        // skips below, so that it is decided again on every scan: it costs
+        // nothing, and a verdict kept from an older table would outlive the
+        // table. A list of nine platforms stood here, RetroAchievements'
+        // gaps as somebody remembered them: an Amiga disk or a CD-i image
+        // was hashed as whatever its extension suggested, and asked about.
+        //
+        // The plans that say how to hash a file are not acted on yet: every
+        // file that gets past here is handed to the hasher as before.
+        val row = RcConsoles.resolve(collection.shortName, collection.dirName)
+        when (val plan = ConsoleChoice.choose(row, file.extension, size, insideArchive = false)) {
+            // The collection: nobody can hash for its console, whatever the
+            // file. Counted as a platform skipped, as it always was.
+            is ConsoleChoice.Plan.Unsupported -> {
+                ledger.record(path, ScanLedger.State.UNSUPPORTED, size, modified, now, detail = plan.reason)
+                resultQueue.send(ResultJob(HashJob(file, "", HashResult("", 0), rawPlatform, 0, 0),
+                                           skipped = true))
+                return
+            }
+            // The file: its collection can be hashed and it cannot. It gives
+            // no hash to ask about, and is counted with the others that do
+            // not.
+            is ConsoleChoice.Plan.UnsupportedFormat -> {
+                ledger.record(path, ScanLedger.State.UNSUPPORTED_FORMAT, size, modified, now,
+                              detail = plan.reason)
+                resultQueue.send(ResultJob(
+                    HashJob(file, "", HashResult("", 0), rawPlatform, size, modified),
+                    preRecorded = ScanLedger.State.UNSUPPORTED_FORMAT))
+                return
+            }
+            else -> {}
         }
 
         val cacheKey = FuzzyMatch.makeCacheKey(file.nameWithoutExtension, rawPlatform)
@@ -814,10 +839,5 @@ class RomScanPipeline(
         // queues them behind the semaphore.
         const val DEFAULT_API_WORKERS  = 2
         const val MAX_CONSECUTIVE_FAILURES = 8
-
-        /** Platforms RetroAchievements does not cover — skipped before any I/O. */
-        val UNSUPPORTED_PLATFORMS = setOf(
-            "switch", "psvita", "wiiu", "pc", "windows", "android", "ios", "3ds", "n3ds"
-        )
     }
 }

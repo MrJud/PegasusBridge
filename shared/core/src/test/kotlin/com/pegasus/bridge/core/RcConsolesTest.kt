@@ -199,9 +199,9 @@ class RcConsolesTest {
     }
 
     /**
-     * The nine names a scan turns away today before reading anything
-     * (RomScanPipeline's UNSUPPORTED_PLATFORMS, which this table is to
-     * replace). None may become hashable by the way.
+     * The nine names a scan turned away before reading anything while it
+     * had a list of its own for that, which this table replaced. None may
+     * become hashable by the way.
      */
     @Test fun `every platform skipped today is still not hashable`() {
         val wrong = listOf("switch", "psvita", "wiiu", "pc", "windows", "android", "ios", "3ds", "n3ds")

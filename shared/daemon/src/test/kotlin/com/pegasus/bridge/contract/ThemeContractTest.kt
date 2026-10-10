@@ -733,6 +733,41 @@ class ThemeContractTest {
         assertMarkedAndCleared(id)
     }
 
+    // A file of a format that is not read is in the result under a state of
+    // its own, beside a platform that is not covered, which keeps its name
+    // and its count. Neither is read, and the theme sees a scan that looked
+    // at three files and is done.
+    @Test fun `a desktop scan names a format it does not read apart from a platform it does not cover`() {
+        rom("snes", "Alpha.sfc", "hash-alpha")
+        rom("ps2", "Packed.chd", "never read")
+        rom("switch", "Some Game.zip", "never read")
+        val read = ContentHasher()
+        hasher = read
+        lookup = MapLookup(catalogue)
+        val id = "scan_1791233730000_13"
+
+        val theme = desktopTheme(id)
+        val body = finished(id)
+        assertEquals("done", body.getString("status"))
+        assertEquals(desktopKeys + desktopCounters + "result", body.keySet())
+        assertEquals(1, body.getInt("skippedPlatforms"))
+        val result = body.getJSONObject("result")
+        assertEquals(desktopResultKeys, result.keySet())
+        assertEquals(3, result.getInt("processed"))
+        assertEquals(1, result.getInt("newEntries"))
+        assertEquals(1, result.getInt("skippedPlatforms"))
+        assertEquals(mapOf<String, Any>("MATCHED" to 1, "UNSUPPORTED" to 1, "UNSUPPORTED_FORMAT" to 1),
+                     result.getJSONObject("states").toMap())
+        assertEquals(1, read.calls.get(), "a file that cannot be hashed was read")
+
+        theme.pollTwice()
+        assertEquals("done", theme.status)
+        assertEquals(3, theme.processed)
+        assertEquals(3, theme.total)
+        assertEquals(1, theme.newEntries)
+        assertMarkedAndCleared(id)
+    }
+
     @Test fun `a desktop scan that finds no rom ends done with nothing to show`() {
         hasher = ContentHasher()
         lookup = MapLookup(catalogue)
@@ -1609,7 +1644,8 @@ class ThemeContractTest {
     // Every count a different number, so that one written under another's name
     // shows wherever it lands: 12 files cached from the scan before, 9 new, 8
     // of a platform that is not covered, 7 misses, 6 held under a virtual id,
-    // 5 the hasher gives nothing for and 4 whose lookup gets no answer.
+    // 5 that give no hash, three the hasher gives nothing for and two of a
+    // format that is not read at all, and 4 whose lookup gets no answer.
     @Test fun `the seven counts of a record add up to the results it says were collected`(): Unit = runBlocking {
         val hashes = object : RomHasher {
             override fun hash(path: String): HashResult? = File(path).readText().let { text ->
@@ -1634,9 +1670,13 @@ class ThemeContractTest {
         repeat(8) { rom("switch", "title$it.zip", "never read") }
         repeat(7) { rom("snes", "unknown$it.sfc", "hash-unknown-$it") }
         repeat(6) { rom("snes", "virtual$it.sfc", "hash-virtual-$it") }
-        repeat(5) { rom("snes", "broken$it.sfc", "unreadable-$it") }
+        repeat(3) { rom("snes", "broken$it.sfc", "unreadable-$it") }
+        repeat(2) { rom("ps2", "packed$it.chd", "never read") }
         repeat(4) { rom("snes", "unanswered$it.sfc", "hash-silent-$it") }
-        val records = recordedScan("job2", hashes, answers).records
+        val second = recordedScan("job2", hashes, answers)
+        val records = second.records
+        assertEquals(2, second.summary.states[ScanLedger.State.UNSUPPORTED_FORMAT])
+        assertEquals(3, second.summary.states[ScanLedger.State.HASH_FAILED])
 
         // 51 files: a record for the first result and one every ten results
         // after it, the fifth of which is the last.

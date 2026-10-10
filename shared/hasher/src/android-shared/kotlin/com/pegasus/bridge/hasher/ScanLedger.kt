@@ -41,7 +41,11 @@ class ScanLedger(private val file: File) {
         HASH_FAILED,
         /** The source never answered. Never cached as a verdict. */
         API_RETRY,
-        /** RetroAchievements does not cover this platform. No I/O was done. */
+        /**
+         * The file's collection is of a console nobody can hash for:
+         * RetroAchievements has none for it, or rcheevos no algorithm. No I/O
+         * was done.
+         */
         UNSUPPORTED,
         /** Several entries could each be the ROM; a person has to look. */
         AMBIGUOUS_ARCHIVE,
@@ -60,7 +64,16 @@ class ScanLedger(private val file: File) {
          * dump the source holds from one it has never heard of without knowing
          * what such a number means.
          */
-        KNOWN_UNSUPPORTED;
+        KNOWN_UNSUPPORTED,
+        /**
+         * The collection can be hashed and this file cannot: a compressed
+         * disc image this build has no reader for, a container rcheevos
+         * does not read at all, a file that is no game. Known from the
+         * file's name and its collection, so no I/O was done. Handed to
+         * rcheevos, such a file gave the hash of its container, and was
+         * asked about and kept as a game the database lacks.
+         */
+        UNSUPPORTED_FORMAT;
 
         /**
          * Whether this outcome may be trusted on a later run at all.
@@ -100,6 +113,11 @@ class ScanLedger(private val file: File) {
          * and the source changes its mind about it, which is rarer, and until
          * then the answer is the same one.
          *
+         * A format nobody reads keeps for a season, as an unsupported
+         * platform does and for its reason: it is decided again on every
+         * scan, before any I/O, and the lists it is decided from move with
+         * a build and not with the days.
+         *
          * Meaningless for anything [cacheable] is false for.
          */
         val retryAfterSeconds: Long get() = when (this) {
@@ -109,6 +127,7 @@ class ScanLedger(private val file: File) {
             AMBIGUOUS_ARCHIVE -> 7L * 24 * 60 * 60
             UNHASHABLE        -> 30L * 24 * 60 * 60
             KNOWN_UNSUPPORTED -> 30L * 24 * 60 * 60
+            UNSUPPORTED_FORMAT -> 90L * 24 * 60 * 60
             HASH_FAILED, API_RETRY -> 0
         }
     }

@@ -10,6 +10,6 @@
  * of one upstream version that differ in a patch do not answer alike: a file
  * one of them refuses, the other gives a hash.
  */
-#define PB_RCHEEVOS_PATCHLEVEL 2
+#define PB_RCHEEVOS_PATCHLEVEL 6
 
 #endif /* PB_PATCHLEVEL_H */

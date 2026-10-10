@@ -1,7 +1,7 @@
 # What librahasher.so beside this file was compiled from. native/build.sh writes
 # the two together and tests/native_manifest_check.py compares them: a
 # line that no longer holds is a library to build again.
-library d51d6e438893e2fb55ea13c73bb8909cf3ce88d50fe42fe8cdefe7762463ea9f librahasher.so
+library 699aaacaa46b17ff1bc6409689325e4bd8518620ac35fe09bfb557c2b8151128 librahasher.so
 compiler gcc (GCC) 16.2.1 20260810
 flags -std=gnu11 -O2 -fPIC -fvisibility=hidden -DRC_HASH_NO_ENCRYPTED -shared -Wl,-z,defs -Wl,-z,now -Wl,--version-script=hasher/src/main/cpp/jni.map
 input 3ff95500850ebe134589473059ae0616f450b1a99ebb77a9190c137d4b82785b hasher/src/main/cpp/jni.map
@@ -11,8 +11,8 @@ input 9683f979bb152781677ffd952a68fdddcb5d951eb227e96a2d1f7fd0feb3be62 hasher/sr
 input b2eeb7eb928ed07094463eefd8111ecc69a2f8aeb04e63b23172dcf3663a271b hasher/src/main/cpp/rcheevos/include/rc_hash.h
 input 55322453c31d888fa336a3232a44cbad896810288b93974de4e5a82d4f6476e0 hasher/src/main/cpp/rcheevos/src/rc_compat.h
 input 6d40121ddc82e2902d1317cc89f9c7081c4ce1cf64495d3507eec4d82fae1a17 hasher/src/main/cpp/rcheevos/src/rhash/cdreader.c
-input 66ab71c525ddb155d87fb5e276f8cb12e2f09523578637eb5ec2c2546b0e2d34 hasher/src/main/cpp/rcheevos/src/rhash/hash.c
-input 725036c9326929b704662ad8abe99f5b3655922bb2b35c2e06d7d487cfd5d2d1 hasher/src/main/cpp/rcheevos/src/rhash/hash_disc.c
+input bc9ded6a632a0ac2206c3b522cf5f3bc18fc4570c010c21626ef075830ad8ece hasher/src/main/cpp/rcheevos/src/rhash/hash.c
+input 3e0e430fa63c10d904ca4cdad31f8b09c309fc30a3a037558d1e932737a7444c hasher/src/main/cpp/rcheevos/src/rhash/hash_disc.c
 input 1a2d1ebf972f87ec0a277c8ca375acc93e2e0232955460455ecf711832a74126 hasher/src/main/cpp/rcheevos/src/rhash/hash_rom.c
 input 136ee295a3d3e747b9703c3c272b05685afd70e20b0221bdc0ff585cb833cfa2 hasher/src/main/cpp/rcheevos/src/rhash/hash_zip.c
 input fd38ee6a43316007d4aa816f23c24a8355c58df106b4c54e43ec44afc55df521 hasher/src/main/cpp/rcheevos/src/rhash/md5.c

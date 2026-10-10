@@ -219,6 +219,7 @@ int rc_hash_3do(char hash[33], const rc_hash_iterator_t* iterator)
   int block_size, block_location;
   int offset, stop;
   size_t size = 0;
+  int next_sector, hops = 0; /* local patch 0002: see where the directory is followed */
 
   track_handle = rc_cd_open_track(iterator, 1);
   if (!track_handle)
@@ -227,9 +228,10 @@ int rc_hash_3do(char hash[33], const rc_hash_iterator_t* iterator)
   /* the Opera filesystem stores the volume information in the first 132 bytes of sector 0
    * https://github.com/barbeque/3dodump/blob/master/OperaFS-Format.md
    */
-  rc_cd_read_sector(iterator, track_handle, 0, buffer, 132);
-
-  if (memcmp(buffer, operafs_identifier, sizeof(operafs_identifier)) == 0) {
+  /* local patch 0002: a first sector that ends before those 132 bytes is not a 3DO CD,
+   * as in upstream 12.5.0. what the read did not fill was compared and hashed all the same. */
+  if (rc_cd_read_sector(iterator, track_handle, 0, buffer, 132) >= 132 &&
+      memcmp(buffer, operafs_identifier, sizeof(operafs_identifier)) == 0) {
     rc_hash_iterator_verbose_formatted(iterator, "Found 3DO CD, title=%.32s", &buffer[0x28]);
 
     /* include the volume header in the hash */
@@ -250,7 +252,11 @@ int rc_hash_3do(char hash[33], const rc_hash_iterator_t* iterator)
     sector = block_location / 2048;
 
     do {
-      rc_cd_read_sector(iterator, track_handle, sector, buffer, sizeof(buffer));
+      /* local patch 0002: a directory sector that is not all there ends the search.
+       * the read was not looked at, so the sector before it, still in the buffer, was
+       * walked again as if it were this one, and sent the search on for ever. */
+      if (rc_cd_read_sector(iterator, track_handle, sector, buffer, sizeof(buffer)) < sizeof(buffer))
+        break;
 
       /* offset to start of entries is at offset 0x10 (assume 0x10 and 0x11 are always 0) */
       offset = buffer[0x12] * 256 + buffer[0x13];
@@ -258,7 +264,12 @@ int rc_hash_3do(char hash[33], const rc_hash_iterator_t* iterator)
       /* offset to end of entries is at offset 0x0C (assume 0x0C is always 0) */
       stop = buffer[0x0D] * 65536 + buffer[0x0E] * 256 + buffer[0x0F];
 
-      while (offset < stop) {
+      /* local patch 0002: the entries end where the sector does, whatever it says of
+       * itself, and an entry is looked at only if the 0x48 bytes of it are all inside. */
+      if (stop > (int)sizeof(buffer))
+        stop = (int)sizeof(buffer);
+
+      while (offset + 0x48 <= stop) {
         if (buffer[offset + 0x03] == 0x02) { /* file */
           if (strcasecmp((const char*)&buffer[offset + 0x20], "LaunchMe") == 0) {
             /* the block size is at offset 0x0C (assume 0x0C is always 0) */
@@ -293,7 +304,13 @@ int rc_hash_3do(char hash[33], const rc_hash_iterator_t* iterator)
 
       /* get next sector */
       offset *= block_size;
-      sector = (block_location + offset) / 2048;
+      /* local patch 0002: a directory that names the sector it is in as its next, or
+       * that has sent the search on 256 times already, is followed no further. nothing
+       * else ends a directory whose sectors name each other in a ring. */
+      next_sector = (block_location + offset) / 2048;
+      if (next_sector == sector || ++hops > 256)
+        break;
+      sector = next_sector;
     } while (1);
 
     if (size == 0) {
@@ -435,23 +452,39 @@ static int rc_hash_nintendo_disc_partition(md5_state_t* md5, const rc_hash_itera
   /* GetApploaderSize */
   rc_file_seek(iterator, file_handle, part_offset + BASE_HEADER_SIZE + 0x14, SEEK_SET);
   apploader_header_size = 0x20;
-  rc_file_read(iterator, file_handle, quad_buffer, 4);
+  /* local patch 0004: every read of this function has to bring back all it asked for.
+   * none was looked at, and what a read did not fill was used as it stood: sizes and
+   * offsets out of whatever the stack held, and bytes hashed that no file ever had, so
+   * that one image cut short was refused by one build and given a hash by another. */
+  if (rc_file_read(iterator, file_handle, quad_buffer, 4) != 4)
+    return rc_hash_iterator_error(iterator, "Apploader sizes are past the end of the file");
+  /* local patch 0004: unsigned from the first byte, for both sizes: one of 0x80000000
+   * or more is a size that is too large and not a shift that C leaves undefined */
   apploader_body_size =
-    (quad_buffer[0] << 24) | (quad_buffer[1] << 16) | (quad_buffer[2] << 8) | quad_buffer[3];
-  rc_file_read(iterator, file_handle, quad_buffer, 4);
+    ((uint32_t)quad_buffer[0] << 24) | (quad_buffer[1] << 16) | (quad_buffer[2] << 8) | quad_buffer[3];
+  if (rc_file_read(iterator, file_handle, quad_buffer, 4) != 4)
+    return rc_hash_iterator_error(iterator, "Apploader sizes are past the end of the file");
   apploader_trailer_size =
-    (quad_buffer[0] << 24) | (quad_buffer[1] << 16) | (quad_buffer[2] << 8) | quad_buffer[3];
+    ((uint32_t)quad_buffer[0] << 24) | (quad_buffer[1] << 16) | (quad_buffer[2] << 8) | quad_buffer[3];
   header_size = BASE_HEADER_SIZE + apploader_header_size + apploader_body_size + apploader_trailer_size;
   if (header_size > MAX_HEADER_SIZE) header_size = MAX_HEADER_SIZE;
 
+  /* local patch 0004: the header has to hold the word at 0x420 that is read out of it
+   * below. the sizes are added in 32 bits, and two that are large enough bring the sum
+   * round to anything, nothing included. */
+  if (header_size < 0x424)
+    return rc_hash_iterator_error(iterator, "Partition header is shorter than its own fields");
+
   /* Hash headers */
   buffer = (uint8_t*)malloc(header_size);
-  if (!buffer) {
-    rc_file_close(iterator, file_handle);
+  /* local patch 0004: the file is closed by whoever opened it, and not here as well */
+  if (!buffer)
     return rc_hash_iterator_error(iterator, "Could not allocate temporary buffer");
-  }
   rc_file_seek(iterator, file_handle, part_offset, SEEK_SET);
-  rc_file_read(iterator, file_handle, buffer, header_size);
+  if (rc_file_read(iterator, file_handle, buffer, header_size) != header_size) { /* local patch 0004 */
+    free(buffer);
+    return rc_hash_iterator_error(iterator, "Partition header runs past the end of the file");
+  }
   rc_hash_iterator_verbose_formatted(iterator, "Hashing %u byte partition header", header_size);
   md5_append(md5, buffer, header_size);
 
@@ -466,7 +499,8 @@ static int rc_hash_nintendo_disc_partition(md5_state_t* md5, const rc_hash_itera
 
   /* Find offsets and sizes for the 7 main.dol code segments and 11 main.dol data segments */
   rc_file_seek(iterator, file_handle, part_offset + dol_offset, SEEK_SET);
-  rc_file_read(iterator, file_handle, addr_buffer, 0xD8);
+  if (rc_file_read(iterator, file_handle, addr_buffer, 0xD8) != 0xD8) /* local patch 0004 */
+    return rc_hash_iterator_error(iterator, "main.dol header runs past the end of the file");
   for (ix = 0; ix < 18; ix++) {
     dol_offsets[ix] = (((uint64_t)addr_buffer[0x0 + ix * 4] << 24) |
       ((uint64_t)addr_buffer[0x1 + ix * 4] << 16) |
@@ -480,10 +514,9 @@ static int rc_hash_nintendo_disc_partition(md5_state_t* md5, const rc_hash_itera
 
   /* Iterate through the 18 main.dol segments and hash each */
   buffer = (uint8_t*)malloc(MAX_CHUNK_SIZE);
-  if (!buffer) {
-    rc_file_close(iterator, file_handle);
+  /* local patch 0004: the file is closed by whoever opened it, and not here as well */
+  if (!buffer)
     return rc_hash_iterator_error(iterator, "Could not allocate temporary buffer");
-  }
 
   for (ix = 0; ix < 18; ix++) {
     if (dol_sizes[ix] == 0)
@@ -495,13 +528,23 @@ static int rc_hash_nintendo_disc_partition(md5_state_t* md5, const rc_hash_itera
     else
       rc_hash_iterator_verbose_formatted(iterator, "Hashing %u byte main.dol data segment %u", dol_sizes[ix], ix - 7);
 
+    /* local patch 0004: a segment that the file does not hold to its end is an error,
+     * and one that ends the function: what the buffer held before was hashed in place
+     * of what was not there, for as long as the segment said it was, and leaving the
+     * loop alone would still hand back a hash of that. */
     remaining_size = dol_sizes[ix];
     while (remaining_size > MAX_CHUNK_SIZE) {
-      rc_file_read(iterator, file_handle, buffer, MAX_CHUNK_SIZE);
+      if (rc_file_read(iterator, file_handle, buffer, MAX_CHUNK_SIZE) != MAX_CHUNK_SIZE) {
+        free(buffer);
+        return rc_hash_iterator_error_formatted(iterator, "main.dol segment %u runs past the end of the file", (unsigned)ix);
+      }
       md5_append(md5, buffer, MAX_CHUNK_SIZE);
       remaining_size -= MAX_CHUNK_SIZE;
     }
-    rc_file_read(iterator, file_handle, buffer, (int32_t)remaining_size);
+    if (rc_file_read(iterator, file_handle, buffer, (int32_t)remaining_size) != (size_t)remaining_size) {
+      free(buffer);
+      return rc_hash_iterator_error_formatted(iterator, "main.dol segment %u runs past the end of the file", (unsigned)ix);
+    }
     md5_append(md5, buffer, (int32_t)remaining_size);
   }
 
@@ -1103,6 +1146,9 @@ static int rc_hash_wii_disc(md5_state_t* md5, const rc_hash_iterator_t* iterator
   const uint64_t REGION_CODE_ADDRESS = 0x4E000;
   const uint32_t CLUSTER_SIZE = 0x7C00;
   const uint32_t MAX_CLUSTER_COUNT = 1024;
+  /* local patch 0001: the most partitions one of the table's four groups may name.
+   * a disc has two or three in all. */
+  const uint32_t MAX_GROUP_PARTITION_COUNT = 64;
 
   uint32_t partition_info_table[8];
   uint32_t total_partition_count = 0;
@@ -1126,49 +1172,91 @@ static int rc_hash_wii_disc(md5_state_t* md5, const rc_hash_iterator_t* iterator
 
   /* Hash main headers */
   buffer = (uint8_t*)malloc(CLUSTER_SIZE);
-  if (!buffer) {
-    rc_file_close(iterator, file_handle);
+  /* local patch 0001: the file is closed by rc_hash_wii, which opened it, and not here
+   * as well. upstream 12.5.0 has taken this close out too. */
+  if (!buffer)
     return rc_hash_iterator_error(iterator, "Could not allocate temporary buffer");
-  }
 
   rc_hash_iterator_verbose_formatted(iterator, "Hashing %u byte main header for [%c%c%c%c%c%c]",
     MAIN_HEADER_SIZE, buffer[0], buffer[1], buffer[2], buffer[3], buffer[4], buffer[5]);
   rc_file_seek(iterator, file_handle, 0, SEEK_SET);
-  rc_file_read(iterator, file_handle, buffer, MAIN_HEADER_SIZE);
+  /* local patch 0001: every read of this function has to bring back all it asked for.
+   * what a read did not fill was hashed as it stood, or taken for an offset and a
+   * size, so that an image cut short was given one hash by one build and another by
+   * the next, out of what the stack and the allocator held. the byte at 0x61 above is
+   * inside these 0x80, and is in the file if they are. */
+  if (rc_file_read(iterator, file_handle, buffer, MAIN_HEADER_SIZE) != MAIN_HEADER_SIZE) {
+    free(buffer);
+    return rc_hash_iterator_error(iterator, "Disc header runs past the end of the file");
+  }
   md5_append(md5, buffer, MAIN_HEADER_SIZE);
 
   /* Hash region code */
   rc_file_seek(iterator, file_handle, REGION_CODE_ADDRESS, SEEK_SET);
-  rc_file_read(iterator, file_handle, quad_buffer, 4);
+  if (rc_file_read(iterator, file_handle, quad_buffer, 4) != 4) { /* local patch 0001 */
+    free(buffer);
+    return rc_hash_iterator_error(iterator, "Region code is past the end of the file");
+  }
   md5_append(md5, quad_buffer, 4);
 
   /* Scan partition table */
   rc_file_seek(iterator, file_handle, 0x40000, SEEK_SET);
   for (ix = 0; ix < 8; ix++) {
-    rc_file_read(iterator, file_handle, quad_buffer, 4);
+    /* local patch 0001: the table's eight words have to be in the file. a word that was
+     * not read was taken to be the one before it, or whatever the stack held. */
+    if (rc_file_read(iterator, file_handle, quad_buffer, 4) != 4) {
+      free(buffer);
+      return rc_hash_iterator_error(iterator, "Could not read partition table");
+    }
+    /* local patch 0001: unsigned from the first byte, here and for every word this
+     * function reads, so that a count of 0x80000000 or more is a count that is too
+     * large and not a shift that C leaves undefined */
     partition_info_table[ix] =
-      (quad_buffer[0] << 24) | (quad_buffer[1] << 16) | (quad_buffer[2] << 8) | quad_buffer[3];
-    if (ix % 2 == 0)
+      ((uint32_t)quad_buffer[0] << 24) | (quad_buffer[1] << 16) | (quad_buffer[2] << 8) | quad_buffer[3];
+    if (ix % 2 == 0) {
+      /* local patch 0001: each group by itself, since the sum of four counts is taken
+       * in 32 bits and two counts can add up to a small one. the table is allocated by
+       * the sum and filled by the counts. */
+      if (partition_info_table[ix] > MAX_GROUP_PARTITION_COUNT) {
+        free(buffer);
+        return rc_hash_iterator_error_formatted(iterator, "Partition table group %u names %u partitions, more than %u",
+          ix / 2, partition_info_table[ix], MAX_GROUP_PARTITION_COUNT);
+      }
       total_partition_count += partition_info_table[ix];
+    }
   }
 
   if (total_partition_count == 0) {
+    /* local patch 0001: not closed here, as above */
     free(buffer);
-    rc_file_close(iterator, file_handle);
     return rc_hash_iterator_error(iterator, "No partitions found");
   }
 
-  partition_table = (uint32_t*)malloc(total_partition_count * 4 * 2);
+  /* local patch 0001: the size is worked out as a size, and the table may not be there */
+  partition_table = (uint32_t*)malloc((size_t)total_partition_count * 4 * 2);
+  if (!partition_table) {
+    free(buffer);
+    return rc_hash_iterator_error(iterator, "Could not allocate partition table");
+  }
   kx = 0;
   for (jx = 0; jx < 8; jx += 2) {
     rc_file_seek(iterator, file_handle, ((uint64_t)partition_info_table[jx + 1]) << 2, SEEK_SET);
     for (ix = 0; ix < partition_info_table[jx]; ix++) {
-      rc_file_read(iterator, file_handle, quad_buffer, 4);
+      /* local patch 0001: a partition's two words have to be in the file, both of them */
+      if (rc_file_read(iterator, file_handle, quad_buffer, 4) != 4) {
+        free(partition_table);
+        free(buffer);
+        return rc_hash_iterator_error(iterator, "Could not read partition table");
+      }
       partition_table[kx++] =
-        (quad_buffer[0] << 24) | (quad_buffer[1] << 16) | (quad_buffer[2] << 8) | quad_buffer[3];
-      rc_file_read(iterator, file_handle, quad_buffer, 4);
+        ((uint32_t)quad_buffer[0] << 24) | (quad_buffer[1] << 16) | (quad_buffer[2] << 8) | quad_buffer[3];
+      if (rc_file_read(iterator, file_handle, quad_buffer, 4) != 4) {
+        free(partition_table);
+        free(buffer);
+        return rc_hash_iterator_error(iterator, "Could not read partition table");
+      }
       partition_table[kx++] =
-        (quad_buffer[0] << 24) | (quad_buffer[1] << 16) | (quad_buffer[2] << 8) | quad_buffer[3];
+        ((uint32_t)quad_buffer[0] << 24) | (quad_buffer[1] << 16) | (quad_buffer[2] << 8) | quad_buffer[3];
     }
   }
 
@@ -1180,30 +1268,52 @@ static int rc_hash_wii_disc(md5_state_t* md5, const rc_hash_iterator_t* iterator
 
     /* Hash title metadata */
     rc_file_seek(iterator, file_handle, ((uint64_t)partition_table[jx] << 2) + 0x2A4, SEEK_SET);
-    rc_file_read(iterator, file_handle, quad_buffer, 4);
+    /* local patch 0001: what a partition says of itself has to be in the file as well,
+     * and so has what it then names: its title metadata, and each cluster of its data */
+    if (rc_file_read(iterator, file_handle, quad_buffer, 4) != 4) {
+      free(partition_table);
+      free(buffer);
+      return rc_hash_iterator_error(iterator, "Title metadata size and offset are past the end of the file");
+    }
     tmd_size =
-      (quad_buffer[0] << 24) | (quad_buffer[1] << 16) | (quad_buffer[2] << 8) | quad_buffer[3];
-    rc_file_read(iterator, file_handle, quad_buffer, 4);
+      ((uint32_t)quad_buffer[0] << 24) | (quad_buffer[1] << 16) | (quad_buffer[2] << 8) | quad_buffer[3];
+    if (rc_file_read(iterator, file_handle, quad_buffer, 4) != 4) {
+      free(partition_table);
+      free(buffer);
+      return rc_hash_iterator_error(iterator, "Title metadata size and offset are past the end of the file");
+    }
     tmd_offset =
-      ((uint64_t)((quad_buffer[0] << 24) | (quad_buffer[1] << 16) | (quad_buffer[2] << 8) | quad_buffer[3])) << 2;
+      ((uint64_t)(((uint32_t)quad_buffer[0] << 24) | (quad_buffer[1] << 16) | (quad_buffer[2] << 8) | quad_buffer[3])) << 2;
 
     if (tmd_size > CLUSTER_SIZE)
       tmd_size = CLUSTER_SIZE;
 
     rc_file_seek(iterator, file_handle, ((uint64_t)partition_table[jx] << 2) + tmd_offset, SEEK_SET);
-    rc_file_read(iterator, file_handle, buffer, tmd_size);
+    if (rc_file_read(iterator, file_handle, buffer, tmd_size) != tmd_size) { /* local patch 0001 */
+      free(partition_table);
+      free(buffer);
+      return rc_hash_iterator_error(iterator, "Title metadata runs past the end of the file");
+    }
     rc_hash_iterator_verbose_formatted(iterator, "Hashing %u byte title metadata (partition type %u)",
       tmd_size, partition_table[jx + 1]);
     md5_append(md5, buffer, tmd_size);
 
     /* Hash partition */
     rc_file_seek(iterator, file_handle, ((uint64_t)partition_table[jx] << 2) + 0x2B8, SEEK_SET);
-    rc_file_read(iterator, file_handle, quad_buffer, 4);
+    if (rc_file_read(iterator, file_handle, quad_buffer, 4) != 4) { /* local patch 0001 */
+      free(partition_table);
+      free(buffer);
+      return rc_hash_iterator_error(iterator, "Partition data offset and size are past the end of the file");
+    }
     part_offset =
-      ((uint64_t)((quad_buffer[0] << 24) | (quad_buffer[1] << 16) | (quad_buffer[2] << 8) | quad_buffer[3])) << 2;
-    rc_file_read(iterator, file_handle, quad_buffer, 4);
+      ((uint64_t)(((uint32_t)quad_buffer[0] << 24) | (quad_buffer[1] << 16) | (quad_buffer[2] << 8) | quad_buffer[3])) << 2;
+    if (rc_file_read(iterator, file_handle, quad_buffer, 4) != 4) { /* local patch 0001 */
+      free(partition_table);
+      free(buffer);
+      return rc_hash_iterator_error(iterator, "Partition data offset and size are past the end of the file");
+    }
     part_size =
-      ((uint64_t)((quad_buffer[0] << 24) | (quad_buffer[1] << 16) | (quad_buffer[2] << 8) | quad_buffer[3])) << 2;
+      ((uint64_t)(((uint32_t)quad_buffer[0] << 24) | (quad_buffer[1] << 16) | (quad_buffer[2] << 8) | quad_buffer[3])) << 2;
 
     if (encrypted) {
       cluster_count = (part_size / 0x8000 > MAX_CLUSTER_COUNT) ? MAX_CLUSTER_COUNT : (uint32_t)(part_size / 0x8000);
@@ -1211,7 +1321,14 @@ static int rc_hash_wii_disc(md5_state_t* md5, const rc_hash_iterator_t* iterator
         cluster_count, cluster_count * CLUSTER_SIZE);
       for (ix = 0; ix < cluster_count; ix++) {
         rc_file_seek(iterator, file_handle, part_offset + (ix * 0x8000) + 0x400, SEEK_SET);
-        rc_file_read(iterator, file_handle, buffer, CLUSTER_SIZE);
+        /* local patch 0001: a cluster that is not there was the one before it, hashed
+         * once more, and that for every cluster of every partition the table named:
+         * some 8 GiB of hashing for 256 partitions that the file had none of */
+        if (rc_file_read(iterator, file_handle, buffer, CLUSTER_SIZE) != CLUSTER_SIZE) {
+          free(partition_table);
+          free(buffer);
+          return rc_hash_iterator_error_formatted(iterator, "Partition cluster %u runs past the end of the file", ix);
+        }
         md5_append(md5, buffer, CLUSTER_SIZE);
       }
     }

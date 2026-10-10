@@ -745,6 +745,17 @@ static const char* rc_hash_get_first_item_from_playlist(const rc_hash_iterator_t
 
   rc_hash_iterator_verbose_formatted(iterator, "Extracted %.*s from playlist", (int)file_len, start);
 
+  /* local patch 0003: an item that is itself a playlist is not followed. both callers
+   * hand the item straight back to the code that brought them here, with nothing that
+   * counts how often, so a playlist that names itself, or two that name each other,
+   * went round until the stack was used up. */
+  if (file_len >= 4 && start[file_len - 4] == '.' &&
+      tolower((unsigned char)start[file_len - 3]) == 'm' && start[file_len - 2] == '3' &&
+      tolower((unsigned char)start[file_len - 1]) == 'u') {
+    rc_hash_iterator_error(iterator, "Playlist refers to another playlist");
+    return NULL;
+  }
+
   start[file_len++] = '\0';
   if (rc_hash_path_is_absolute(start))
     path_len = 0;

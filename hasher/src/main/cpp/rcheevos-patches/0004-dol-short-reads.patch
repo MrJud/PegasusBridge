@@ -1,0 +1,107 @@
+Local patch 0004 on rcheevos 12.3.0: a GameCube disc or Wii partition whose
+header or main.dol the file does not hold to the end is an error. What it is
+for, and what upstream does, is in PATCHES.md.
+
+    git apply --directory=hasher/src/main/cpp/rcheevos <this file>
+
+diff --git a/src/rhash/hash_disc.c b/src/rhash/hash_disc.c
+index 83c9354..4aa8c1e 100644
+--- a/src/rhash/hash_disc.c
++++ b/src/rhash/hash_disc.c
+@@ -435,23 +435,39 @@ static int rc_hash_nintendo_disc_partition(md5_state_t* md5, const rc_hash_itera
+   /* GetApploaderSize */
+   rc_file_seek(iterator, file_handle, part_offset + BASE_HEADER_SIZE + 0x14, SEEK_SET);
+   apploader_header_size = 0x20;
+-  rc_file_read(iterator, file_handle, quad_buffer, 4);
++  /* local patch 0004: every read of this function has to bring back all it asked for.
++   * none was looked at, and what a read did not fill was used as it stood: sizes and
++   * offsets out of whatever the stack held, and bytes hashed that no file ever had, so
++   * that one image cut short was refused by one build and given a hash by another. */
++  if (rc_file_read(iterator, file_handle, quad_buffer, 4) != 4)
++    return rc_hash_iterator_error(iterator, "Apploader sizes are past the end of the file");
++  /* local patch 0004: unsigned from the first byte, for both sizes: one of 0x80000000
++   * or more is a size that is too large and not a shift that C leaves undefined */
+   apploader_body_size =
+-    (quad_buffer[0] << 24) | (quad_buffer[1] << 16) | (quad_buffer[2] << 8) | quad_buffer[3];
+-  rc_file_read(iterator, file_handle, quad_buffer, 4);
++    ((uint32_t)quad_buffer[0] << 24) | (quad_buffer[1] << 16) | (quad_buffer[2] << 8) | quad_buffer[3];
++  if (rc_file_read(iterator, file_handle, quad_buffer, 4) != 4)
++    return rc_hash_iterator_error(iterator, "Apploader sizes are past the end of the file");
+   apploader_trailer_size =
+-    (quad_buffer[0] << 24) | (quad_buffer[1] << 16) | (quad_buffer[2] << 8) | quad_buffer[3];
++    ((uint32_t)quad_buffer[0] << 24) | (quad_buffer[1] << 16) | (quad_buffer[2] << 8) | quad_buffer[3];
+   header_size = BASE_HEADER_SIZE + apploader_header_size + apploader_body_size + apploader_trailer_size;
+   if (header_size > MAX_HEADER_SIZE) header_size = MAX_HEADER_SIZE;
+ 
++  /* local patch 0004: the header has to hold the word at 0x420 that is read out of it
++   * below. the sizes are added in 32 bits, and two that are large enough bring the sum
++   * round to anything, nothing included. */
++  if (header_size < 0x424)
++    return rc_hash_iterator_error(iterator, "Partition header is shorter than its own fields");
++
+   /* Hash headers */
+   buffer = (uint8_t*)malloc(header_size);
+-  if (!buffer) {
+-    rc_file_close(iterator, file_handle);
++  /* local patch 0004: the file is closed by whoever opened it, and not here as well */
++  if (!buffer)
+     return rc_hash_iterator_error(iterator, "Could not allocate temporary buffer");
+-  }
+   rc_file_seek(iterator, file_handle, part_offset, SEEK_SET);
+-  rc_file_read(iterator, file_handle, buffer, header_size);
++  if (rc_file_read(iterator, file_handle, buffer, header_size) != header_size) { /* local patch 0004 */
++    free(buffer);
++    return rc_hash_iterator_error(iterator, "Partition header runs past the end of the file");
++  }
+   rc_hash_iterator_verbose_formatted(iterator, "Hashing %u byte partition header", header_size);
+   md5_append(md5, buffer, header_size);
+ 
+@@ -466,7 +482,8 @@ static int rc_hash_nintendo_disc_partition(md5_state_t* md5, const rc_hash_itera
+ 
+   /* Find offsets and sizes for the 7 main.dol code segments and 11 main.dol data segments */
+   rc_file_seek(iterator, file_handle, part_offset + dol_offset, SEEK_SET);
+-  rc_file_read(iterator, file_handle, addr_buffer, 0xD8);
++  if (rc_file_read(iterator, file_handle, addr_buffer, 0xD8) != 0xD8) /* local patch 0004 */
++    return rc_hash_iterator_error(iterator, "main.dol header runs past the end of the file");
+   for (ix = 0; ix < 18; ix++) {
+     dol_offsets[ix] = (((uint64_t)addr_buffer[0x0 + ix * 4] << 24) |
+       ((uint64_t)addr_buffer[0x1 + ix * 4] << 16) |
+@@ -480,10 +497,9 @@ static int rc_hash_nintendo_disc_partition(md5_state_t* md5, const rc_hash_itera
+ 
+   /* Iterate through the 18 main.dol segments and hash each */
+   buffer = (uint8_t*)malloc(MAX_CHUNK_SIZE);
+-  if (!buffer) {
+-    rc_file_close(iterator, file_handle);
++  /* local patch 0004: the file is closed by whoever opened it, and not here as well */
++  if (!buffer)
+     return rc_hash_iterator_error(iterator, "Could not allocate temporary buffer");
+-  }
+ 
+   for (ix = 0; ix < 18; ix++) {
+     if (dol_sizes[ix] == 0)
+@@ -495,13 +511,23 @@ static int rc_hash_nintendo_disc_partition(md5_state_t* md5, const rc_hash_itera
+     else
+       rc_hash_iterator_verbose_formatted(iterator, "Hashing %u byte main.dol data segment %u", dol_sizes[ix], ix - 7);
+ 
++    /* local patch 0004: a segment that the file does not hold to its end is an error,
++     * and one that ends the function: what the buffer held before was hashed in place
++     * of what was not there, for as long as the segment said it was, and leaving the
++     * loop alone would still hand back a hash of that. */
+     remaining_size = dol_sizes[ix];
+     while (remaining_size > MAX_CHUNK_SIZE) {
+-      rc_file_read(iterator, file_handle, buffer, MAX_CHUNK_SIZE);
++      if (rc_file_read(iterator, file_handle, buffer, MAX_CHUNK_SIZE) != MAX_CHUNK_SIZE) {
++        free(buffer);
++        return rc_hash_iterator_error_formatted(iterator, "main.dol segment %u runs past the end of the file", (unsigned)ix);
++      }
+       md5_append(md5, buffer, MAX_CHUNK_SIZE);
+       remaining_size -= MAX_CHUNK_SIZE;
+     }
+-    rc_file_read(iterator, file_handle, buffer, (int32_t)remaining_size);
++    if (rc_file_read(iterator, file_handle, buffer, (int32_t)remaining_size) != (size_t)remaining_size) {
++      free(buffer);
++      return rc_hash_iterator_error_formatted(iterator, "main.dol segment %u runs past the end of the file", (unsigned)ix);
++    }
+     md5_append(md5, buffer, (int32_t)remaining_size);
+   }
+ 

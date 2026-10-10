@@ -614,6 +614,27 @@ class ScanAuditTest {
         assertTrue(process.substringBefore(' ').toLong() >= cost.values.sum(), process)
     }
 
+    // The second read a scan no longer makes, seen where it is measured. A
+    // disc is hashed from a few of its sectors, which the library here stands
+    // for by reading none, and the file was then read to its end for an MD5
+    // and a CRC: four megabytes in this cell where there are now next to
+    // none, and no MD5 in the row.
+    @Test fun `a file the hash did not read whole costs the audit no read for a digest`() {
+        assumeTrue(ScanAudit.IoCounters.thread() != null, "no count of what a thread reads on this system")
+        val size = 4 * 1024 * 1024
+        val disc = File(roms, "psx/Disc.bin").apply { parentFile.mkdirs(); writeBytes(ByteArray(size)) }
+        val library = object : RomHasher {
+            override fun hash(path: String): HashResult = HashResult("hash-of-a-disc", 12)
+        }
+
+        assertEquals(0, audit(library = library))
+
+        val row = rows().getValue(disc.name)
+        assertEquals(listOf("NOT_FOUND", "12", "hash-of-a-disc", ""),
+                     listOf("state", "console", "hash", "fileMd5").map { row.getValue(it) })
+        assertTrue(row.getValue("read").toLong() < 1024 * 1024, "the disc was read: ${row["read"]}")
+    }
+
     // What --keep is for: the second audit starts from the ledger and the
     // metadata the first one left, so it is a rescan, and what a rescan reads
     // and asks can be counted. Its table still has a row for every file, with

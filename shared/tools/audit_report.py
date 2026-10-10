@@ -53,7 +53,10 @@ scan decided: platform, state, console, hash, fileMd5, archiveEntry and asked.
 `ms` is never compared, since no two runs take the same time, and `size` is the
 library's business. A file whose `detail` alone differs is listed apart and is
 not counted as changed: the wording of a reason may change where the verdict
-does not. Lines beginning `#` are not rows, here or in the baseline, and are
+does not. So is a file whose `fileMd5` alone went from a value to nothing:
+a scan takes that digest only of a file it has read whole (ArchiveAwareHasher,
+digestInScan), and a build that leaves it for later has changed no verdict.
+Lines beginning `#` are not rows, here or in the baseline, and are
 not compared as rows are. The ones that say how a run was made are read all
 the same, the roots, the two kinds of skip and where the answers came from,
 and a comparison says which of them the two runs do not share, and says when
@@ -308,21 +311,24 @@ JUNK_MEANS = OrderedDict([
 def compare(baseline, rows):
     """What differs between two tables of one library: the paths only the new
     one has, the paths only the old one has, the rows whose compared columns
-    differ, as (path, [(column, old, new)]), and the paths whose detail alone
-    differs."""
+    differ, as (path, [(column, old, new)]), the paths whose detail alone
+    differs, and the paths whose fileMd5 alone moved, from a value to none:
+    a digest the new build left for whoever asks for it."""
     old = {r["path"]: r for r in baseline}
     new = {r["path"]: r for r in rows}
     added = sorted(p for p in new if p not in old)
     removed = sorted(p for p in old if p not in new)
-    changed, detail_only = [], []
+    changed, detail_only, digest_later = [], [], []
     for path in sorted(p for p in new if p in old):
         moved = [(c, old[path].get(c, ""), new[path].get(c, ""))
                  for c in COMPARED if old[path].get(c, "") != new[path].get(c, "")]
-        if moved:
+        if len(moved) == 1 and moved[0][0] == "fileMd5" and not moved[0][2]:
+            digest_later.append(path)
+        elif moved:
             changed.append((path, moved))
         elif old[path].get("detail", "") != new[path].get("detail", ""):
             detail_only.append(path)
-    return added, removed, changed, detail_only
+    return added, removed, changed, detail_only, digest_later
 
 
 def state_columns(rows):
@@ -453,7 +459,7 @@ def main(argv):
         failed.append(f"{len(junk)} junk hashes, more than {args.max_junk}")
 
     if baseline is not None:
-        added, removed, changed, detail_only = compare(baseline, rows)
+        added, removed, changed, detail_only, digest_later = compare(baseline, rows)
         differing = len(added) + len(removed) + len(changed)
         print()
         print(f"against {args.baseline} ({len(baseline)} files): {differing} differ")
@@ -483,6 +489,12 @@ def main(argv):
             print("  by column: " + ", ".join(f"{c} {columns[c]}" for c in COMPARED if columns[c]))
         print(f"  detail only {len(detail_only):>3}  (not counted as differing)")
         print_list(detail_only, args.all)
+        print(f"  digest left for later {len(digest_later):>3}  (not counted as differing)")
+        by_collection = Counter(collection_of(p, roots) for p in digest_later)
+        if by_collection:
+            print("    " + ", ".join(f"{name} {by_collection[name]}"
+                                     for name in sorted(by_collection, key=str.lower)))
+        print_list(digest_later, args.all)
         if oracle is not None:
             now = {r["path"]: r.get("hash", "").lower() for r in rows}
             recorded = [r for r in baseline if r.get("hash", "").lower() in oracle]

@@ -354,6 +354,33 @@ class CompareTest(Tables):
         self.assertIn("(3 files): 0 differ\n", out)
         self.assertIn(f"  detail only   1  (not counted as differing)\n    {ROOT}/snes/C.sfc\n", out)
 
+    def test_a_digest_left_for_later_is_listed_apart_and_is_not_a_change(self):
+        before = [row("psx/Disc.bin", state="MATCHED", hash=md5("d"), console="12", fileMd5=md5("disc")),
+                  row("nds/Game.nds", hash=md5("g"), console="18", fileMd5=md5("game")),
+                  row("gba/Whole.gba", hash=md5("w"), console="5", fileMd5=md5("w"))]
+        after = [dict(r) for r in before]
+        after[0]["fileMd5"] = after[1]["fileMd5"] = ""
+        status, out, _ = self.compare(after, "--max-changed", "0", before=before)
+        self.assertEqual(status, 0, out)
+        self.assertIn("(3 files): 0 differ\n", out)
+        self.assertIn("  changed       0\n", out)
+        self.assertIn(f"  digest left for later   2  (not counted as differing)\n    nds 1, psx 1\n"
+                      f"    {ROOT}/nds/Game.nds\n    {ROOT}/psx/Disc.bin\n", out)
+
+        # A digest that is another one is a file read differently, a digest
+        # that appears is not this, and one that goes with something else
+        # moving is that file's change.
+        for cells in (dict(fileMd5=md5("another")), dict(fileMd5="", state="NOT_FOUND")):
+            moved = [dict(r) for r in before]
+            moved[0].update(cells)
+            status, out, _ = self.compare(moved, "--max-changed", "0", before=before)
+            self.assertEqual(status, 1, out)
+            self.assertIn("  changed       1\n", out)
+            self.assertIn("  digest left for later   0  (not counted as differing)\n", out)
+        status, out, _ = self.compare(before, "--max-changed", "0", before=after)
+        self.assertEqual(status, 1, out)
+        self.assertIn("  changed       2\n", out)
+
     def test_a_file_in_one_table_only_is_a_difference(self):
         after = self.BEFORE[1:] + [row("snes/New.sfc", hash=md5("n"), console="3")]
         status, out, _ = self.compare(after, "--max-changed", "1")

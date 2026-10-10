@@ -250,10 +250,11 @@ class GoldenHashTest {
                 ?: return@mapNotNull "$where: expected $expected|27, got $outcome"
             when {
                 "${r.hash}|${r.consoleId}" != "$expected|27" -> "$where: expected $expected|27, got ${r.hash}|${r.consoleId}"
-                // Nothing was taken out of it, and the digests beside the
-                // hash are the archive's own.
+                // Nothing was taken out of it, and there are no digests
+                // beside the hash: taking them is the one thing that would
+                // open the set.
                 r.archiveEntry.isNotEmpty() -> "$where: the entry '${r.archiveEntry}' was taken out"
-                r.fileMd5 != md5(set.readBytes()) -> "$where: the file MD5 ${r.fileMd5} is not the archive's"
+                r.fileMd5 != "" -> "$where: the set was read for a file MD5, ${r.fileMd5}"
                 else -> null
             }
         }

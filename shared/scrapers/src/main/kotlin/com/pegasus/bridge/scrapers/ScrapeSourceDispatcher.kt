@@ -762,7 +762,9 @@ class ScrapeSourceDispatcher(
      *
      * The hashes lead because they are the join: a caller matches these against
      * what the scan already wrote into `rom.hash`, `rom.fileMd5` and
-     * `rom.fileCrc32` and needs no title comparison at all.
+     * `rom.fileCrc32` and needs no title comparison at all. The last two are
+     * empty for a file the scan did not read whole, a disc image above all,
+     * and such a game is joined by `rom.hash` or by its title.
      */
     private fun rommRomToJson(c: RommClient.Credentials, r: RommClient.Rom): JSONObject =
         JSONObject()

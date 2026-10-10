@@ -909,6 +909,8 @@ class RomScanPipeline(
                 // Plain hashes of the ROM bytes, for databases that match by
                 // file rather than by title. Distinct from `hash`, which is the
                 // rcheevos one — see HashResult for why they cannot be shared.
+                // Both keys are always written, and both are empty for a file
+                // the scan did not read whole.
                 .put("fileMd5", job.hash.fileMd5)
                 .put("fileCrc32", job.hash.fileCrc32)
                 .put("fileSize", job.fileSize)

@@ -12,6 +12,11 @@ import java.nio.file.Files
  * [fileMd5] and [fileCrc32] describe the file itself, which is what ROM databases
  * match on. The two coincide on consoles rcheevos hashes whole, and differ on
  * NES and SNES, so they are not interchangeable.
+ *
+ * The two are empty for a file a scan did not read whole to hash it
+ * ([ArchiveAwareHasher.digestInScan]): a disc image, a cartridge whose hash is
+ * made of a part of it, an arcade set. Whoever needs them of such a file asks
+ * [PlainRomHasher], which reads it then.
  */
 data class HashResult(
     val hash: String,
@@ -257,11 +262,14 @@ class ArchiveAwareHasher internal constructor(
         namedByPlaylist: Boolean
     ): HashOutcome {
         // The MD5 and CRC of the file the delegate is given, so that they
-        // describe the ROM. Not for what a playlist names: the digests kept
-        // are the playlist's, and the first disc of a game would be read to
-        // its end for two numbers nobody keeps.
-        val digests: (HashResult) -> HashResult =
-            if (namedByPlaylist) { result -> result } else { result -> withPlainHashes(result, file) }
+        // describe the ROM, and only where they cost no read the hash has
+        // not just made ([digestInScan]). Not for what a playlist names: the
+        // digests kept are the playlist's, and the first disc of a game would
+        // be read to its end for two numbers nobody keeps.
+        val digests: (HashResult) -> HashResult = { result ->
+            if (namedByPlaylist || !digestInScan(result.consoleId, file.length())) result
+            else withPlainHashes(result, file)
+        }
 
         return when (val plan = ConsoleChoice.choose(row, file.extension, file.length(), insideArchive = false)) {
             // A scan has turned both away before it gets here, without a
@@ -378,12 +386,13 @@ class ArchiveAwareHasher internal constructor(
      * the ROM, or the one of them with an extension a cartridge has, which
      * was then hashed as a cartridge.
      *
-     * The digests beside the hash are the archive's own. Nothing matches a
-     * set by them, but a file whose metadata has no MD5 is taken for one
-     * scanned before there were any, and read again on every scan.
+     * There are no digests beside the hash. Nothing matches a set by the
+     * MD5 of its archive, and taking one was the only thing that opened the
+     * file: a set of hundreds of megabytes read to its end for a hash made
+     * of its name.
      */
     private fun arcadeSet(path: String, set: File): HashOutcome =
-        named(set.name, delegate.hashForConsole(path, ConsoleChoice.ARCADE)) { withPlainHashes(it, set) }
+        named(set.name, delegate.hashForConsole(path, ConsoleChoice.ARCADE)) { it }
 
     private fun archive(file: File, collection: CollectionRef, row: RcConsoles.Row?): HashOutcome =
         ArchiveReader.open(file) { opened ->
@@ -796,5 +805,35 @@ class ArchiveAwareHasher internal constructor(
 
         /** How old a copy has to be before it is taken for one that was left behind. */
         private const val STALE_AFTER_MS = 24L * 60 * 60 * 1000
+
+        /** A loose file this small has its digests taken whatever it is: the read is nothing. */
+        internal const val DIGEST_SMALL = 1L * 1024 * 1024
+
+        /** What rcheevos reads of a file it hashes whole, at the most. */
+        internal const val DIGEST_LIMIT = 64L * 1024 * 1024
+
+        /** The ways of hashing that read every byte of the file, up to [DIGEST_LIMIT]. */
+        private val HASHED_WHOLE = setOf(RcConsoles.Algorithm.WHOLE, RcConsoles.Algorithm.WHOLE_M3U,
+                                         RcConsoles.Algorithm.BUFFERED)
+
+        /**
+         * Whether a scan takes the MD5 and CRC of a loose file of [size]
+         * bytes that was hashed as console [consoleId].
+         *
+         * The two are a second read of the whole file. Where the hash has
+         * just read every byte, that read is of what the system still holds
+         * in memory. Where the hash is made of a header and a few sectors,
+         * of a disc or of a cartridge with a parser, it is the whole image
+         * read from the disk for two numbers no scan uses: of a library of
+         * discs, nearly everything a first scan read. So they are taken
+         * for a file hashed whole and no larger than what rcheevos reads of
+         * one, and for any file small enough that it does not matter.
+         *
+         * Not asked for an entry of an archive, whose digests are taken in
+         * the pass that copies it out, nor for a playlist's own text.
+         */
+        internal fun digestInScan(consoleId: Int, size: Long): Boolean =
+            size <= DIGEST_SMALL ||
+            (size <= DIGEST_LIMIT && RcConsoles.console(consoleId)?.algorithm in HASHED_WHOLE)
     }
 }

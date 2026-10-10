@@ -137,6 +137,15 @@ a hash rcheevos then gives under a console that is held back
 (`RcConsoles.HELD_BACK`: the PlayStation 3, which it tries an `.iso` as) is a
 failure that is kept, and not a hash.
 
+Beside the hash a scan keeps the MD5 and CRC of the file itself (`rom.fileMd5`,
+`rom.fileCrc32`), and takes them only where they cost no read of their own
+(`ArchiveAwareHasher.digestInScan`): a loose file of at most 1 MiB, one of at
+most 64 MiB whose console rcheevos hashes whole, and an archive's entry, in the
+pass that copies it out. A disc image, a cartridge hashed from its header
+(Nintendo 64, Nintendo DS) and an arcade set leave a scan with both empty, and
+the keys are written all the same. Nothing reads them back: a scraper that
+needs the digests of a file asks `PlainRomHasher`, which reads it then.
+
 A file that stands for a game the library does not hold is a `PLACEHOLDER` and
 never reaches the hasher: an empty file, whatever it is called, or one of at
 most 512 bytes that is nothing but text and is not a `.cue`, `.gdi`, `.m3u`,

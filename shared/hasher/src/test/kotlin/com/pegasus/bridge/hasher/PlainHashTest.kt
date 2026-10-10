@@ -106,6 +106,82 @@ class PlainHashTest {
         assertNotEquals(r.hash, r.fileMd5)
     }
 
+    /** Stands in for rcheevos on a file it makes a hash of without reading: one console, whatever the file. */
+    private class Unread(private val console: Int) : RomHasher {
+        override fun hash(path: String): HashResult = HashResult("RCHEEVOS", console)
+    }
+
+    /** A file of [size] bytes that takes no room on the disk. */
+    private fun sparse(name: String, size: Long): File =
+        File(dir, name).apply { java.io.RandomAccessFile(this, "rw").use { it.setLength(size) } }
+
+    // The rule, by the console a file was hashed as and its size. The MD5
+    // and CRC are a second read of the file, and are taken where the hash
+    // has just read all of it: a console hashed whole, up to the 64 MiB
+    // rcheevos reads of one. A megabyte or less is read whatever it is.
+    @Test
+    fun `the digest is taken in a scan only where the hash has read the whole file`() {
+        val mib = 1024L * 1024
+        fun taken(console: Int, size: Long) = ArchiveAwareHasher.digestInScan(console, size)
+        // Game Boy Advance, hashed whole: up to the limit and not a byte over.
+        assertTrue(taken(5, 64 * mib))
+        assertFalse(taken(5, 64 * mib + 1))
+        // Super Nintendo and Mega Drive: read into memory, or whole with playlists.
+        assertTrue(taken(3, 1))
+        assertTrue(taken(1, 8 * mib))
+        // A disc is hashed from a few of its sectors, whatever its size, and
+        // only a sheet or a stub of one is small enough to be read anyway.
+        assertFalse(taken(12, 700 * mib))
+        assertFalse(taken(12, 2 * mib))
+        assertTrue(taken(12, 300))
+        assertTrue(taken(12, mib))
+        assertFalse(taken(12, mib + 1))
+        // Cartridges with a parser: Nintendo DS, Nintendo 64. And arcade.
+        assertFalse(taken(18, 32 * mib))
+        assertFalse(taken(2, 8 * mib))
+        assertFalse(taken(27, 2 * mib))
+        // No console at all, which is what a hasher that knows none answers.
+        assertFalse(taken(0, 2 * mib))
+        assertTrue(taken(0, mib))
+    }
+
+    // The rule at work, on files with nothing in them so that the size alone
+    // decides: the hasher here reads no byte, and a digest in the answer is
+    // a file that was read for it.
+    @Test
+    fun `a file over the limit is not read again for a digest`() {
+        val mib = 1024L * 1024
+        fun hashed(file: File, platform: String, console: Int): HashResult {
+            val outcome = ArchiveAwareHasher(Unread(console), tempDir).hashDetailed(file.absolutePath, platform)
+            return assertIs<HashOutcome.Ok>(outcome).result
+        }
+
+        val large = hashed(sparse("Large.gba", 64 * mib + 1), "gba", 5)
+        assertEquals(listOf("RCHEEVOS", "", ""), listOf(large.hash, large.fileMd5, large.fileCrc32))
+
+        val neighbour = sparse("Small.gba", 8 * 1024)
+        val small = hashed(neighbour, "gba", 5)
+        assertEquals(md5Of(neighbour), small.fileMd5)
+        assertEquals(8, small.fileCrc32.length)
+
+        // Two megabytes of a cartridge whose hash is made of its header.
+        val parsed = hashed(sparse("Game.nds", 2 * mib), "nds", 18)
+        assertEquals(listOf("RCHEEVOS", "", ""), listOf(parsed.hash, parsed.fileMd5, parsed.fileCrc32))
+        // The same size hashed whole has both.
+        val whole = sparse("Other.gba", 2 * mib)
+        assertEquals(md5Of(whole), hashed(whole, "gba", 5).fileMd5)
+    }
+
+    // The set is not opened: its hash is of its name, and the digests were
+    // the only read there was.
+    @Test
+    fun `an arcade set is hashed by its name and carries no digest`() {
+        val set = zip("mslug.zip", "chip.bin" to "abc".toByteArray())
+        val outcome = ArchiveAwareHasher(Unread(27), tempDir).hashDetailed(set.absolutePath, "arcade")
+        val r = assertIs<HashOutcome.Ok>(outcome).result
+        assertEquals(listOf("RCHEEVOS", "", "", ""), listOf(r.hash, r.fileMd5, r.fileCrc32, r.archiveEntry))
+    }
+
     @Test
     fun `an archive hashes its contents, not the container`() {
         val rom = File(dir, "game.zip")

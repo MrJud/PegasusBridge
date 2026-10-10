@@ -795,6 +795,32 @@ class RomScanPipelineTest {
         assertEquals("lanternkeep|nes", JSONObject(paths.metadata("3001").readText()).getString("cacheKey"))
     }
 
+    // A folder named for one console of the family its collection declares
+    // says which of them its files are first, and takes none of the others
+    // away. An ES-DE library keeps `sega32x` and `segacd` beside `megadrive`,
+    // each a collection that calls itself `megadrive` and lists `md` among
+    // its extensions. A Mega Drive cartridge kept in either was turned away
+    // as a Markdown file, by the row of a folder that knows one console. In
+    // a collection with no Mega Drive in it a `.md` is a readme still.
+    @Test fun `a folder that narrows the console keeps its collection's family`(): Unit = runBlocking {
+        collection("sega32x", "Sega 16-bit and 32X", "megadrive", extensions = "32x, bin, md")
+        collection("segacd", "Sega 16-bit and CD", "megadrive", extensions = "cue, bin, md")
+        collection("gamegear", "Sega 8-bit", "mastersystem")
+        rom("sega32x", "Lantern Keep (USA).md", "hash-lantern")
+        val second = rom("segacd", "Other Game (USA).md", "hash-other")
+        val readme = rom("gamegear", "README.md", "never read")
+
+        val h = CollectionHasher()
+        val s = pipeline(h, AskedOnlyAbout("hash-lantern", "hash-other")).scan(listOf(romRoot.absolutePath))
+
+        assertEquals(setOf("Lantern Keep (USA).md", "Other Game (USA).md"), h.handed.keys)
+        assertEquals(counts(new = 0, cached = 0, skipped = 0, unmatched = 2, incompatible = 0,
+                            hashFailed = 1, failedLookups = 0), s.counts())
+        assertEquals("NOT_FOUND", ledgerEntry(second).getString("state"))
+        assertEquals("UNSUPPORTED_FORMAT" to "a .md file in this collection is not a Mega Drive cartridge",
+                     ledgerEntry(readme).let { it.getString("state") to it.getString("detail") })
+    }
+
     // Such a verdict is reached again on every scan, before the ledger is
     // asked, so one is found standing only for a file the lists have let go
     // of since. Until it runs out the file is counted as it was, with the

@@ -371,12 +371,23 @@ object RcConsoles {
      * when the short name's family has the folder's console, and only then:
      * a folder `neogeo` that declares `ngpc` holds Neo Geo Pocket cartridges,
      * not arcade sets. A short name with no row leaves it to the folder.
+     *
+     * The folder's row is then given the short name's family beside its own.
+     * The folder says which console its files are first, and it takes none
+     * of the others away: a library that keeps `sega32x` and `segacd` beside
+     * `megadrive`, all three declaring `megadrive`, lists `md` for each, and
+     * a Mega Drive cartridge in either folder is one of the collection's
+     * own. By the folder's row as it stands, which knows one console, it
+     * was a stray, and a `.md` was a Markdown file.
      */
     fun resolve(shortName: String?, dirName: String?): Row? {
         val declared = row(shortName)
         val folder = row(dirName)
         if (declared == null) return folder
-        if (declared is Hashable && folder is Hashable && folder.console in declared.family) return folder
+        if (declared is Hashable && folder is Hashable && folder.console in declared.family) {
+            return if (folder.family.containsAll(declared.family)) folder
+                   else folder.copy(family = folder.family + declared.family)
+        }
         return declared
     }
 

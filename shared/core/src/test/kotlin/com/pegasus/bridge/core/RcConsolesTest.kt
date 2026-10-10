@@ -304,6 +304,30 @@ class RcConsolesTest {
         assertEquals(15, console("mastersystem", "gamegear"))
         assertEquals(44, console("adam", "adam"))
 
+        // The folder says which console of the family comes first and takes
+        // none of the others away: a cartridge of the collection's own
+        // console kept in such a folder is still one of the family, and a
+        // `.md` under `sega32x` in a collection that calls itself `megadrive`
+        // is not a stray, still less a Markdown file. Everything else the
+        // folder's row says, it goes on saying.
+        fun family(shortName: String, dirName: String) =
+            (RcConsoles.resolve(shortName, dirName) as RcConsoles.Hashable).family
+        val megadrive = (genesis as RcConsoles.Hashable).family
+        assertEquals(megadrive, family("megadrive", "sega32x"))
+        assertEquals(megadrive, family("megadrive", "segacd"))
+        assertEquals(megadrive, family("megadrive", "mastersystem"))
+        assertEquals(setOf(11, 15, 33), family("mastersystem", "gamegear"))
+        assertEquals(setOf(5, 4, 6), family("gba", "gb"))
+        assertEquals(setOf(8, 76), family("pcengine", "pcenginecd"))
+        val narrowed = RcConsoles.resolve("megadrive", "sega32x") as RcConsoles.Hashable
+        assertEquals(RcConsoles.row("sega32x"), narrowed.copy(family = setOf(10)))
+        assertEquals("sega32x=10 family[1,9,10,11,15,33]", RcConsoles.describe(narrowed))
+        // Where the folder's family already has all of it, the row is the
+        // folder's own, and a folder nobody declared anything for has its own.
+        assertTrue(RcConsoles.resolve("wii", "gc") === RcConsoles.row("gc"))
+        assertTrue(RcConsoles.resolve("whatever", "sega32x") === RcConsoles.row("sega32x"))
+        assertEquals(setOf(10), family("sega32x", "sega32x"))
+
         // A folder outside the family is only a folder's name.
         assertEquals(1, console("megadrive", "snes"))
         assertEquals(1, console("megadrive", "Some Game (Disc 1)"))

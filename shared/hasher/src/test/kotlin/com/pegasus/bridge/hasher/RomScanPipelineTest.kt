@@ -4,9 +4,11 @@ import com.pegasus.bridge.core.BridgeLog
 import com.pegasus.bridge.core.BridgePaths
 import com.pegasus.bridge.core.NoopLog
 import com.pegasus.bridge.core.StderrLog
+import com.sun.net.httpserver.HttpServer
 import kotlinx.coroutines.runBlocking
 import org.json.JSONObject
 import java.io.File
+import java.net.InetSocketAddress
 import java.nio.file.Files
 import java.util.concurrent.atomic.AtomicInteger
 import kotlin.test.AfterTest
@@ -146,43 +148,114 @@ class RomScanPipelineTest {
     // RA's dorequest answers a dump it does not consider playable as is with a
     // virtual id: a Virtual Console Metroid returns 1100001487, game 1487
     // untested, and the Web API has no game under that number. Not a match, so
-    // nothing is written and the count does not include it — but an answer, kept
-    // like a miss. Recorded as API_RETRY, which is never cached, the file was
-    // hashed and asked about again on every scan.
-    @Test fun `a virtual id is kept like a miss, not written and not asked about again`(): Unit = runBlocking {
+    // nothing is written and the count does not include it. But an answer, and
+    // kept as one: recorded as API_RETRY, which is never cached, the file was
+    // hashed and asked about again on every scan. And kept as what it is, under
+    // the game's own id: as a NOT_FOUND under the number as sent, the ledger
+    // said the same of it as of a dump nobody has heard of.
+    //
+    // Through the lookup a scan really has, against a server that answers as
+    // RetroAchievements does, for the two things only that lookup can show: a
+    // virtual id is not asked about a second time, where the game's metadata
+    // is, and it leaves the count of failures where it was. One failure is
+    // made before the scan, so that a count put back to nothing would show.
+    @Test fun `a virtual id is kept as KNOWN_UNSUPPORTED under the real game id`(): Unit = runBlocking {
         val rom = rom("nes", "Metroid (Europe) (Virtual Console).nes", "hash-phantom")
-        val phantom = object : RaHashLookup {
-            val calls = AtomicInteger()
-            override suspend fun lookup(hash: String): LookupOutcome {
-                calls.incrementAndGet()
-                return GameMetadata(gameId = 1100001487).asOutcome()
-            }
+        val requests = java.util.Collections.synchronizedList(mutableListOf<String>())
+        val server = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0)
+        server.createContext("/") { exchange ->
+            requests += exchange.requestURI.path
+            val body = if (requests.size == 1) "<html>not an answer</html>"
+                       else """{"Success":true,"GameID":1100001487}"""
+            val bytes = body.toByteArray()
+            exchange.sendResponseHeaders(200, bytes.size.toLong())
+            exchange.responseBody.use { it.write(bytes) }
+        }
+        server.start()
+        try {
+            val lookup = RaApiHashLookup("someuser", "a-key", "http://127.0.0.1:${server.address.port}")
+            assertTrue(lookup.lookup("hash-of-another-file") is LookupOutcome.Failed)
+            assertEquals(1, lookup.consecutiveFailures)
+
+            val s = pipeline(ContentHasher(), lookup).scan(listOf(romRoot.absolutePath))
+
+            assertEquals(1, s.total)
+            assertEquals(0, s.newEntries, "a dump that is not supported must not count as a new entry")
+            assertEquals(0, s.indexed)
+            assertEquals(0, paths.metadata.listFiles { f -> !f.name.startsWith("_") }!!.size,
+                         "no metadata file should be left on disk for it")
+            assertEquals(mapOf(ScanLedger.State.KNOWN_UNSUPPORTED to 1), s.states)
+            assertEquals(counts(new = 0, cached = 0, skipped = 0, unmatched = 0, incompatible = 1,
+                                hashFailed = 0, failedLookups = 0), s.counts())
+            val entry = JSONObject(File(paths.cache, ScanLedger.FILE_NAME).readText())
+                .getJSONObject("entries").getJSONObject(rom.canonicalPath)
+            assertEquals("KNOWN_UNSUPPORTED", entry.getString("state"))
+            assertEquals(1487, entry.getInt("gameId"), "the game's own id, not the number as it was sent")
+            assertEquals("untested", entry.getString("detail"))
+            assertEquals(listOf("/dorequest.php", "/dorequest.php"), requests.toList(),
+                         "a virtual id must not be asked about as a game is")
+            assertEquals(1, lookup.consecutiveFailures, "an answer that is not a match moved the count of failures")
+
+            val h2 = ContentHasher()
+            val s2 = pipeline(h2, lookup).scan(listOf(romRoot.absolutePath))
+            assertEquals(0, h2.calls.get(), "the file was read again inside the verdict's TTL")
+            assertEquals(2, requests.size, "the source was asked again inside the verdict's TTL")
+            assertEquals(mapOf(ScanLedger.State.KNOWN_UNSUPPORTED to 1), s2.states)
+            assertEquals(counts(new = 0, cached = 0, skipped = 0, unmatched = 0, incompatible = 1,
+                                hashFailed = 0, failedLookups = 0), s2.counts(),
+                         "the verdict found standing was counted as something else")
+        } finally {
+            server.stop(0)
+        }
+    }
+
+    // Each of the three reasons under its own words, which are all the ledger
+    // says of why.
+    @Test fun `the reason a dump is not supported is kept in the source's three words`(): Unit = runBlocking {
+        val files = mapOf(1_000_000_009 to "incompatible", 1_100_000_009 to "untested", 1_200_000_009 to "patch required")
+            .mapKeys { (virtual, _) -> rom("nes", "Dump $virtual.nes", "$virtual") }
+        val answers = object : RaHashLookup {
+            override suspend fun lookup(hash: String) = GameMetadata(gameId = hash.toInt()).asOutcome()
         }
 
-        val s = pipeline(ContentHasher(), phantom).scan(listOf(romRoot.absolutePath))
+        val s = pipeline(ContentHasher(), answers).scan(listOf(romRoot.absolutePath))
 
-        assertEquals(1, s.total)
-        assertEquals(0, s.newEntries, "a titleless id must not count as a new entry")
-        assertEquals(0, s.indexed)
-        assertEquals(0, paths.metadata.listFiles { f -> !f.name.startsWith("_") }!!.size,
-                     "no junk metadata file should be left on disk")
+        assertEquals(3, s.incompatible)
+        val entries = JSONObject(File(paths.cache, ScanLedger.FILE_NAME).readText()).getJSONObject("entries")
+        for ((file, words) in files) {
+            val entry = entries.getJSONObject(file.canonicalPath)
+            assertEquals("KNOWN_UNSUPPORTED", entry.getString("state"), file.name)
+            assertEquals(9, entry.getInt("gameId"), file.name)
+            assertEquals(words, entry.getString("detail"), file.name)
+        }
+    }
+
+    // What a ledger written before KNOWN_UNSUPPORTED was a state holds for such
+    // a dump: a NOT_FOUND under the number as it was sent. It stands for its
+    // fourteen days like any miss, and is not a miss: counted as one, a rescan
+    // would move a file from one count to another with nothing changed.
+    @Test fun `an entry in the old form still counts as incompatible`(): Unit = runBlocking {
+        val f = rom("nes", "Metroid (Europe) (Virtual Console).nes", "hash-phantom")
+        val ledgerFile = File(paths.cache, ScanLedger.FILE_NAME)
+        ScanLedger(ledgerFile).apply {
+            record(f.canonicalPath, ScanLedger.State.NOT_FOUND, f.length(), f.lastModified(),
+                   BridgePaths.epochSeconds(), gameId = 1100001487,
+                   detail = "RetroAchievements knows this dump only by virtual id 1100001487: game 1487, untested")
+            save { file, text -> BridgePaths.writeAtomic(file, text) }
+        }
+
+        val h = ContentHasher(); val l = MapLookup(catalogue)
+        val s = pipeline(h, l).scan(listOf(romRoot.absolutePath))
+
+        assertEquals(counts(new = 0, cached = 0, skipped = 0, unmatched = 0, incompatible = 1,
+                            hashFailed = 0, failedLookups = 0), s.counts())
+        assertEquals(0, h.calls.get(), "the file was read")
+        assertEquals(0, l.calls.get(), "the source was asked")
+        // Counted, and left as it was written.
         assertEquals(mapOf(ScanLedger.State.NOT_FOUND to 1), s.states)
-        assertEquals(0, s.failedLookups, "the source answered")
-        assertEquals(1, s.incompatible)
-        assertEquals(0, s.unmatched, "a dump RetroAchievements holds is not one it has never heard of")
-        val entry = JSONObject(File(paths.cache, ScanLedger.FILE_NAME).readText())
-            .getJSONObject("entries").getJSONObject(rom.canonicalPath)
+        val entry = JSONObject(ledgerFile.readText()).getJSONObject("entries").getJSONObject(f.canonicalPath)
+        assertEquals("NOT_FOUND", entry.getString("state"))
         assertEquals(1100001487, entry.getInt("gameId"))
-        assertEquals("RetroAchievements knows this dump only by virtual id 1100001487: game 1487, untested",
-                     entry.getString("detail"))
-
-        val h2 = ContentHasher()
-        val s2 = pipeline(h2, phantom).scan(listOf(romRoot.absolutePath))
-        assertEquals(0, h2.calls.get(), "the file was read again inside the verdict's TTL")
-        assertEquals(1, phantom.calls.get(), "the source was asked again inside the verdict's TTL")
-        assertEquals(mapOf(ScanLedger.State.NOT_FOUND to 1), s2.states)
-        assertEquals(1, s2.incompatible, "the verdict found standing was counted as something else")
-        assertEquals(0, s2.unmatched)
     }
 
     // A real id with a title of only spaces, which RaApiHashLookup answers as a
@@ -405,7 +478,8 @@ class RomScanPipelineTest {
             return s to seen
         }
         val states = mapOf(
-            ScanLedger.State.MATCHED to 4, ScanLedger.State.NOT_FOUND to 7,
+            ScanLedger.State.MATCHED to 4, ScanLedger.State.NOT_FOUND to 6,
+            ScanLedger.State.KNOWN_UNSUPPORTED to 1,
             ScanLedger.State.HASH_FAILED to 1, ScanLedger.State.AMBIGUOUS_ARCHIVE to 1,
             ScanLedger.State.UNHASHABLE to 1, ScanLedger.State.UNSUPPORTED to 5,
             ScanLedger.State.API_RETRY to 2)

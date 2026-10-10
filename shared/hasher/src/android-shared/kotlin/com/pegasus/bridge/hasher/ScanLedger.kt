@@ -50,7 +50,17 @@ class ScanLedger(private val file: File) {
          * descriptor inside an archive, whose tracks are not extracted. Not a
          * broken file and not a miss: the same answer until the hasher changes.
          */
-        UNHASHABLE;
+        UNHASHABLE,
+        /**
+         * The source knows the dump, as one of a game it names, and does not let
+         * it count as that game: untested, incompatible, or in need of a patch.
+         * An answer, with the game's own id beside it and the reason in the
+         * detail. It was kept as a [NOT_FOUND] under the number the source sent,
+         * above a thousand million, and a reader of the ledger could not tell a
+         * dump the source holds from one it has never heard of without knowing
+         * what such a number means.
+         */
+        KNOWN_UNSUPPORTED;
 
         /**
          * Whether this outcome may be trusted on a later run at all.
@@ -84,6 +94,12 @@ class ScanLedger(private val file: File) {
          * change that answer, and the change that does bumps [ALGORITHM_VERSION],
          * which redoes it at once; the TTL is the backstop for one that did not.
          *
+         * A dump the source knows and does not support keeps for a month as well,
+         * twice as long as a miss. A miss ends when somebody links the hash to a
+         * game, which happens every day. This ends when somebody tests the dump
+         * and the source changes its mind about it, which is rarer, and until
+         * then the answer is the same one.
+         *
          * Meaningless for anything [cacheable] is false for.
          */
         val retryAfterSeconds: Long get() = when (this) {
@@ -92,6 +108,7 @@ class ScanLedger(private val file: File) {
             UNSUPPORTED       -> 90L * 24 * 60 * 60
             AMBIGUOUS_ARCHIVE -> 7L * 24 * 60 * 60
             UNHASHABLE        -> 30L * 24 * 60 * 60
+            KNOWN_UNSUPPORTED -> 30L * 24 * 60 * 60
             HASH_FAILED, API_RETRY -> 0
         }
     }

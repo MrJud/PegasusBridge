@@ -232,6 +232,44 @@ class ScanLedgerTest {
         assertEquals(2, opened.get())
     }
 
+    // ── A dump the source knows and does not support ────────────────────────
+
+    // Kept for thirty days, where a miss is kept for fourteen: at twenty days a
+    // miss is asked about again and this is not.
+    @Test fun `a dump known and not supported stands past a miss's fourteen days, and not past thirty`(): Unit = runBlocking {
+        rom("nes", "Dump.nes", "hash-dump")
+        rom("nes", "Homebrew.nes", "hash-unknown")
+        class Answers : RaHashLookup {
+            val asked: MutableList<String> = java.util.Collections.synchronizedList(mutableListOf())
+            override suspend fun lookup(hash: String): LookupOutcome {
+                asked += hash
+                return GameMetadata(gameId = if (hash == "hash-dump") 1_000_000_321 else 0).asOutcome()
+            }
+        }
+        pipeline(ContentHasher(), Answers()).scan(listOf(romRoot.absolutePath))
+
+        val file = File(paths.cache, ScanLedger.FILE_NAME)
+        fun age(days: Long) {
+            val j = JSONObject(file.readText())
+            val entries = j.getJSONObject("entries")
+            val then = BridgePaths.epochSeconds() - days * 24 * 60 * 60
+            entries.keys().forEach { k -> entries.getJSONObject(k).put("checkedAt", then) }
+            file.writeText(j.toString())
+        }
+
+        age(20)
+        val l2 = Answers()
+        val s2 = pipeline(ContentHasher(), l2).scan(listOf(romRoot.absolutePath))
+        assertEquals(listOf("hash-unknown"), l2.asked.toList())
+        assertEquals(1, s2.incompatible)
+        assertEquals(1, s2.states[ScanLedger.State.KNOWN_UNSUPPORTED])
+
+        age(31)
+        val l3 = Answers()
+        pipeline(ContentHasher(), l3).scan(listOf(romRoot.absolutePath))
+        assertEquals(listOf("hash-dump", "hash-unknown"), l3.asked.sorted())
+    }
+
     // ── Invalidation ────────────────────────────────────────────────────────
 
     @Test fun `a replaced file is asked about again despite a stored verdict`(): Unit = runBlocking {
@@ -368,6 +406,31 @@ class ScanLedgerTest {
         val l2 = SaysNo()
         pipeline(ContentHasher(), l2).scan(listOf(romRoot.absolutePath))
         assertEquals(1, l2.calls.get(), "a ledger from an unknown schema was trusted")
+    }
+
+    // The ledger gains a state now and then, and a ledger outlives the build
+    // that wrote it in both directions: a build put back over a later one
+    // finds entries in a state it has no name for. Such an entry is one file
+    // to ask about again. Taken for a ledger that cannot be read, it would
+    // cost every other verdict in the file, and every miss of the library
+    // would be read and asked about once more.
+    @Test fun `an entry in a state this build has no name for costs that file and no other`(): Unit = runBlocking {
+        val later = rom("nes", "Dump.nes", "hash-dump")
+        rom("nes", "Homebrew.nes", "hash-unknown")
+        pipeline(ContentHasher(), SaysNo()).scan(listOf(romRoot.absolutePath))
+
+        val file = File(paths.cache, ScanLedger.FILE_NAME)
+        val json = JSONObject(file.readText())
+        json.getJSONObject("entries").getJSONObject(later.canonicalPath).put("state", "A_STATE_OF_A_LATER_BUILD")
+        file.writeText(json.toString())
+
+        val h2 = ContentHasher(); val l2 = SaysNo()
+        val s2 = pipeline(h2, l2).scan(listOf(romRoot.absolutePath))
+
+        assertEquals(1, h2.calls.get(), "the file whose state could not be read, and that one alone")
+        assertEquals(1, l2.calls.get(), "the miss beside it was asked about again")
+        assertEquals(mapOf(ScanLedger.State.NOT_FOUND to 2), s2.states)
+        assertEquals("NOT_FOUND", ledgerEntry(later)!!.getString("state"), "what this build made of the file")
     }
 
     // A cache hit already means the file matched; the ledger must agree rather

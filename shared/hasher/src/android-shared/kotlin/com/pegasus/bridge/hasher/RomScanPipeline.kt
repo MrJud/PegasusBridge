@@ -137,7 +137,8 @@ class RomScanPipeline(
         /**
          * The source holds the dump only under a [VirtualGameId], as one it does
          * not consider playable as it is. An answer and not a match, whether given
-         * now or still standing.
+         * now or still standing: a verdict of KNOWN_UNSUPPORTED, or one written
+         * before there was such a state, a NOT_FOUND under the virtual id.
          */
         val incompatible: Int = 0,
         /**
@@ -348,8 +349,13 @@ class RomScanPipeline(
                         // These went into none of the counts, and on a second scan of
                         // a library of misses every one of them was 0.
                         verdict != null -> when (verdict) {
+                            // A virtual id beside a miss is how a dump the source does
+                            // not support was written before it had a state of its own.
+                            // Such an entry stands until its fourteen days are over, and
+                            // is counted meanwhile as what it was.
                             ScanLedger.State.NOT_FOUND ->
                                 if (r.virtualId) incompatible++ else unmatched++
+                            ScanLedger.State.KNOWN_UNSUPPORTED -> incompatible++
                             ScanLedger.State.UNSUPPORTED -> skipped++
                             ScanLedger.State.HASH_FAILED,
                             ScanLedger.State.UNHASHABLE,
@@ -384,19 +390,23 @@ class RomScanPipeline(
                             // as it is: a Virtual Console Metroid comes back as 1100001487,
                             // game 1487 untested. Not a match — the Web API has no game under
                             // that number, and writing one produced a junk metadata file the
-                            // index discarded — but an answer all the same, and kept like a
-                            // miss. As API_RETRY, which is never cached, the file was read in
+                            // index discarded — but an answer all the same, and kept as one.
+                            // As API_RETRY, which is never cached, the file was read in
                             // full and asked about again on every scan: 65 files and 130
                             // requests a scan in one library, reported as a source that did
                             // not answer.
+                            //
+                            // Under the game's own id, 1487, with the reason beside it. It
+                            // was kept as a miss under the number as sent, and whoever read
+                            // the ledger had to know the bases to learn which game the dump
+                            // is of. No metadata file even so: that would say the game is
+                            // in the library, and this dump earns nothing for it.
                             is LookupOutcome.IdOnly -> {
                                 incompatible++
-                                ledger.record(canonical(job.file), ScanLedger.State.NOT_FOUND,
+                                ledger.record(canonical(job.file), ScanLedger.State.KNOWN_UNSUPPORTED,
                                               job.fileSize, job.lastModified, now,
-                                              gameId = outcome.virtualId,
-                                              detail = "RetroAchievements knows this dump only by virtual " +
-                                                       "id ${outcome.virtualId}: " +
-                                                       VirtualGameId.describe(outcome.virtualId))
+                                              gameId = outcome.gameId,
+                                              detail = outcome.reason.words)
                             }
                             is LookupOutcome.Match -> {
                                 writeMetadata(job, outcome.game); newEntries++
@@ -763,7 +773,10 @@ class RomScanPipeline(
          * counts it, which takes knowing what the verdict was.
          */
         val preRecorded: ScanLedger.State? = null,
-        /** Beside a NOT_FOUND found standing: it was a virtual id, not a miss. */
+        /**
+         * Beside a NOT_FOUND found standing: it was a virtual id, not a miss.
+         * Only an entry written before KNOWN_UNSUPPORTED was a state is one.
+         */
         val virtualId: Boolean = false
     )
     private data class CachedMeta(val hash: String, val fileMd5: String,

@@ -58,8 +58,14 @@ sealed interface LookupOutcome {
      */
     data class Failed(val cause: Cause, val detail: String = "") : LookupOutcome
 
-    /** Why a dump RetroAchievements knows is not one it lets count: the three bases of [VirtualGameId]. */
-    enum class Compatibility { INCOMPATIBLE, UNTESTED, PATCH_REQUIRED }
+    /**
+     * Why a dump RetroAchievements knows is not one it lets count: the three
+     * bases of [VirtualGameId]. [words] says it for a person, and is what the
+     * ledger keeps as the reason.
+     */
+    enum class Compatibility(val words: String) {
+        INCOMPATIBLE("incompatible"), UNTESTED("untested"), PATCH_REQUIRED("patch required")
+    }
 
     /** What kind of failure a [Failed] was. */
     enum class Cause {

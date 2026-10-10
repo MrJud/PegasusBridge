@@ -1147,9 +1147,11 @@ class ThemeContractTest {
         assertEquals(always, entry(missed).keySet())
         assertEquals("NOT_FOUND", entry(missed).getString("state"))
 
+        // Under the game's own id, with the reason: the source sent 1100001487.
         assertEquals(always + "gameId" + "detail", entry(virtual).keySet())
-        assertEquals("NOT_FOUND", entry(virtual).getString("state"))
-        assertEquals(1100001487, entry(virtual).getInt("gameId"))
+        assertEquals("KNOWN_UNSUPPORTED", entry(virtual).getString("state"))
+        assertEquals(1487, entry(virtual).getInt("gameId"))
+        assertEquals("untested", entry(virtual).getString("detail"))
 
         assertEquals(always + "detail", entry(unsupported).keySet())
         assertEquals("UNSUPPORTED", entry(unsupported).getString("state"))

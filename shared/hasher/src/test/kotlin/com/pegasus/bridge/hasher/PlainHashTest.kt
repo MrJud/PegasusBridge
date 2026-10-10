@@ -692,6 +692,31 @@ class PlainHashTest {
         assertEquals(0, native.calls)
     }
 
+    // A folder can be called as a ROM is, and a caller that is not a scan
+    // can hand one over. rcheevos opens a folder as it opens a file, and
+    // for a console that hashes the whole file it gave the MD5 of a buffer
+    // nothing had been read into, another one each time. Neither a folder
+    // nor a file that is not there is handed on, whatever the collection:
+    // an arcade set, which is hashed by its name and never opened, would be
+    // the one to get through.
+    @Test
+    fun `a folder under a ROM's name, or a file that is not there, is never handed on`() {
+        val native = FixedHasher()
+        val hasher = ArchiveAwareHasher(native, tempDir)
+        val folders = listOf("Folder (World).gb", "folderset.zip").map { name ->
+            File(dir, name).apply { mkdirs(); resolve("inside.gb").writeText("abc") }
+        }
+        val absent = listOf(File(dir, "Absent (World).gb"), File(dir, "absentset.zip"))
+        val wrong = (folders + absent).flatMap { file ->
+            listOf("gb", "arcade", "").mapNotNull { platform ->
+                val outcome = hasher.hashDetailed(file.absolutePath, platform)
+                if (outcome == HashOutcome.Failed("no such file")) null else "$platform/${file.name}: $outcome"
+            }
+        }
+        assertEquals(emptyList(), wrong)
+        assertEquals(0, native.calls)
+    }
+
     @Test
     fun `no result means no hashes`() {
         val hasher = ArchiveAwareHasher(FixedHasher(), tempDir)

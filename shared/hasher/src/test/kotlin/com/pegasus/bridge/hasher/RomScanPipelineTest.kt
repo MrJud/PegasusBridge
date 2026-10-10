@@ -19,6 +19,15 @@ import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
+private const val NUL = "\u0000"
+
+/**
+ * What a test writes for a ROM: the text its hasher answers with, and a NUL
+ * after it. A small file of nothing but text is a placeholder, which a scan
+ * neither hashes nor asks about, and a ROM is never only text.
+ */
+private fun romText(content: String): String = content + NUL
+
 class RomScanPipelineTest {
 
     private lateinit var dataRoot: File
@@ -39,7 +48,7 @@ class RomScanPipelineTest {
             calls.incrementAndGet()
             val f = File(path)
             if (!f.exists()) return null
-            val text = f.readText().trim()
+            val text = f.readText().removeSuffix(NUL).trim()
             if (text == "UNHASHABLE") return null
             return HashResult(text, 7, fileMd5 = "md5-$text", fileCrc32 = "crc-$text")
         }
@@ -67,7 +76,7 @@ class RomScanPipelineTest {
 
     private fun rom(platform: String, name: String, content: String): File {
         val dir = File(romRoot, platform).apply { mkdirs() }
-        return File(dir, name).apply { writeText(content) }
+        return File(dir, name).apply { writeText(romText(content)) }
     }
 
     private val catalogue = mapOf(
@@ -375,7 +384,7 @@ class RomScanPipelineTest {
         val f = rom("nes", "Game.nes", "hash-smb")
         pipeline(ContentHasher(), MapLookup(catalogue)).scan(listOf(romRoot.absolutePath))
 
-        f.writeText("hash-ctra")
+        f.writeText(romText("hash-ctra"))
         f.setLastModified(f.lastModified() + 10_000)
 
         val h2 = ContentHasher()
@@ -918,7 +927,7 @@ class RomScanPipelineTest {
             override fun hash(path: String): HashResult? = null
             override fun hashForConsole(path: String, consoleId: Int): HashOutcome {
                 read += File(path).parentFile.name + "/" + File(path).name + " as " + consoleId
-                return HashOutcome.Failed(File(path).readText())
+                return HashOutcome.Failed(File(path).readText().removeSuffix(NUL))
             }
         }
         val refused = rom("nes", "Cut Short (World).nes", "File is not longer than a NES or FDS header (16 bytes)")
@@ -952,6 +961,208 @@ class RomScanPipelineTest {
             assertEquals(states, s2.states)
             assertEquals(listOf("nes/Locked (World).nes as 7", "somewhere/Cut Short (World).nes as 0"),
                          h2.read.sorted(), "the files read again")
+        } finally {
+            tmp.deleteRecursively()
+        }
+    }
+
+    // ── Placeholders ────────────────────────────────────────────────────────
+
+    /**
+     * A file that stands for a game the library does not hold: [text] and
+     * nothing after it, as the stubs found on a tablet are written, or no
+     * byte at all for an empty [text].
+     */
+    private fun stub(platform: String, name: String,
+                     text: String = "Placeholder for ${name.substringBeforeLast('.')} on $platform"): File {
+        val dir = File(romRoot, platform).apply { mkdirs() }
+        return File(dir, name).apply { writeText(text) }
+    }
+
+    // A library that lists more games than it holds keeps a file for each of
+    // the others, so that the frontend shows them: a sentence under the
+    // game's name, or a file with nothing in it. Each sentence was hashed
+    // as a cartridge and asked about, sixty requests for sixty answers of
+    // no, and asked about again a fortnight later; each empty file was
+    // read at every scan. A scan of nothing but such files now hands the
+    // hasher nothing and asks nothing, and says at its end that it skipped
+    // them, as it says of a platform nobody covers.
+    @Test fun `a collection of stubs costs no hash and no request`(): Unit = runBlocking {
+        // A sentence is a placeholder under any name a ROM has, an
+        // archive's included: in a collection of arcade sets that is a
+        // file hashed by its name alone, which nothing else would stop.
+        val folders = listOf("gbc" to "gbc", "gamegear" to "gg", "megadrive" to "md", "sega32x" to "32x",
+                             "genesis" to "bin", "nes" to "zip", "arcade" to "zip")
+        val stubs = (0 until 60).map { n ->
+            val (folder, extension) = folders[n % folders.size]
+            stub(folder, "Invented Game $n.$extension")
+        }
+        // An empty file is one before its format is looked at: the third
+        // is of a format nobody reads, and is a placeholder all the same.
+        val empty = listOf(stub("nes", "Nothing Yet.nes", ""), stub("arcade", "nothingyet.zip", ""),
+                           stub("psp", "Nothing Yet.cso", ""))
+        val expected = counts(new = 0, cached = 0, skipped = 63, unmatched = 0, incompatible = 0,
+                              hashFailed = 0, failedLookups = 0)
+        val states = mapOf(ScanLedger.State.PLACEHOLDER to 63)
+        fun sentence(s: RomScanPipeline.Summary) = ScanJobRecord.finished("job1", s, "someone", 1).getString("message")
+
+        val h = CollectionHasher()
+        val s = pipeline(h, NeverAsked()).scan(listOf(romRoot.absolutePath))
+
+        assertEquals(63, s.total)
+        assertEquals(expected, s.counts())
+        assertEquals(states, s.states)
+        assertEquals(emptySet(), h.handed.keys, "the files the hasher was handed")
+        assertEquals(0, h.inner.calls.get())
+        assertEquals("Done — 0 new, 0 cached, 63 skipped, 0 not in the database", sentence(s))
+        for (f in stubs) {
+            assertEquals("PLACEHOLDER" to "text file, ${f.length()} bytes: not a ROM image",
+                         ledgerEntry(f).let { it.getString("state") to it.getString("detail") }, f.path)
+        }
+        for (f in empty) {
+            assertEquals("PLACEHOLDER" to "empty file",
+                         ledgerEntry(f).let { it.getString("state") to it.getString("detail") }, f.path)
+        }
+
+        // A rescan finds every one standing. The first stub is made to show
+        // that it is the verdict kept that answers for a file: other bytes,
+        // as many, under the same date. A scan that went by the bytes again
+        // would find no text in them and hand the file on.
+        val unread = stubs.first()
+        val date = unread.lastModified()
+        unread.writeBytes(ByteArray(unread.length().toInt()))
+        unread.setLastModified(date)
+
+        val h2 = CollectionHasher()
+        val s2 = pipeline(h2, NeverAsked()).scan(listOf(romRoot.absolutePath))
+
+        assertEquals(expected, s2.counts())
+        assertEquals(states, s2.states)
+        assertEquals(emptySet(), h2.handed.keys, "the files the hasher was handed on the rescan")
+        assertEquals("Done — 0 new, 0 cached, 63 skipped, 0 not in the database", sentence(s2))
+
+        // And the game, when it comes to take a placeholder's place, is
+        // another file by its size: read, asked about and found.
+        val arrived = stubs[1].apply { writeText(romText("hash-smb")) }
+
+        val h3 = CollectionHasher()
+        val s3 = pipeline(h3, MapLookup(catalogue)).scan(listOf(romRoot.absolutePath))
+
+        assertEquals(setOf(arrived.name), h3.handed.keys)
+        assertEquals(expected + mapOf("newEntries" to 1, "skippedPlatforms" to 62), s3.counts())
+        assertEquals("MATCHED", ledgerEntry(arrived).getString("state"))
+    }
+
+    // What a library scanned by a build before this one meets. Its stubs
+    // were hashed and asked about, and each is in the ledger as a miss. A
+    // verdict that stands is taken before a file is opened, which is what
+    // spares a rescan a read of every small file there is, a placeholder
+    // among them; so such a stub is a miss still for what is left of its
+    // fortnight, at no cost. Once that has run out it is opened, once, and
+    // is a placeholder from then on, where the older build read it and
+    // asked again.
+    @Test fun `a stub an earlier build kept as a miss becomes a placeholder when the miss runs out`(): Unit = runBlocking {
+        val recent = stub("gbc", "Asked Lately.gbc")
+        val old = stub("gbc", "Asked Long Ago.gbc")
+        val day = 24L * 60 * 60
+        ScanLedger(File(paths.cache, ScanLedger.FILE_NAME)).apply {
+            record(recent.canonicalPath, ScanLedger.State.NOT_FOUND, recent.length(), recent.lastModified(),
+                   BridgePaths.epochSeconds() - 13 * day)
+            record(old.canonicalPath, ScanLedger.State.NOT_FOUND, old.length(), old.lastModified(),
+                   BridgePaths.epochSeconds() - 15 * day)
+            save { file, text -> BridgePaths.writeAtomic(file, text) }
+        }
+
+        val h = CollectionHasher()
+        val s = pipeline(h, NeverAsked()).scan(listOf(romRoot.absolutePath))
+
+        assertEquals(counts(new = 0, cached = 0, skipped = 1, unmatched = 1, incompatible = 0,
+                            hashFailed = 0, failedLookups = 0), s.counts())
+        assertEquals(listOf("NOT_FOUND", "PLACEHOLDER"),
+                     listOf(recent, old).map { ledgerEntry(it).getString("state") })
+        assertEquals(emptySet(), h.handed.keys, "the files the hasher was handed")
+    }
+
+    // What is not text is no placeholder however small it is, and what is
+    // text and long is none either: both go to the hasher as they did. So
+    // does text under a name that is text by rights, a playlist here, which
+    // is read as one. And a sentence called `.cso` stays a file of a format
+    // nobody reads: that was known from its name, before the file was opened
+    // to see that it is a sentence. So was the collection nobody can hash
+    // for, ahead of everything: an empty file and a sentence under `switch`
+    // are files of that platform, with its reason, as every other is.
+    //
+    // The longest text there can be is among them, 512 bytes, to hold the
+    // scan to the rule's own limit: the scan opens only a file small enough
+    // to be a stub, and one byte more is hashed.
+    @Test fun `only an empty file or a short text is taken for a placeholder`(): Unit = runBlocking {
+        val small = rom("nes", "Small (World).nes", "hash-smb")
+        val longest = stub("nes", "As Long As It Gets (World).nes", "x".repeat(512))
+        val long = stub("nes", "Long (World).nes", "hash-ctra".padEnd(513))
+        val playlist = stub("psx", "Lantern Keep (USA).m3u", "Lantern Keep (USA).cue\n")
+        val packed = stub("psp", "Not Here Yet.cso")
+        val uncovered = listOf(stub("switch", "Nothing Yet.nes", ""), stub("switch", "Not Here Yet.nes"))
+        val tmp = Files.createTempDirectory("hasher-tmp").toFile()
+        try {
+            val h = ContentHasher()
+            val s = RomScanPipeline(paths, ArchiveAwareHasher(h, tmp), MapLookup(catalogue), throttleMs = { 0L })
+                .scan(listOf(romRoot.absolutePath))
+
+            assertEquals(counts(new = 2, cached = 0, skipped = 3, unmatched = 0, incompatible = 0,
+                                hashFailed = 2, failedLookups = 0), s.counts())
+            assertEquals(listOf("MATCHED", "PLACEHOLDER", "MATCHED", "HASH_FAILED", "UNSUPPORTED_FORMAT"),
+                         listOf(small, longest, long, playlist, packed).map { ledgerEntry(it).getString("state") })
+            assertEquals("text file, 512 bytes: not a ROM image", ledgerEntry(longest).getString("detail"))
+            assertEquals("the playlist names Lantern Keep (USA).cue, which is not there",
+                         ledgerEntry(playlist).getString("detail"))
+            assertEquals(".cso is a format rcheevos does not read", ledgerEntry(packed).getString("detail"))
+            for (f in uncovered) {
+                assertEquals("UNSUPPORTED" to "RetroAchievements has no console for switch",
+                             ledgerEntry(f).let { it.getString("state") to it.getString("detail") }, f.name)
+            }
+            assertEquals(2, h.calls.get())
+        } finally {
+            tmp.deleteRecursively()
+        }
+    }
+
+    // A size of no bytes is also what the system answers for a file that
+    // is not there. A file the walk found can be gone when its turn comes:
+    // a card taken out, a folder moved while a long scan runs. Taken for
+    // an empty file, each was written down as a placeholder and counted
+    // with the files skipped, and a library that had gone away in the
+    // middle of a scan ended it with nothing to say but that. It is asked
+    // whether it is a file before it is called an empty one, and what is
+    // not goes on to the hasher, which says that it is not there: a
+    // failure, tried again at the next scan.
+    //
+    // One file is hashed at a time here, and the roots are walked in the
+    // order given, so the second file is still waiting when the first is
+    // hashed and takes it away.
+    @Test fun `a file gone since the walk is not taken for an empty one`(): Unit = runBlocking {
+        val here = File(romRoot, "held/nes").apply { mkdirs() }.resolve("Here (World).nes")
+            .apply { writeText(romText("hash-smb")) }
+        val gone = File(romRoot, "taken/nes").apply { mkdirs() }.resolve("Gone (World).nes")
+            .apply { writeText(romText("hash-ctra")) }
+        val takesAway = object : RomHasher {
+            override fun hash(path: String): HashResult? {
+                gone.delete()
+                val text = File(path).readText().removeSuffix(NUL)
+                return HashResult(text, 7, fileMd5 = "md5-$text", fileCrc32 = "crc-$text")
+            }
+        }
+        val tmp = Files.createTempDirectory("hasher-tmp").toFile()
+        try {
+            val s = RomScanPipeline(paths, ArchiveAwareHasher(takesAway, tmp), MapLookup(catalogue),
+                                    throttleMs = { 0L }, hashWorkers = 1)
+                .scan(listOf(here.parentFile.parent, gone.parentFile.parent))
+
+            assertFalse(gone.exists())
+            assertEquals(mapOf(ScanLedger.State.MATCHED to 1, ScanLedger.State.HASH_FAILED to 1), s.states)
+            assertEquals(counts(new = 1, cached = 0, skipped = 0, unmatched = 0, incompatible = 0,
+                                hashFailed = 1, failedLookups = 0), s.counts())
+            assertEquals("HASH_FAILED" to "no such file",
+                         ledgerEntry(gone).let { it.getString("state") to it.getString("detail") })
         } finally {
             tmp.deleteRecursively()
         }
@@ -1010,7 +1221,8 @@ class RomScanPipelineTest {
      * platform RetroAchievements does not cover, and two lookups that brought
      * nothing usable back (one unanswered, one a real id with no title). And
      * a fourth file that gives no hash, added when it became an answer of its
-     * own: a zip with no ROM in it.
+     * own: a zip with no ROM in it. And three placeholders, two sentences and
+     * an empty file, which are skipped as the five are.
      *
      * Scanned twice. The first scan asks about every hash. The second finds the
      * matches in their metadata and the verdicts in the ledger, and has to put
@@ -1030,6 +1242,9 @@ class RomScanPipelineTest {
         zip("psx", "Disc.zip", "Disc.ccd" to "[CloneCD]", "Disc.img" to "x".repeat(4096))
         zip("nes", "Patch.zip", "Patch.ips" to "x".repeat(64), "readme.txt" to "x")
         repeat(5) { rom("switch", "Game $it.nes", "hash-switch-$it") }
+        stub("nes", "Not Here Yet (World).nes")
+        stub("nes", "Nor This (World).zip")
+        stub("nes", "Nothing (World).nes", "")
         rom("nes", "Silent.nes", "hash-silent")
         rom("nes", "Untitled.nes", "hash-untitled")
         val tmp = Files.createTempDirectory("hasher-tmp").toFile()
@@ -1045,14 +1260,15 @@ class RomScanPipelineTest {
             ScanLedger.State.KNOWN_UNSUPPORTED to 1,
             ScanLedger.State.HASH_FAILED to 1, ScanLedger.State.AMBIGUOUS_ARCHIVE to 1,
             ScanLedger.State.UNHASHABLE to 1, ScanLedger.State.NO_PLAYABLE_ENTRY to 1,
-            ScanLedger.State.UNSUPPORTED to 5, ScanLedger.State.API_RETRY to 2)
+            ScanLedger.State.UNSUPPORTED to 5, ScanLedger.State.PLACEHOLDER to 3,
+            ScanLedger.State.API_RETRY to 2)
 
         val l1 = MixedLookup()
         val (s1, seen1) = scan(ContentHasher(), l1)
 
-        assertEquals(22, s1.total)
-        assertEquals(22, s1.processed)
-        assertEquals(counts(new = 4, cached = 0, skipped = 5, unmatched = 6, incompatible = 1,
+        assertEquals(25, s1.total)
+        assertEquals(25, s1.processed)
+        assertEquals(counts(new = 4, cached = 0, skipped = 8, unmatched = 6, incompatible = 1,
                             hashFailed = 4, failedLookups = 2), s1.counts())
         assertEquals(states, s1.states)
         assertEquals(13, l1.asked.size, "asked: ${l1.asked}")
@@ -1060,17 +1276,17 @@ class RomScanPipelineTest {
         val h2 = ContentHasher(); val l2 = MixedLookup()
         val (s2, seen2) = scan(h2, l2)
 
-        assertEquals(22, s2.processed)
-        assertEquals(counts(new = 0, cached = 4, skipped = 5, unmatched = 6, incompatible = 1,
+        assertEquals(25, s2.processed)
+        assertEquals(counts(new = 0, cached = 4, skipped = 8, unmatched = 6, incompatible = 1,
                             hashFailed = 4, failedLookups = 2), s2.counts())
         assertEquals(states, s2.states)
         assertEquals(listOf("hash-silent", "hash-untitled"), l2.asked.sorted(),
                      "a file whose verdict was standing was asked about again")
         assertEquals(3, h2.calls.get(), "only the unreadable file and the two retries are read again")
 
-        // With 22 files there is a report for every one of them.
+        // With 25 files there is a report for every one of them.
         for ((s, seen) in listOf(s1 to seen1, s2 to seen2)) {
-            assertEquals((1..22).toList(), seen.map { it.processed })
+            assertEquals((1..25).toList(), seen.map { it.processed })
             for (p in seen) assertEquals(p.processed, p.counts().values.sum(), "at ${p.processed}: ${p.counts()}")
             assertEquals(s.counts(), seen.last().counts(), "the last report and the summary disagree")
         }

@@ -1,5 +1,10 @@
 package com.pegasus.bridge.hasher
 
+import com.pegasus.bridge.core.BridgeLog
+import com.pegasus.bridge.core.BridgePaths
+import com.pegasus.bridge.core.NoopLog
+import kotlinx.coroutines.runBlocking
+import org.json.JSONObject
 import org.junit.jupiter.api.Assumptions.assumeTrue
 import java.io.File
 import java.io.RandomAccessFile
@@ -10,6 +15,7 @@ import java.nio.file.Files
 import java.security.MessageDigest
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicInteger
 import java.util.zip.ZipEntry
 import java.util.zip.ZipOutputStream
 import kotlin.concurrent.thread
@@ -371,6 +377,49 @@ class NativeConsoleHashTest {
                      settled.hashDetailed(short.path, "nes"), "loose, and not to be tried again")
         assertEquals(HashOutcome.Failed("the hasher could not read '${short.name}': not a cartridge", retryable = false),
                      settled.hashDetailed(archive.path, "nes"), "out of a zip, and not to be tried again")
+    }
+
+    // The same through a whole scan, with the library a daemon loads. Six
+    // bytes are few enough to be a placeholder and are not one: two of them
+    // are bytes no text has, so the file goes on to rcheevos, which refuses
+    // it. Under `nes` the console has spoken and the refusal is kept; in a
+    // folder nothing is known of it is a failure to try again. Either way
+    // there is no hash, and so nothing to ask about. Before the library said
+    // no to a file no longer than its header, this one was the MD5 of no
+    // bytes, asked about as a game.
+    @Test
+    fun `a truncated NES file gives no hash and no request`(): Unit = runBlocking {
+        val cut = byteArrayOf(0x4E, 0x45, 0x53, 0x1A, 0x01, 0x01)
+        val roms = File(dir, "roms")
+        val known = File(roms, "nes/Cut Short (World).nes").apply { parentFile.mkdirs(); writeBytes(cut) }
+        val unknown = File(roms, "somewhere/Cut Short (World).nes").apply { parentFile.mkdirs(); writeBytes(cut) }
+        val paths = BridgePaths(File(dir, "data"))
+        val asked = AtomicInteger()
+        val lookup = object : RaHashLookup {
+            override suspend fun lookup(hash: String): LookupOutcome {
+                asked.incrementAndGet()
+                return LookupOutcome.NotFound
+            }
+        }
+        val log = BridgeLog.current
+        BridgeLog.current = NoopLog
+        try {
+            val s = RomScanPipeline(paths, ArchiveAwareHasher(native, File(dir, "tmp")), lookup, throttleMs = { 0L })
+                .scan(listOf(roms.absolutePath))
+
+            assertEquals(2, s.total)
+            assertEquals(mapOf(ScanLedger.State.UNHASHABLE to 1, ScanLedger.State.HASH_FAILED to 1), s.states)
+            assertEquals(2, s.hashFailed)
+            assertEquals(0, asked.get(), "the source was asked")
+            val entries = JSONObject(File(paths.cache, ScanLedger.FILE_NAME).readText()).getJSONObject("entries")
+            val reason = "the hasher could not read Cut Short (World).nes: " +
+                         "File is not longer than a NES or FDS header (16 bytes)"
+            fun kept(f: File) = entries.getJSONObject(f.canonicalPath)
+                .let { it.getString("state") to it.getString("detail") }
+            assertEquals(listOf("UNHASHABLE" to reason, "HASH_FAILED" to reason), listOf(kept(known), kept(unknown)))
+        } finally {
+            BridgeLog.current = log
+        }
     }
 
     // ------------------------------------------- the collection's console

@@ -25,6 +25,15 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
+private const val NUL = "\u0000"
+
+/**
+ * What a test writes for a ROM: the text its hasher answers with, and a NUL
+ * after it. A small file of nothing but text is a placeholder, which a scan
+ * neither hashes nor asks about, and a ROM is never only text.
+ */
+private fun romText(content: String): String = content + NUL
+
 class BridgeRouterTest {
 
     private lateinit var dataRoot: File
@@ -37,7 +46,7 @@ class BridgeRouterTest {
         .connectTimeout(5, TimeUnit.SECONDS).readTimeout(30, TimeUnit.SECONDS).build()
 
     private class FixedHasher : RomHasher {
-        override fun hash(path: String) = HashResult(File(path).readText().trim(), 7)
+        override fun hash(path: String) = HashResult(File(path).readText().removeSuffix(NUL).trim(), 7)
     }
     private class FixedLookup : RaHashLookup {
         override suspend fun lookup(hash: String) =
@@ -384,8 +393,8 @@ class BridgeRouterTest {
 
     @Test fun `scan starts a job and the job reports completion with a summary`() {
         File(romRoot, "nes").mkdirs()
-        File(romRoot, "nes/Super Mario Bros. (World).nes").writeText("hash-smb")
-        File(romRoot, "nes/Unknown.nes").writeText("hash-nope")
+        File(romRoot, "nes/Super Mario Bros. (World).nes").writeText(romText("hash-smb"))
+        File(romRoot, "nes/Unknown.nes").writeText(romText("hash-nope"))
 
         val jobId = get("/scan?roots=" + romRoot.absolutePath).use { r ->
             val j = JSONObject(r.body!!.string())
@@ -418,9 +427,9 @@ class BridgeRouterTest {
         File(romRoot, "psx/Super Mario Bros. (World)").mkdirs()
         File(romRoot, "psx/metadata.pegasus.txt").writeText(
             "collection: PlayStation\nshortname: psx\nextensions: cue, jud\n")
-        File(romRoot, "psx/Super Mario Bros. (World)/Super Mario Bros. (World).jud").writeText("hash-smb")
+        File(romRoot, "psx/Super Mario Bros. (World)/Super Mario Bros. (World).jud").writeText(romText("hash-smb"))
         File(romRoot, "nes").mkdirs()
-        File(romRoot, "nes/Undeclared.jud").writeText("hash-nope")
+        File(romRoot, "nes/Undeclared.jud").writeText(romText("hash-nope"))
 
         val asDaemon = BridgeRouter(paths, config, JobRegistry(paths), scanPipeline = {
             BridgeDaemon.buildScanPipeline(paths, FixedHasher(), FixedLookup(), RomScanPipeline.DEFAULT_HASH_WORKERS)
@@ -452,7 +461,7 @@ class BridgeRouterTest {
     // that is still running. The daemon has to adopt it rather than mint its own.
     @Test fun `scan adopts a client-supplied job id`() {
         File(romRoot, "nes").mkdirs()
-        File(romRoot, "nes/Game.nes").writeText("hash-smb")
+        File(romRoot, "nes/Game.nes").writeText(romText("hash-smb"))
 
         val id = get("/scan?jobId=my_own_id&roots=" + romRoot.absolutePath)
             .use { JSONObject(it.body!!.string()).getString("jobId") }
@@ -462,7 +471,7 @@ class BridgeRouterTest {
 
     @Test fun `a job id that could escape the directory is refused`() {
         File(romRoot, "nes").mkdirs()
-        File(romRoot, "nes/Game.nes").writeText("hash-smb")
+        File(romRoot, "nes/Game.nes").writeText(romText("hash-smb"))
 
         val id = get("/scan?jobId=../../etc/passwd&roots=" + romRoot.absolutePath)
             .use { JSONObject(it.body!!.string()).getString("jobId") }
@@ -474,7 +483,7 @@ class BridgeRouterTest {
     // to be published while the job runs, not only in the final result.
     @Test fun `scan publishes running counters, not just the final result`() {
         File(romRoot, "nes").mkdirs()
-        repeat(6) { File(romRoot, "nes/Game$it.nes").writeText("hash-smb") }
+        repeat(6) { File(romRoot, "nes/Game$it.nes").writeText(romText("hash-smb")) }
 
         get("/scan?jobId=counter_job&roots=" + romRoot.absolutePath).use { it.body!!.string() }
 
@@ -501,7 +510,7 @@ class BridgeRouterTest {
     // A file-polling client must never see the done marker before the result.
     @Test fun `a finished job leaves a non-empty done marker and no pending file`() {
         File(romRoot, "nes").mkdirs()
-        File(romRoot, "nes/Game.nes").writeText("hash-smb")
+        File(romRoot, "nes/Game.nes").writeText(romText("hash-smb"))
 
         val jobId = get("/scan?roots=" + romRoot.absolutePath)
             .use { JSONObject(it.body!!.string()).getString("jobId") }

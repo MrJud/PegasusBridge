@@ -124,6 +124,15 @@ the game, and is never hashed as the file it is: one with no game in it is
 `NO_PLAYABLE_ENTRY`. A playlist is hashed as the first file it names. Only in a
 collection nothing is known of is the console still left to the extension.
 
+A file that stands for a game the library does not hold is a `PLACEHOLDER` and
+never reaches the hasher: an empty file, whatever it is called, or one of at
+most 512 bytes that is nothing but text and is not a `.cue`, `.gdi`, `.m3u`,
+`.ccd`, `.toc` or `.hex` (`PlaceholderRule`). It is not asked about, it is
+counted with the platforms skipped, and the verdict stands for as long as the
+file's size and date do. What a file's collection or its name already says of
+it is said first: in a collection nobody can hash for it is `UNSUPPORTED` as
+every file there is, and a sentence called `.cso` is `UNSUPPORTED_FORMAT`.
+
 A disc in an archive is a `.cue` or a `.gdi` and the tracks it names, and
 rcheevos opens the tracks from beside the sheet. `DescriptorSet` reads the names
 out of the sheet and finds each among the archive's entries; the sheet and its

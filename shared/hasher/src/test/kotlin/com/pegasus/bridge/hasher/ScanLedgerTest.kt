@@ -18,6 +18,15 @@ import kotlin.test.assertEquals
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
+private const val NUL = "\u0000"
+
+/**
+ * What a test writes for a ROM: the text its hasher answers with, and a NUL
+ * after it. A small file of nothing but text is a placeholder, which a scan
+ * neither hashes nor asks about, and a ROM is never only text.
+ */
+private fun romText(content: String): String = content + NUL
+
 /**
  * Why a scan did what it did, and what the next one will do.
  *
@@ -52,7 +61,7 @@ class ScanLedgerTest {
         val calls = AtomicInteger()
         override fun hash(path: String): HashResult? {
             calls.incrementAndGet()
-            val t = File(path).readText().trim()
+            val t = File(path).readText().removeSuffix(NUL).trim()
             if (t == "UNHASHABLE") return null
             return HashResult(t, 7, fileMd5 = "md5-$t", fileCrc32 = "crc-$t")
         }
@@ -76,7 +85,7 @@ class ScanLedgerTest {
 
     private fun rom(platform: String, name: String, content: String): File {
         val dir = File(romRoot, platform).apply { mkdirs() }
-        return File(dir, name).apply { writeText(content) }
+        return File(dir, name).apply { writeText(romText(content)) }
     }
 
     /** Two ROMs of the platform in one zip, neither named after it: nobody can pick. */
@@ -277,7 +286,7 @@ class ScanLedgerTest {
         val f = rom("nes", "Game.nes", "hash-unknown")
         pipeline(ContentHasher(), SaysNo()).scan(listOf(romRoot.absolutePath))
 
-        f.writeText("hash-something-else-entirely")
+        f.writeText(romText("hash-something-else-entirely"))
         f.setLastModified(f.lastModified() + 60_000)
 
         val l2 = SaysNo()
@@ -474,6 +483,29 @@ class ScanLedgerTest {
         assertEquals("nothing in the archive is a game of this collection: patch.7z", kept?.detail)
         assertNull(read.canSkip(path, 10, 20, now = 1000 + thirtyDays + 1))
         assertNull(read.canSkip(path, 11, 20, now = 1000), "another archive under the same name")
+    }
+
+    // Kept for as long as the file is the one it was: the verdict was read
+    // off the file's own bytes, and no day that passes changes those. The
+    // game that takes the placeholder's place is another size or another
+    // date, and is looked at as any new file is.
+    @Test fun `a placeholder is a verdict that stands until the file is another`() {
+        val file = File(paths.cache, ScanLedger.FILE_NAME).apply { parentFile.mkdirs() }
+        val path = "/roms/gbc/Not Here Yet.gbc"
+        val aCentury = 100L * 365 * 24 * 60 * 60
+        assertTrue(ScanLedger.State.PLACEHOLDER.cacheable)
+        ScanLedger(file).apply {
+            record(path, ScanLedger.State.PLACEHOLDER, 47, 20, now = 1000,
+                   detail = "text file, 47 bytes: not a ROM image")
+            save { f, text -> BridgePaths.writeAtomic(f, text) }
+        }
+
+        val read = ScanLedger(file)
+        val kept = read.canSkip(path, 47, 20, now = 1000 + aCentury)
+        assertEquals(ScanLedger.State.PLACEHOLDER, kept?.state)
+        assertEquals("text file, 47 bytes: not a ROM image", kept?.detail)
+        assertNull(read.canSkip(path, 262144, 20, now = 1000), "the game, under the placeholder's name")
+        assertNull(read.canSkip(path, 47, 21, now = 1000), "another file of the same size")
     }
 
     // A cache hit already means the file matched; the ledger must agree rather

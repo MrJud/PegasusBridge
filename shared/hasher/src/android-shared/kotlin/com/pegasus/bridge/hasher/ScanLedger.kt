@@ -92,7 +92,16 @@ class ScanLedger(private val file: File) {
          * hashed as the file it is, which to rcheevos is the MD5 of its
          * name, and that was asked about and kept as a miss.
          */
-        NO_PLAYABLE_ENTRY;
+        NO_PLAYABLE_ENTRY,
+        /**
+         * A file that stands for a game the library does not hold: an empty
+         * one, or a few lines of text under a ROM's name (see
+         * [PlaceholderRule]). Which of the two, and how long the text is,
+         * are in the detail. Not hashed and not asked about. Such a file
+         * was a miss under the MD5 of its sentence, or a file that could
+         * not be hashed and was read at every scan.
+         */
+        PLACEHOLDER;
 
         /**
          * Whether this outcome may be trusted on a later run at all.
@@ -143,10 +152,16 @@ class ScanLedger(private val file: File) {
          * archive under the same name, which its size and date give away,
          * or a longer list of what its platform runs, which is a new build.
          *
+         * A placeholder keeps for as long as the file is the one it was.
+         * The verdict was read off the file's own bytes and nothing else
+         * has a say in it: no database learns of a sentence, and the game
+         * that takes its place is another file by its size and its date.
+         *
          * Meaningless for anything [cacheable] is false for.
          */
         val retryAfterSeconds: Long get() = when (this) {
             MATCHED           -> Long.MAX_VALUE
+            PLACEHOLDER       -> Long.MAX_VALUE
             NOT_FOUND         -> 14L * 24 * 60 * 60
             UNSUPPORTED       -> 90L * 24 * 60 * 60
             AMBIGUOUS_ARCHIVE -> 7L * 24 * 60 * 60

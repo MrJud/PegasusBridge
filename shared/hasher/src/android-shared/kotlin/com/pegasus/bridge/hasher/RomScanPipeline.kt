@@ -21,8 +21,8 @@ import java.io.File
  * back-off and the desktop daemon can simply not throttle.
  *
  * Shape: feeder → N hash producers → API workers → collector. Files unchanged
- * since the last scan, files of a collection nobody can hash for and files of
- * a format nobody reads bypass both hashing and the network.
+ * since the last scan, files of a collection nobody can hash for, files of a
+ * format nobody reads and placeholders bypass both hashing and the network.
  */
 class RomScanPipeline(
     private val paths: BridgePaths,
@@ -132,7 +132,9 @@ class RomScanPipeline(
          * a miss was in none of them: a library the database had never heard of
          * had 0 in each, and only [states] said that anything had been looked at.
          * [skippedPlatforms] takes a verdict of UNSUPPORTED found standing as well
-         * as one decided now.
+         * as one decided now, and the placeholders: files that stand for a game
+         * the library does not hold, with no more in them to look for than in a
+         * file of a platform nobody covers.
          *
          * The names of this one and the next are the keys the Android job record
          * already has for the same two numbers.
@@ -363,7 +365,8 @@ class RomScanPipeline(
                             ScanLedger.State.NOT_FOUND ->
                                 if (r.virtualId) incompatible++ else unmatched++
                             ScanLedger.State.KNOWN_UNSUPPORTED -> incompatible++
-                            ScanLedger.State.UNSUPPORTED -> skipped++
+                            ScanLedger.State.UNSUPPORTED,
+                            ScanLedger.State.PLACEHOLDER -> skipped++
                             ScanLedger.State.HASH_FAILED,
                             ScanLedger.State.UNHASHABLE,
                             ScanLedger.State.UNSUPPORTED_FORMAT,
@@ -576,6 +579,15 @@ class RomScanPipeline(
         val size        = file.length()
         val modified    = file.lastModified()
 
+        // Counted with the platforms skipped, whether decided now or found
+        // standing: for whoever reads the counts it is a file there was no
+        // game in to look for, and not one that failed.
+        suspend fun placeholder(detail: String) {
+            ledger.record(path, ScanLedger.State.PLACEHOLDER, size, modified, now, detail = detail)
+            resultQueue.send(ResultJob(HashJob(file, "", HashResult("", 0), rawPlatform, size, modified),
+                                       preRecorded = ScanLedger.State.PLACEHOLDER))
+        }
+
         // Whether the file can be hashed at all, from the table of consoles
         // and from its name, before a byte of it is read. Ahead of the two
         // skips below, so that it is decided again on every scan: it costs
@@ -587,27 +599,45 @@ class RomScanPipeline(
         // The plans that say how to hash a file are the hasher's to follow:
         // every file that gets past here is handed to it with its collection.
         val row = RcConsoles.resolve(collection.shortName, collection.dirName)
-        when (val plan = ConsoleChoice.choose(row, file.extension, size, insideArchive = false)) {
-            // The collection: nobody can hash for its console, whatever the
-            // file. Counted as a platform skipped, as it always was.
-            is ConsoleChoice.Plan.Unsupported -> {
-                ledger.record(path, ScanLedger.State.UNSUPPORTED, size, modified, now, detail = plan.reason)
-                resultQueue.send(ResultJob(HashJob(file, "", HashResult("", 0), rawPlatform, 0, 0),
-                                           skipped = true))
-                return
-            }
-            // The file: its collection can be hashed and it cannot. It gives
-            // no hash to ask about, and is counted with the others that do
-            // not.
-            is ConsoleChoice.Plan.UnsupportedFormat -> {
-                ledger.record(path, ScanLedger.State.UNSUPPORTED_FORMAT, size, modified, now,
-                              detail = plan.reason)
-                resultQueue.send(ResultJob(
-                    HashJob(file, "", HashResult("", 0), rawPlatform, size, modified),
-                    preRecorded = ScanLedger.State.UNSUPPORTED_FORMAT))
-                return
-            }
-            else -> {}
+        val plan = ConsoleChoice.choose(row, file.extension, size, insideArchive = false)
+
+        // The collection: nobody can hash for its console, whatever the
+        // file. Counted as a platform skipped, as it always was.
+        if (plan is ConsoleChoice.Plan.Unsupported) {
+            ledger.record(path, ScanLedger.State.UNSUPPORTED, size, modified, now, detail = plan.reason)
+            resultQueue.send(ResultJob(HashJob(file, "", HashResult("", 0), rawPlatform, 0, 0),
+                                       skipped = true))
+            return
+        }
+
+        // A file with nothing in it stands for a game that is not there,
+        // whatever it is called. Known from its size, so it is here with
+        // the verdicts that cost no read, and ahead of the one on the
+        // file's format: an empty `.cso` is no more a packed disc than an
+        // empty `.nes` is a cartridge. And ahead of the hasher's plans, of
+        // which one needs no byte of the file: an arcade set is hashed by
+        // its name, and an empty `.zip` among them was asked about as one.
+        //
+        // No bytes is also the size the system gives for a file that is not
+        // there, and one the walk found can be gone by now, with the card it
+        // was on. So a file of no size is asked whether it is a file still,
+        // and no other is. What is not goes on to the hasher, which says so,
+        // and is tried again at the next scan.
+        if (size == 0L && file.isFile) {
+            placeholder("empty file")
+            return
+        }
+
+        // The file: its collection can be hashed and it cannot. It gives
+        // no hash to ask about, and is counted with the others that do
+        // not.
+        if (plan is ConsoleChoice.Plan.UnsupportedFormat) {
+            ledger.record(path, ScanLedger.State.UNSUPPORTED_FORMAT, size, modified, now,
+                          detail = plan.reason)
+            resultQueue.send(ResultJob(
+                HashJob(file, "", HashResult("", 0), rawPlatform, size, modified),
+                preRecorded = ScanLedger.State.UNSUPPORTED_FORMAT))
+            return
         }
 
         val cacheKey = FuzzyMatch.makeCacheKey(file.nameWithoutExtension, rawPlatform)
@@ -641,6 +671,22 @@ class RomScanPipeline(
                 preRecorded = settled.state,
                 virtualId = VirtualGameId.isVirtual(settled.gameId)))
             return
+        }
+
+        // The other placeholder: a line or two of text under a ROM's name.
+        // That takes reading it, so it comes after the two skips, which
+        // leave it standing without a read, and only a file small enough to
+        // be one is opened. What is refused here would otherwise go on as
+        // the MD5 of a sentence. The words are of the file and not of a
+        // game: the line a launcher keeps for one is such a text as well.
+        if (size in 1..PlaceholderRule.TEXT_LIMIT) {
+            val kind = runInterruptible(Dispatchers.IO) {
+                PlaceholderRule.classify(file.extension, size) { head(file, PlaceholderRule.TEXT_LIMIT + 1) }
+            }
+            if (kind == PlaceholderRule.Kind.TEXT_STUB) {
+                placeholder("text file, $size bytes: not a ROM image")
+                return
+            }
         }
 
         // Throwable: one file that cannot be read must cost that file, not the
@@ -710,6 +756,22 @@ class RomScanPipeline(
                 hashQueue.send(HashJob(file, cacheKey, outcome.result, rawPlatform, size, modified))
             }
         }
+    }
+
+    /**
+     * The first [limit] bytes of [file], or all of it when it has fewer.
+     * Read until the stream ends or the room does: one read may give less
+     * than was asked for with more to come.
+     */
+    private fun head(file: File, limit: Int): ByteArray = file.inputStream().use { input ->
+        val buffer = ByteArray(limit)
+        var filled = 0
+        while (filled < limit) {
+            val n = input.read(buffer, filled, limit - filled)
+            if (n < 0) break
+            filled += n
+        }
+        buffer.copyOf(filled)
     }
 
     /** One spelling per file, so two roots reaching it by different symlinks agree. */

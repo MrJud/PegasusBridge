@@ -29,6 +29,15 @@ import kotlin.test.assertFalse
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
+private const val NUL = "\u0000"
+
+/**
+ * What a test writes for a ROM: the text its hasher answers with, and a NUL
+ * after it. A small file of nothing but text is a placeholder, which a scan
+ * neither hashes nor asks about, and a ROM is never only text.
+ */
+private fun romText(content: String): String = content + NUL
+
 /**
  * A scan whose lookups never answer must stop, and stopping must mean the call
  * returns.
@@ -70,7 +79,7 @@ class ScanAbortTest {
         override fun hash(path: String): HashResult? {
             calls.incrementAndGet()
             if (refuseFrom) calledAfterReturn = path
-            val t = File(path).readText().trim()
+            val t = File(path).readText().removeSuffix(NUL).trim()
             return HashResult(t, 7, fileMd5 = "md5-$t", fileCrc32 = "crc-$t")
         }
     }
@@ -113,7 +122,7 @@ class ScanAbortTest {
 
     private fun rom(platform: String, name: String, content: String) {
         File(romRoot, platform).apply { mkdirs() }
-            .let { File(it, name).writeText(content) }
+            .let { File(it, name).writeText(romText(content)) }
     }
 
     /** The seven counts together: on a scan cut short too, they are the files the collector saw. */
@@ -584,7 +593,7 @@ class ScanAbortTest {
                         throw java.nio.channels.ClosedByInterruptException()
                     }
                 }
-                val t = File(path).readText().trim()
+                val t = File(path).readText().removeSuffix(NUL).trim()
                 return HashResult(t, 7, fileMd5 = "md5-$t", fileCrc32 = "crc-$t")
             }
         }

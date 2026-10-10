@@ -39,6 +39,15 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
+private const val NUL = "\u0000"
+
+/**
+ * What a test writes for a ROM: the text its hasher answers with, and a NUL
+ * after it. A small file of nothing but text is a placeholder, which a scan
+ * neither hashes nor asks about, and a ROM is never only text.
+ */
+private fun romText(content: String): String = content + NUL
+
 /**
  * What a scan leaves for its two readers on both shells: the job record and the
  * marker the ReStory theme polls, and the metadata files and the index the
@@ -139,7 +148,7 @@ class ThemeContractTest {
 
     private fun rom(platform: String, name: String, content: String): File {
         val dir = File(romRoot, platform).apply { mkdirs() }
-        return File(dir, name).apply { writeText(content) }
+        return File(dir, name).apply { writeText(romText(content)) }
     }
 
     /**
@@ -497,7 +506,7 @@ class ThemeContractTest {
         val calls = AtomicInteger()
         override fun hash(path: String): HashResult {
             calls.incrementAndGet()
-            val text = File(path).readText().trim()
+            val text = File(path).readText().removeSuffix(NUL).trim()
             return HashResult(text, 3, fileMd5 = "md5-$text", fileCrc32 = "crc-$text")
         }
     }
@@ -1174,7 +1183,7 @@ class ThemeContractTest {
         assertTrue(JSONObject(file.readText()).getJSONObject("ra").has("detail"),
                    "an unchanged ROM must leave its file as it is")
 
-        rom.writeText("hash-smw-rev1")
+        rom.writeText(romText("hash-smw-rev1"))
         assertEquals(1, scan(hashes, answers).newEntries)
         val ra = JSONObject(file.readText()).getJSONObject("ra")
         assertFalse(ra.has("detail"))
@@ -1643,12 +1652,14 @@ class ThemeContractTest {
 
     // Every count a different number, so that one written under another's name
     // shows wherever it lands: 12 files cached from the scan before, 9 new, 8
-    // of a platform that is not covered, 7 misses, 6 held under a virtual id,
-    // 5 that give no hash, three the hasher gives nothing for and two of a
-    // format that is not read at all, and 4 whose lookup gets no answer.
+    // skipped, five of a platform that is not covered and three that stand
+    // for a game the library does not hold, two with a sentence in them and
+    // one with nothing, 7 misses, 6 held under a virtual id, 5 that give no
+    // hash, three the hasher gives nothing for and two of a format that is
+    // not read at all, and 4 whose lookup gets no answer.
     @Test fun `the seven counts of a record add up to the results it says were collected`(): Unit = runBlocking {
         val hashes = object : RomHasher {
-            override fun hash(path: String): HashResult? = File(path).readText().let { text ->
+            override fun hash(path: String): HashResult? = File(path).readText().removeSuffix(NUL).let { text ->
                 if (text.startsWith("unreadable")) null
                 else HashResult(text, 3, fileMd5 = "md5-$text", fileCrc32 = "crc-$text")
             }
@@ -1667,7 +1678,10 @@ class ThemeContractTest {
         assertEquals(12, recordedScan("job1", hashes, answers).summary.newEntries)
 
         repeat(9) { rom("snes", "fresh$it.sfc", "hash-match-${100 + it}") }
-        repeat(8) { rom("switch", "title$it.zip", "never read") }
+        repeat(5) { rom("switch", "title$it.zip", "never read") }
+        // Written as they are found, with no NUL after the sentence.
+        repeat(2) { File(romRoot, "snes/absent$it.sfc").writeText("Placeholder for Absent $it on SNES") }
+        File(romRoot, "snes/nothing.sfc").writeText("")
         repeat(7) { rom("snes", "unknown$it.sfc", "hash-unknown-$it") }
         repeat(6) { rom("snes", "virtual$it.sfc", "hash-virtual-$it") }
         repeat(3) { rom("snes", "broken$it.sfc", "unreadable-$it") }
@@ -1676,6 +1690,8 @@ class ThemeContractTest {
         val second = recordedScan("job2", hashes, answers)
         val records = second.records
         assertEquals(2, second.summary.states[ScanLedger.State.UNSUPPORTED_FORMAT])
+        assertEquals(5, second.summary.states[ScanLedger.State.UNSUPPORTED])
+        assertEquals(3, second.summary.states[ScanLedger.State.PLACEHOLDER])
         assertEquals(3, second.summary.states[ScanLedger.State.HASH_FAILED])
 
         // 51 files: a record for the first result and one every ten results
@@ -1783,7 +1799,7 @@ class ThemeContractTest {
         for (total in listOf(7, 120, 480)) {
             val library = File(romRoot, "library-$total")
             File(library, "switch").mkdirs()
-            repeat(total) { File(library, "switch/title$it.zip").writeText("never read") }
+            repeat(total) { File(library, "switch/title$it.zip").writeText(romText("never read")) }
             suspend fun reportedBy(pipeline: RomScanPipeline): List<Int> = ArrayList<Int>().also { reported ->
                 pipeline.scan(listOf(library.absolutePath)) { reported += it.processed }
             }

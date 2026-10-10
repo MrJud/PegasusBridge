@@ -81,6 +81,15 @@ class DaemonPathsTest {
     }
 }
 
+private const val NUL = "\u0000"
+
+/**
+ * What a test writes for a ROM: the text its hasher answers with, and a NUL
+ * after it. A small file of nothing but text is a placeholder, which a scan
+ * neither hashes nor asks about, and a ROM is never only text.
+ */
+private fun romText(content: String): String = content + NUL
+
 class BridgeDaemonTest {
 
     private lateinit var dataRoot: File
@@ -217,7 +226,7 @@ class BridgeDaemonTest {
         val root = Files.createTempDirectory("daemon-test-workers").toFile()
         val roms = File(root, "roms/snes").apply { mkdirs() }
         val files = 24
-        repeat(files) { File(roms, "Game $it.sfc").writeText("rom $it") }
+        repeat(files) { File(roms, "Game $it.sfc").writeText(romText("rom $it")) }
 
         val held = HeldHasher()
         val scanning = BridgeDaemon(File(root, "data"), hashWorkers = workers, loadHasher = { held })
@@ -278,10 +287,10 @@ class BridgeDaemonTest {
     @Test fun `a scan on a machine that says it is offline ends as an error that says so`() {
         val root = Files.createTempDirectory("daemon-test-offline").toFile()
         val roms = File(root, "roms/snes").apply { mkdirs() }
-        repeat(3) { File(roms, "Game $it.sfc").writeText("hash-$it") }
+        repeat(3) { File(roms, "Game $it.sfc").writeText(romText("hash-$it")) }
         val textHasher = object : RomHasher {
-            override fun hash(path: String): HashResult =
-                File(path).readText().let { HashResult(it, 3, fileMd5 = "md5-$it", fileCrc32 = "crc-$it") }
+            override fun hash(path: String): HashResult = File(path).readText().removeSuffix(NUL)
+                .let { HashResult(it, 3, fileMd5 = "md5-$it", fileCrc32 = "crc-$it") }
         }
         // Bound and never listened on, and held to the end: a request to it
         // is refused at once. A port taken and given back could be the one

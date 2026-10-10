@@ -29,6 +29,15 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
+private const val NUL = "\u0000"
+
+/**
+ * What a test writes for a ROM: the text its hasher answers with, and a NUL
+ * after it. A small file of nothing but text is a placeholder, which a scan
+ * neither hashes nor asks about, and a ROM is never only text.
+ */
+private fun romText(content: String): String = content + NUL
+
 /**
  * The audit over small libraries made here, with a hasher that gives a file's
  * own text for its hash in place of the native library, which the daemon does
@@ -63,12 +72,12 @@ class ScanAuditTest {
         val read = ConcurrentLinkedQueue<String>()
         override fun hash(path: String): HashResult {
             read += File(path).name
-            return HashResult(File(path).readText(), 3)
+            return HashResult(File(path).readText().removeSuffix(NUL), 3)
         }
     }
 
     private fun rom(path: String, text: String = "hash-of-$path"): File =
-        File(roms, path).apply { parentFile.mkdirs(); writeText(text) }
+        File(roms, path).apply { parentFile.mkdirs(); writeText(romText(text)) }
 
     private fun md5(text: String): String = java.security.MessageDigest.getInstance("MD5")
         .digest(text.toByteArray()).joinToString("") { "%02x".format(it) }
@@ -158,14 +167,14 @@ class ScanAuditTest {
         val told = arrayOf("platform", "extension", "state", "console", "hash", "fileMd5", "asked")
         // The MD5 is of the file and not the hasher's: the daemon's archive
         // layer is around the hasher here too, and it is what takes it.
-        assertEquals(listOf("snes", "sfc", "MATCHED", "3", "hash-known", md5("hash-known"), "1"),
+        assertEquals(listOf("snes", "sfc", "MATCHED", "3", "hash-known", md5(romText("hash-known")), "1"),
                      cells("Known.sfc", *told))
-        assertEquals(listOf("snes", "sfc", "NOT_FOUND", "3", "hash-unknown", md5("hash-unknown"), "1"),
+        assertEquals(listOf("snes", "sfc", "NOT_FOUND", "3", "hash-unknown", md5(romText("hash-unknown")), "1"),
                      cells("Unknown.sfc", *told))
         // Decided from the folder's name, before the hasher or the lookup.
         assertEquals(listOf("", "iso", "UNSUPPORTED", "", "", "", "0"), cells("Game.iso", *told))
         assertEquals(File(roms, "snes/Known.sfc").canonicalPath, rows.getValue("Known.sfc")["path"])
-        assertEquals("10", rows.getValue("Known.sfc")["size"])
+        assertEquals("11", rows.getValue("Known.sfc")["size"])
         assertTrue(rows.getValue("Known.sfc").getValue("ms").toLong() >= 0)
         assertEquals("", rows.getValue("Game.iso")["ms"])
 
@@ -218,8 +227,8 @@ class ScanAuditTest {
     }
 
     @Test fun `a file over the limit or named to be skipped is answered for without being read`() {
-        rom("snes/Small.sfc", "x".repeat(50))
-        rom("snes/Large.sfc", "x".repeat(51))
+        rom("snes/Small.sfc", "x".repeat(49))
+        rom("snes/Large.sfc", "x".repeat(50))
         rom("snes/Crashes.sfc")
         rom("bios/pack/Firmware.bin")
         rom("biosphere/Game.bin", "hash-biosphere")
@@ -232,7 +241,7 @@ class ScanAuditTest {
         val rows = rows()
         fun cells(file: String) = listOf("state", "hash", "detail", "asked").map { rows.getValue(file).getValue(it) }
         // "Larger than" and not "as large as".
-        assertEquals(listOf("NOT_FOUND", "x".repeat(50), "", "1"), cells("Small.sfc"))
+        assertEquals(listOf("NOT_FOUND", "x".repeat(49), "", "1"), cells("Small.sfc"))
         assertEquals(listOf("HASH_FAILED", "", "audit: larger than 50", "0"), cells("Large.sfc"))
         assertEquals(listOf("HASH_FAILED", "", "audit: skipped", "0"), cells("Crashes.sfc"))
         assertEquals(listOf("HASH_FAILED", "", "audit: skipped", "0"), cells("Firmware.bin"))
@@ -306,7 +315,7 @@ class ScanAuditTest {
     @Test fun `a refused key ends an audit with a row for every file the scan had reached`() {
         (1..8).forEach { rom("snes/Game$it.sfc", "hash-game-$it") }
         val later = File(root, "later").apply { mkdirs() }
-        val slow = File(later, "snes/Slow.sfc").apply { parentFile.mkdirs(); writeText("never hashed") }
+        val slow = File(later, "snes/Slow.sfc").apply { parentFile.mkdirs(); writeText(romText("never hashed")) }
         val credentials = File(root, "data-root")
         Config(BridgePaths(credentials)).writeCredentials(raUser = "someone", raApiKey = "a-key")
         val before = credentials.walkTopDown().map { it.path to it.lastModified() }.toList()

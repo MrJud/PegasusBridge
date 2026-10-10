@@ -1,6 +1,8 @@
 package com.pegasus.bridge.daemon
 
 import com.pegasus.bridge.core.BridgeLog
+import com.pegasus.bridge.core.BridgePaths
+import com.pegasus.bridge.core.Config
 import com.pegasus.bridge.core.NoopLog
 import com.pegasus.bridge.core.StderrLog
 import com.pegasus.bridge.hasher.HashResult
@@ -229,6 +231,9 @@ class BridgeDaemonTest {
         repeat(files) { File(roms, "Game $it.sfc").writeText(romText("rom $it")) }
 
         val held = HeldHasher()
+        // A key, which a scan is not started without. Nothing is asked with
+        // it: no file here comes back from the hasher with a hash.
+        Config(BridgePaths(File(root, "data"))).writeCredentials(raUser = "someone", raApiKey = "a-key")
         val scanning = BridgeDaemon(File(root, "data"), hashWorkers = workers, loadHasher = { held })
         try {
             scanning.start()
@@ -298,6 +303,8 @@ class BridgeDaemonTest {
         // answered by the daemon itself.
         val nobody = java.net.Socket().apply { bind(java.net.InetSocketAddress("127.0.0.1", 0)) }
         val asked = AtomicInteger()
+        // A key to send: with none a scan stops before it asks anybody.
+        Config(BridgePaths(File(root, "data"))).writeCredentials(raUser = "someone", raApiKey = "a-key")
 
         val scanning = BridgeDaemon(File(root, "data"), loadHasher = { textHasher },
                                     deviceOffline = { asked.incrementAndGet(); true },

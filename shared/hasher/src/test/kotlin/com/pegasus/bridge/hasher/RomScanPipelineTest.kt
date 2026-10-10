@@ -1977,6 +1977,81 @@ class RomScanPipelineTest {
         assertTrue(paths.discoveryIndex.isFile, "the index was not rebuilt")
     }
 
+    /** A lookup that has no key to send, and counts what it is asked all the same. */
+    private class NoKeyLookup : RaHashLookup {
+        val calls = AtomicInteger()
+        override val keyMissing: Boolean get() = true
+        override suspend fun lookup(hash: String): LookupOutcome {
+            calls.incrementAndGet()
+            return LookupOutcome.Failed(LookupOutcome.Cause.AUTH, "no API key")
+        }
+    }
+
+    private fun ledgerEntries(): Map<String, Any> =
+        JSONObject(File(paths.cache, ScanLedger.FILE_NAME).readText()).getJSONObject("entries").toMap()
+
+    // Every request carries the key. With none, each file that needs a
+    // lookup was read and hashed for an answer that could not come, a disc
+    // image among them, and the scan stopped at the first of them. It stops
+    // at none, and is told the count first as any scan is.
+    @Test fun `a scan with no key stops before a file is read`(): Unit = runBlocking {
+        repeat(3) { rom("nes", "Game$it.nes", "hash-$it") }
+        val h = ContentHasher(); val l = NoKeyLookup()
+        val told = mutableListOf<String>()
+
+        val s = pipeline(h, l).scan(listOf(romRoot.absolutePath), onCounted = { told += "counted $it" }) {
+            told += "result ${it.processed}"
+        }
+
+        assertEquals(listOf(0, 0), listOf(h.calls.get(), l.calls.get()))
+        assertTrue(s.aborted)
+        assertEquals(RomScanPipeline.AbortCause.KEY_REFUSED, s.abortCause)
+        assertEquals("no RetroAchievements API key is configured (0 of 3 processed)", s.reason)
+        assertEquals(listOf(0, 3), listOf(s.processed, s.total))
+        assertEquals(counts(0, 0, 0, 0, 0, 0, 0), s.counts())
+        assertEquals(listOf("counted 3"), told)
+        assertEquals(emptyMap(), ledgerEntries())
+        assertEquals(0, JSONObject(paths.discoveryIndex.readText()).getInt("count"))
+        // What a shell tells the person, from the summary alone.
+        assertEquals("RetroAchievements refused the API key after 0 of 3 files (0 identified). " +
+                     "Nothing was recorded as missing. " +
+                     "Copy the Web API key from your RetroAchievements settings into credentials.json " +
+                     "and scan again.",
+                     ScanJobRecord.abortAdvice(s, raUser = ""))
+    }
+
+    // A key taken out of the settings after a scan. The scan that then stops
+    // writes the ledger and the index on its way out as every stop does, and
+    // both hold what they held: a match, a miss, and nothing of the new file.
+    @Test fun `a scan with no key leaves what earlier scans settled`(): Unit = runBlocking {
+        rom("nes", "Super Mario Bros. (World).nes", "hash-smb")
+        rom("nes", "Homebrew Thing.nes", "hash-unknown")
+        pipeline(ContentHasher(), MapLookup(catalogue)).scan(listOf(romRoot.absolutePath))
+        val metadata = paths.metadata("1446").readText()
+        val entries = ledgerEntries()
+        assertEquals(setOf("MATCHED", "NOT_FOUND"), entries.values.map { (it as Map<*, *>)["state"] }.toSet())
+        val index = JSONObject(paths.discoveryIndex.readText())
+        rom("nes", "Contra (USA).nes", "hash-ctra")
+
+        val h = ContentHasher(); val l = NoKeyLookup()
+        val s = pipeline(h, l).scan(listOf(romRoot.absolutePath))
+
+        assertTrue(s.aborted)
+        assertEquals(listOf(0, 3, 1), listOf(s.processed, s.total, s.indexed))
+        assertEquals(listOf(0, 0), listOf(h.calls.get(), l.calls.get()))
+        assertEquals(metadata, paths.metadata("1446").readText())
+        assertEquals(entries, ledgerEntries())
+        val after = JSONObject(paths.discoveryIndex.readText())
+        assertEquals(1, after.getInt("count"))
+        assertEquals(index.getJSONObject("byKey").toMap(), after.getJSONObject("byKey").toMap())
+
+        // And with the key back the scan goes on from there: the new file
+        // is the one that is read.
+        val h3 = ContentHasher()
+        val s3 = pipeline(h3, MapLookup(catalogue)).scan(listOf(romRoot.absolutePath))
+        assertEquals(listOf(1, 1, 1), listOf(h3.calls.get(), s3.newEntries, s3.cachedHits))
+    }
+
     @Test fun `a missing root is ignored rather than failing`(): Unit = runBlocking {
         rom("nes", "Game.nes", "hash-smb")
         val s = pipeline(ContentHasher(), MapLookup(catalogue))

@@ -102,6 +102,16 @@ interface RaHashLookup {
      * key it is taken back, by the first answer that arrives.
      */
     val offline: Boolean get() = false
+
+    /**
+     * True when there is no key to send, which is known before anything is
+     * asked. A caller should not start: every lookup would fail, and each
+     * after a file had been read and hashed for it.
+     *
+     * Not [authRejected], which is the source's answer to a key and is not
+     * known until a request has been made.
+     */
+    val keyMissing: Boolean get() = false
 }
 
 /**
@@ -275,6 +285,8 @@ class RaApiHashLookup(
     @Volatile private var rejected = false
     override val authRejected: Boolean get() = rejected
 
+    override val keyMissing: Boolean get() = raApiKey.isBlank()
+
     // What the device said of its connection when a request last failed, and
     // false again once any request is answered. The stored value and never a
     // question put to the device from here: the pipeline reads this after
@@ -383,6 +395,11 @@ class RaApiHashLookup(
 
     /** From disk when the list there is whole and fresh, and by a request when not. */
     private suspend fun load(console: Int): Loaded {
+        // No key to send: the request would be answered 401, and is not
+        // made. Before the disk is looked at, so that whether a scan with no
+        // key answers does not turn on which lists happen to be fresh. A
+        // caller that asked [keyMissing] first never gets here.
+        if (keyMissing) return failed(LookupOutcome.Cause.AUTH, "no API key")
         // The key has been refused once and is the same key: no request is
         // spent on hearing it again for another console.
         if (rejected) return Loaded.Failed(LookupOutcome.Failed(LookupOutcome.Cause.AUTH, "HTTP 401"), counts = true)

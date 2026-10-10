@@ -628,6 +628,7 @@ object ScanAudit {
         override val consecutiveFailures: Int get() = inner.consecutiveFailures
         override val authRejected: Boolean get() = inner.authRejected
         override val offline: Boolean get() = inner.offline
+        override val keyMissing: Boolean get() = inner.keyMissing
 
         fun asked(hash: String): Boolean = askedAbout.containsKey(hash)
         val calls: Int get() = askedAbout.values.sumOf { it.get() }

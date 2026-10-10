@@ -502,6 +502,31 @@ class RaHashLookupTest {
         assertEquals(emptyList(), kept())
     }
 
+    // An empty key is one RetroAchievements answers with a 401, and the
+    // lookup knows it has none before it asks. It says so, for a caller to
+    // read before it starts, and a caller that starts all the same is answered
+    // without a request: also for a console whose list is on disk and fresh.
+    @Test fun `a lookup with no key says so and asks nobody`() = runTest {
+        assertFalse(lookup.keyMissing)
+        replies += listed()
+        assertEquals(4101, lookup.lookup(HASH, listOf(7)).asLegacy()?.gameId)
+        val noKey = LookupOutcome.Failed(LookupOutcome.Cause.AUTH, "no API key")
+
+        for (key in listOf("", "   ")) {
+            val keyless = asking(key = key)
+            assertTrue(keyless.keyMissing, "\"$key\"")
+
+            assertEquals<LookupOutcome>(noKey, keyless.lookup(HASH, listOf(8)), "\"$key\"")
+            assertEquals<LookupOutcome>(noKey, keyless.lookup(HASH, listOf(7)), "a list on disk was answered from")
+
+            assertEquals(listOf(0, 0, 0), listOf(keyless.requests, keyless.listsFetched, keyless.listsRead))
+            assertEquals(2, keyless.consecutiveFailures)
+            // Not the source's answer to a key: nothing was asked.
+            assertFalse(keyless.authRejected)
+        }
+        assertEquals(1, requests.size)
+    }
+
     // Failures, but none of them the key: a 404, and an explicit Success:false,
     // which is not something RAWeb sends for a bad key.
     @Test fun `other refusals do not say the key was refused`() = runTest {

@@ -187,7 +187,10 @@ class RomScanPipeline(
 
     /** Why a scan stopped itself. What a person can do about it differs from one to the next. */
     enum class AbortCause {
-        /** The source refused the credentials. Nothing changes until the key does. */
+        /**
+         * The source refused the credentials, or there is no key to send
+         * and nothing was asked. Nothing changes until the key does.
+         */
         KEY_REFUSED,
         /** A request failed and the device says it has no connection. Nothing changes until it has one. */
         OFFLINE,
@@ -284,6 +287,18 @@ class RomScanPipeline(
             // record cannot be written ends the scan as any other failure
             // does, with the index rebuilt on the way out.
             onCounted(total)
+            // No key, no scan, and said before a file is read. Every request
+            // carries the key, so each file that needs a lookup would be read
+            // and hashed for an answer that cannot come, a disc image among
+            // them; and a scan whose files are all settled would end as done
+            // and hide that the next new ROM cannot be looked up. Thrown in
+            // here so that it ends as any stop does: the ledger and the index
+            // are written as they stand, and what earlier scans settled is
+            // left as it was.
+            if (lookup.keyMissing) {
+                throw ScanAborted("no RetroAchievements API key is configured " +
+                                  "(0 of $total processed)", AbortCause.KEY_REFUSED)
+            }
             coroutineScope {
                 val feeder = launch(Dispatchers.IO) {
                     try {

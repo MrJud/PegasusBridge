@@ -315,7 +315,9 @@ class ScanAuditTest {
     // scan stops on its answer as a daemon's does.
     @Test fun `with --lookup an audit asks RetroAchievements and ends where a scan would`() {
         rom("snes/Game.sfc", "hash-game")
-        val credentials = File(root, "data-root").apply { mkdirs() }
+        val credentials = File(root, "data-root")
+        Config(BridgePaths(credentials)).writeCredentials(raUser = "someone", raApiKey = "a-key")
+        val before = credentials.walkTopDown().map { it.path to it.lastModified() }.toList()
 
         assertEquals(1, audit("--lookup", "--data-root=${credentials.absolutePath}", offline = true))
 
@@ -327,6 +329,26 @@ class ScanAuditTest {
         assertTrue(said.getValue("# stopped").startsWith("no internet connection"), said["# stopped"])
         // The data root named is where the credentials are read, and nothing
         // of the scan is put there.
+        assertEquals(before, credentials.walkTopDown().map { it.path to it.lastModified() }.toList())
+    }
+
+    // A data root with no key in it, which is what `--lookup` gets when the
+    // root named is the wrong one. The scan stops before a file is read, as a
+    // daemon's does, where it used to read the library until the first
+    // lookup came back refused. Nothing is asked of anybody.
+    @Test fun `with --lookup and no key an audit stops before it hashes`() {
+        (1..3).forEach { rom("snes/Game$it.sfc", "hash-game-$it") }
+        val credentials = File(root, "data-root").apply { mkdirs() }
+
+        assertEquals(1, audit("--lookup", "--data-root=${credentials.absolutePath}"))
+
+        val said = comments()
+        assertTrue(said.getValue("# stopped").startsWith("no RetroAchievements API key"), said["# stopped"])
+        assertTrue(said.getValue("# requests").startsWith("0 to RetroAchievements"), said["# requests"])
+        assertTrue(said.getValue("# hasher").startsWith("0 files handed"), said["# hasher"])
+        assertEquals(emptyList(), hasher.read.toList())
+        assertEquals(0, deviceAsked.get())
+        assertEquals("0 for 0 hashes", said["# lookups"])
         assertEquals(emptyList(), credentials.list()!!.toList())
     }
 
@@ -512,7 +534,7 @@ class ScanAuditTest {
         val seven = LookupOutcome.Match(GameMetadata(gameId = 7, title = "Seven"))
         val noAnswer = LookupOutcome.Failed(LookupOutcome.Cause.OFFLINE, "nobody there")
         class Inside(override val consecutiveFailures: Int, override val authRejected: Boolean,
-                     override val offline: Boolean) : RaHashLookup {
+                     override val offline: Boolean, override val keyMissing: Boolean = false) : RaHashLookup {
             override suspend fun lookup(hash: String): LookupOutcome = if (hash == "known") seven else noAnswer
         }
         val quiet = ScanAudit.CountingLookup(Inside(0, authRejected = false, offline = false))
@@ -523,6 +545,12 @@ class ScanAuditTest {
             assertEquals(listOf(failures, rejected, offline),
                          listOf(counting.consecutiveFailures, counting.authRejected, counting.offline))
         }
+
+        // And the one thing it says before it is asked anything: left to the
+        // interface's own answer, an audit with no key would read the library.
+        assertFalse(quiet.keyMissing)
+        assertTrue(ScanAudit.CountingLookup(Inside(0, authRejected = false, offline = false, keyMissing = true))
+            .keyMissing)
 
         assertEquals<LookupOutcome>(seven, runBlocking { quiet.lookup("known") })
         assertEquals<LookupOutcome>(noAnswer, runBlocking { quiet.lookup("unknown") })

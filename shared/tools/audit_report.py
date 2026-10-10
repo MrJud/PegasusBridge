@@ -63,6 +63,15 @@ file by (HashRecipe.kt), and where the two tables do not have the same one the
 comparison prints both, so that a changed row can be held against the part of
 the line that moved.
 
+READ. A table of a build that counts them has a `read` column: the bytes the
+scan asked the system for while it hashed the file, empty for a file the
+hasher was never handed. Where any row has it, the report repeats the table's
+own `# hasher` and `# read` lines and adds the column up by collection, beside
+the size of the files it is of: a file read twice shows as twice its size, and
+one the hash needed the start of as less than it. They are bytes asked for,
+whether the disk or the memory gave them, and say nothing of time. The column
+is never compared: what a file costs to read is what a change is made to move.
+
 ORACLE. A file of answers already known: hash, game id, then date, source and
 title, with tabs between (the format `--oracle=` of the audit reads). With it,
 a file counts as identified when the scan matched it or when its hash is in
@@ -84,7 +93,7 @@ from pathlib import PurePosixPath, PureWindowsPath
 # What ScanAudit writes, in its order. `path` and `state` are the two a table
 # cannot do without; a table from a later build may have more columns.
 COLUMNS = ["path", "platform", "dirName", "extension", "size", "state", "console",
-           "hash", "fileMd5", "archiveEntry", "detail", "asked", "ms"]
+           "hash", "fileMd5", "archiveEntry", "detail", "asked", "ms", "read"]
 COMPARED = ["platform", "state", "console", "hash", "fileMd5", "archiveEntry", "asked"]
 
 # The states of the ledger (ScanLedger.State), every one, in the order a person
@@ -336,6 +345,28 @@ def print_table(rows, roots):
     print(f"{'total':<{width}}{len(rows):>7}" + "".join(f"{total[s]:>{len(s) + 2}}" for s in states))
 
 
+def print_read(rows, roots, comments):
+    """What the scan read, by collection: the files the hasher was handed,
+    the bytes it read for them and the bytes they are."""
+    for name in ("hasher", "read"):
+        for value in said(comments, name):
+            print(f"# {name}: {value}")
+    sums = {}
+    for r in rows:
+        if not r.get("read", ""):
+            continue
+        line = sums.setdefault(collection_of(r["path"], roots), [0, 0, 0])
+        line[0] += 1
+        line[1] += int(r["read"])
+        line[2] += int(r.get("size", "") or 0)
+    width = max([len("collection")] + [len(c) for c in sums]) + 2
+    print(f"{'collection':<{width}}{'files':>7}{'read':>16}{'size':>16}")
+    for name in sorted(sums, key=str.lower):
+        print(f"{name:<{width}}{sums[name][0]:>7}{sums[name][1]:>16}{sums[name][2]:>16}")
+    total = [sum(line[i] for line in sums.values()) for i in range(3)]
+    print(f"{'TOTAL':<{width}}{total[0]:>7}{total[1]:>16}{total[2]:>16}")
+
+
 def said(comments, name):
     """Every value the `#` lines give for one name, in an order two tables share."""
     return sorted(value for key, value in comments if key == name)
@@ -390,6 +421,11 @@ def main(argv):
 
     def known(row):
         return oracle is not None and 0 < oracle.get(row.get("hash", "").lower(), 0) <= VIRTUAL_ID_BASE
+
+    if any(r.get("read", "") for r in rows):
+        print()
+        print("bytes read")
+        print_read(rows, roots, comments)
 
     matched = sum(1 for r in rows if r["state"] == "MATCHED")
     identified = sum(1 for r in rows if r["state"] == "MATCHED" or known(r))

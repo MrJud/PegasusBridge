@@ -504,6 +504,50 @@ class ReportTest(Tables):
         self.assertEqual(status, 1, out)
         self.assertIn("FAILED: 5 identified, fewer than 6", out)
 
+    def test_bytes_read_are_summed_by_collection(self):
+        rows = [
+            # Read twice, for the hash and for the digest.
+            row("gba/A.gba", hash=md5("a"), size="1000", read="2000"),
+            row("gba/B.gba", hash=md5("b"), size="500", read="1000"),
+            # The hash needed the start of it.
+            row("psx/Disc.bin", hash=md5("d"), size="700000000", read="2048"),
+            # Handed to the hasher and answered for unread: a row of its own.
+            row("psx/Large.bin", state="HASH_FAILED", size="900000000", read="0"),
+            # Never handed: in no sum.
+            row("switch/Game.nsp", state="UNSUPPORTED", size="12345"),
+        ]
+        comments = (("root", ROOT), ("hasher", "4 files handed, 5048 bytes read for them"),
+                    ("read", "9000 bytes by the process during the scan"))
+        status, out, _ = self.run_report(self.table("t.tsv", rows, comments=comments))
+        self.assertEqual(status, 0)
+        block = next(b for b in out.split("\n\n") if b.startswith("bytes read\n")).splitlines()
+        self.assertEqual(block[1:3], ["# hasher: 4 files handed, 5048 bytes read for them",
+                                      "# read: 9000 bytes by the process during the scan"])
+        self.assertEqual([line.split() for line in block[3:]], [
+            ["collection", "files", "read", "size"],
+            ["gba", "2", "3000", "1500"],
+            ["psx", "2", "2048", "1600000000"],
+            ["TOTAL", "4", "5048", "1600001500"],
+        ])
+
+    def test_a_table_with_no_read_column_says_nothing_of_bytes(self):
+        # The table of a build from before the column, and one of a rescan,
+        # where the column is there and no file was handed to the hasher.
+        old = [c for c in report.COLUMNS if c != "read"]
+        for name, columns in (("old.tsv", old), ("rescan.tsv", report.COLUMNS)):
+            status, out, _ = self.run_report(self.table(name, self.ROWS, columns=columns))
+            self.assertEqual(status, 0)
+            self.assertIn(f"{name}: 8 files\n", out)
+            self.assertNotIn("bytes read", out)
+            self.assertNotIn("TOTAL", out)
+
+    def test_what_a_file_cost_to_read_is_not_compared(self):
+        before = self.table("before.tsv", [row("gba/A.gba", hash=md5("a"), read="2000")])
+        after = self.table("after.tsv", [row("gba/A.gba", hash=md5("a"), read="1000")])
+        status, out, _ = self.run_report(after, "--baseline", before, "--max-changed", "0")
+        self.assertEqual(status, 0)
+        self.assertIn("): 0 differ\n", out)
+
     def test_files_the_audit_did_not_read_are_said_apart(self):
         rows = [row("psx/Big.iso", state="HASH_FAILED", detail="audit: larger than 1000"),
                 row("psx/Bigger.iso", state="HASH_FAILED", detail="audit: larger than 1000"),

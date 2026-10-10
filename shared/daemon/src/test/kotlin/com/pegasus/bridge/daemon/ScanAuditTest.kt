@@ -28,7 +28,9 @@ import kotlin.test.BeforeTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
+import org.junit.jupiter.api.Assumptions.assumeTrue
 
 private const val NUL = "\u0000"
 
@@ -544,6 +546,13 @@ class ScanAuditTest {
         assertEquals(2, run(folder, table, "--oracle=${oracle.absolutePath}"), "an oracle with a line that is no answer")
         oracle.writeText("hash-a\t12\nhash-a\t13\n")
         assertEquals(2, run(folder, table, "--oracle=${oracle.absolutePath}"), "an oracle with two games for one hash")
+        assertEquals(2, run(folder, table, "--keep=${oracle.absolutePath}"), "a file for the data root to keep")
+        assertEquals(2, run(folder, table, "--keep="), "no folder to keep")
+        // Spelt another way on purpose: it is the folder that counts.
+        val daemons = File(root, "data-root")
+        assertEquals(2, run(folder, table, "--data-root=${daemons.absolutePath}",
+                            "--keep=${File(root, "roms/../data-root")}"), "a daemon's data root to keep")
+        assertFalse(daemons.exists(), "the data root was made")
 
         assertEquals(0, loaded.get())
         assertFalse(out.parentFile.exists(), "something was written")
@@ -561,6 +570,85 @@ class ScanAuditTest {
         assertEquals(2, run(folder, "--out=${File(roms, "snes/Game.sfc/audit.tsv")}"), "a file for the table's folder")
         assertEquals(emptyList(), hasher.read.toList())
         assertEquals(listOf("snes"), roms.list()!!.toList())
+    }
+
+    // The count is the system's, as it writes it for a thread: the first
+    // line of several, and the only one that is of reads asked for.
+    @Test fun `the number after rchar is what was read`() {
+        assertEquals(2884L, ScanAudit.IoCounters.parse("rchar: 2884\nwchar: 0\nsyscr: 7\n"))
+        assertEquals(2884L, ScanAudit.IoCounters.parse("wchar: 9\nrchar: 2884\n"))
+        assertNull(ScanAudit.IoCounters.parse(""))
+        assertNull(ScanAudit.IoCounters.parse("wchar: 1"))
+        assertNull(ScanAudit.IoCounters.parse("rchar: a lot"))
+    }
+
+    // What the column is for: a file read to its end costs its size at the
+    // least, and one the hasher made nothing of costs next to nothing. The
+    // library here reads the first file whole and refuses the second
+    // unopened; the archive layer around it then opens that one, to see
+    // whether it can be read at all, and reads none of it.
+    @Test fun `a row says how many bytes its file cost and the table adds them up`() {
+        assumeTrue(ScanAudit.IoCounters.thread() != null, "no count of what a thread reads on this system")
+        val size = 4 * 1024 * 1024
+        val whole = File(roms, "snes/Whole.sfc").apply { parentFile.mkdirs(); writeBytes(ByteArray(size)) }
+        val refused = File(roms, "snes/Refused.sfc").apply { writeBytes(ByteArray(size)) }
+        val library = object : RomHasher {
+            override fun hash(path: String): HashResult? =
+                if (File(path).name == whole.name) HashResult("hash-of-${File(path).readBytes().size}", 3) else null
+        }
+
+        assertEquals(0, audit(library = library))
+
+        val rows = rows()
+        assertEquals(listOf("NOT_FOUND", "hash-of-$size"),
+                     listOf("state", "hash").map { rows.getValue(whole.name).getValue(it) })
+        assertEquals("HASH_FAILED", rows.getValue(refused.name)["state"])
+        val cost = rows.mapValues { it.value.getValue("read").toLong() }
+        assertTrue(cost.getValue(whole.name) >= size, "the file read whole: ${cost[whole.name]}")
+        assertTrue(cost.getValue(refused.name) < 1024 * 1024, "the file not read: ${cost[refused.name]}")
+        val said = comments()
+        assertEquals("2 files handed, ${cost.values.sum()} bytes read for them", said["# hasher"])
+        // The whole process read those bytes too, and more beside them.
+        val process = said.getValue("# read")
+        assertTrue(process.endsWith(" bytes by the process during the scan"), process)
+        assertTrue(process.substringBefore(' ').toLong() >= cost.values.sum(), process)
+    }
+
+    // What --keep is for: the second audit starts from the ledger and the
+    // metadata the first one left, so it is a rescan, and what a rescan reads
+    // and asks can be counted. Its table still has a row for every file, with
+    // the state the ledger kept and nothing of the hasher's, which was not
+    // asked.
+    @Test fun `a second audit of a kept data root hands the hasher nothing`() {
+        rom("snes/Known.sfc", "hash-known")
+        rom("snes/Unknown.sfc", "hash-unknown")
+        val oracle = File(root, "answers.tsv").apply { writeText("hash-known\t4242\n") }
+        val kept = File(root, "kept/data")
+        val args = arrayOf("--oracle=${oracle.absolutePath}", "--keep=${kept.absolutePath}")
+
+        assertEquals(0, audit(*args))
+
+        val first = rows().mapValues { it.value.getValue("state") }
+        assertEquals(mapOf("Known.sfc" to "MATCHED", "Unknown.sfc" to "NOT_FOUND"), first)
+        assertEquals("2 files handed", comments().getValue("# hasher").substringBefore(','))
+        assertEquals("2 for 2 hashes", comments()["# lookups"])
+        assertEquals(kept.canonicalPath, comments()["# keep"])
+        assertTrue(File(kept, "cache/scan-ledger.json").isFile, "the data root was not kept")
+        // Nothing was made beside the table, where the root goes when none is named.
+        assertEquals(listOf("audit.tsv"), out.parentFile.list()!!.toList())
+        val read = hasher.read.toList()
+
+        assertEquals(0, audit(*args))
+
+        val rows = rows()
+        assertEquals(first, rows.mapValues { it.value.getValue("state") })
+        assertEquals(listOf("", "", "", ""),
+                     listOf("console", "hash", "fileMd5", "read").map { rows.getValue("Known.sfc").getValue(it) })
+        assertEquals("0 files handed", comments().getValue("# hasher").substringBefore(','))
+        assertEquals("0 for 0 hashes", comments()["# lookups"])
+        assertEquals("2 found, 2 rows", comments()["# files"])
+        assertEquals(read, hasher.read.toList())
+        assertTrue(File(kept, "cache/scan-ledger.json").isFile, "the data root was not kept the second time")
     }
 
     // The audit's hasher is between the scan and the hasher a daemon uses,

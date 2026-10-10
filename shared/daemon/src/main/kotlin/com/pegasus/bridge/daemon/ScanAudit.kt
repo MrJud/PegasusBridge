@@ -37,6 +37,7 @@ import java.util.concurrent.atomic.AtomicInteger
  *     --audit=<root>[|<root>...] --out=<tsv>
  *         [--oracle=<tsv>] [--lookup] [--skip-larger-than=<bytes>]
  *         [--skip=<path>[|<path>...]] [--hash-workers=N] [--data-root=<dir>]
+ *         [--keep=<dir>]
  *
  * It is how a change to hashing is measured on a real library before and
  * after: `shared/tools/audit_report.py` reads the table, counts it by
@@ -65,6 +66,19 @@ import java.util.concurrent.atomic.AtomicInteger
  * chose for the output, and not in a temporary directory that may be memory.
  * With `--lookup` the credentials are read, and only read, from the data root
  * a daemon started on the same arguments would use.
+ *
+ * `--keep=<dir>` is for measuring what a scan does with what an earlier one
+ * left: the scan's data root is that folder, made when it is not there and
+ * not deleted. A second audit with the same folder is a rescan, and an audit
+ * killed and started again with it is a scan that resumes. The table of such a
+ * run has `console`, `hash`, `fileMd5` and `read` empty for every file the
+ * scan skipped: those are what the hasher gave, and it was not asked. The
+ * folder may not be the data root a daemon would use, for the reason above.
+ *
+ * `read` is what a file cost: the bytes the thread that hashed it asked the
+ * system for while it did ([IoCounters]). The `# hasher` line adds the column
+ * up, and `# read` is the same count for the whole process over the scan,
+ * which has the ledger, the metadata files and the classes loaded in it too.
  */
 object ScanAudit {
 
@@ -75,7 +89,7 @@ object ScanAudit {
 
     /** The table's columns, in the order they are written. */
     internal val COLUMNS = listOf("path", "platform", "dirName", "extension", "size", "state", "console",
-                                  "hash", "fileMd5", "archiveEntry", "detail", "asked", "ms")
+                                  "hash", "fileMd5", "archiveEntry", "detail", "asked", "ms", "read")
 
     /** What the command line came to. */
     private class Request(
@@ -84,7 +98,8 @@ object ScanAudit {
         val oracle: File?,
         val lookup: Boolean,
         val largerThan: Long?,
-        val skip: List<File>
+        val skip: List<File>,
+        val keep: File?
     )
 
     /**
@@ -136,7 +151,8 @@ object ScanAudit {
             System.err.println("audit: the table cannot be written: ${e.message}")
             return 2
         }
-        val dataRoot = Files.createTempDirectory(outFile.parentFile.toPath(), outFile.name + ".data").toFile()
+        val dataRoot = request.keep?.absoluteFile?.also { it.mkdirs() }
+            ?: Files.createTempDirectory(outFile.parentFile.toPath(), outFile.name + ".data").toFile()
         try {
             val paths = DaemonPaths.bridgePaths(dataRoot)
             val hasher = RecordingHasher(ArchiveAwareHasher(native, File(dataRoot, "tmp")),
@@ -151,6 +167,7 @@ object ScanAudit {
 
             val roots = request.roots.map { it.absolutePath }
             var summary: RomScanPipeline.Summary? = null
+            val readBefore = IoCounters.process()
             try {
                 summary = runBlocking {
                     pipeline.scan(roots) { p -> println("[${p.processed}/${p.total}] ${p.currentFile}") }
@@ -160,19 +177,26 @@ object ScanAudit {
                 // broke, so the rows it got to are still worth writing.
                 System.err.println("audit: the scan did not finish: ${t.message ?: t.javaClass.simpleName}")
             }
+            // Taken here whether the scan ended or threw: what it read until
+            // then is what the rows it got to cost.
+            val readAfter = IoCounters.process()
+            val readByProcess = if (readBefore != null && readAfter != null) maxOf(0L, readAfter - readBefore)
+                                else null
 
             val rows = rows(File(paths.cache, ScanLedger.FILE_NAME), hasher.seen(), lookup)
             // The recipe the scan kept its verdicts under: made, as the scan
             // makes its own, from what the hasher it was given says it is.
             outFile.writeText(table(HashRecipe(hasher.engine).global, request, oracle, summary,
-                                    hasher.seen(), lookup, rows))
+                                    hasher.seen(), lookup, rows, readByProcess))
 
             println("audit: ${summary?.total ?: "?"} files found, ${rows.size} rows, " +
                     "${lookup.calls} lookups for ${lookup.distinct} hashes")
             println("audit: wrote $outFile")
             return status(summary, rows.size)
         } finally {
-            dataRoot.deleteRecursively()
+            // A root the caller named is the caller's, and keeping it is what
+            // it was named for.
+            if (request.keep == null) dataRoot.deleteRecursively()
         }
     }
 
@@ -202,7 +226,7 @@ object ScanAudit {
         fun files(flag: String) = value(flag).orEmpty().split('|').filter { it.isNotBlank() }.map(::File)
 
         val known = listOf(FLAG, "--out=", "--oracle=", "--skip-larger-than=", "--skip=",
-                           "--hash-workers=", "--data-root=")
+                           "--hash-workers=", "--data-root=", "--keep=")
         args.firstOrNull { a -> a != "--lookup" && known.none { a.startsWith(it) } }
             ?.let { throw IllegalArgumentException("unknown argument $it") }
         // The first of two would be taken and the second dropped without a
@@ -230,7 +254,19 @@ object ScanAudit {
         // file it was meant for would be read.
         val skip = files("--skip=")
         skip.firstOrNull { !it.exists() }?.let { throw IllegalArgumentException("nothing to skip at $it") }
-        return Request(roots, out, oracle, lookup, largerThan, skip)
+        val keep = value("--keep=")?.let {
+            require(it.isNotBlank()) { "--keep= takes a folder" }
+            File(it)
+        }
+        if (keep != null) {
+            require(!keep.isFile) { "--keep= takes a folder, and $keep is a file" }
+            // The scan writes its ledger and its metadata files there, and
+            // the user's own must not hear of an audit.
+            require(canonical(keep) != canonical(BridgeDaemon.fromArgs(args).dataRoot)) {
+                "--keep= is the data root of a daemon: an audit keeps its own"
+            }
+        }
+        return Request(roots, out, oracle, lookup, largerThan, skip, keep)
     }
 
     /** One spelling per file, the one the pipeline keys its ledger by. */
@@ -250,6 +286,9 @@ object ScanAudit {
      *
      * `asked` is 1 when the file's hash was put to the lookup. One request
      * answers for every file with the same hash, and each of them has a 1.
+     *
+     * `read` is empty for a file the hasher was not handed, and on a system
+     * that does not count what a thread reads.
      */
     private fun rows(ledgerFile: File, seen: Map<String, RecordingHasher.Seen>,
                      lookup: CountingLookup): List<List<String>> {
@@ -278,7 +317,8 @@ object ScanAudit {
                 // read was broken off by the end of the scan is in no ledger.
                 entry?.optString("detail").orEmpty().ifEmpty { s?.reason.orEmpty() },
                 if (s != null && s.hash.isNotEmpty() && lookup.asked(s.hash)) "1" else "0",
-                s?.ms?.toString().orEmpty()
+                s?.ms?.toString().orEmpty(),
+                s?.read?.toString().orEmpty()
             )
         }
     }
@@ -301,7 +341,7 @@ object ScanAudit {
     private fun table(recipe: String, request: Request, oracle: OracleLookup?,
                       summary: RomScanPipeline.Summary?,
                       seen: Map<String, RecordingHasher.Seen>, lookup: CountingLookup,
-                      rows: List<List<String>>): String {
+                      rows: List<List<String>>, readByProcess: Long?): String {
         val head = mutableListOf<List<String>>()
         head += listOf("# recipe", recipe)
         request.roots.forEach { head += listOf("# root", canonical(it)) }
@@ -316,6 +356,14 @@ object ScanAudit {
         head += listOf("# lookups", "${lookup.calls} for ${lookup.distinct} hashes")
         head += listOf("# outcomes", seen.values.groupingBy { it.outcome }.eachCount()
             .toSortedMap().entries.joinToString(", ") { "${it.key}=${it.value}" })
+        // Every file the hasher was handed, with the ones the audit answered
+        // for itself: those cost nothing and say so in their row.
+        val counted = seen.values.mapNotNull { it.read }
+        head += listOf("# hasher", "${seen.size} files handed, " +
+            if (seen.isNotEmpty() && counted.isEmpty()) "bytes not counted on this system"
+            else "${counted.sum()} bytes read for them")
+        readByProcess?.let { head += listOf("# read", "$it bytes by the process during the scan") }
+        request.keep?.let { head += listOf("# keep", canonical(it)) }
         if (summary == null) head += listOf("# stopped", "the scan did not finish")
         else if (summary.aborted) head += listOf("# stopped", summary.reason)
         head += listOf("# written", (System.currentTimeMillis() / 1000L).toString())
@@ -372,7 +420,7 @@ object ScanAudit {
          */
         class Seen(val platform: String, val dirName: String, val outcome: String, val console: String,
                    val hash: String, val fileMd5: String, val archiveEntry: String, val reason: String,
-                   val ms: Long)
+                   val ms: Long, val read: Long?)
 
         private val seen = ConcurrentHashMap<String, Seen>()
 
@@ -404,11 +452,19 @@ object ScanAudit {
                              ask: () -> HashOutcome): HashOutcome {
             val key = canonical(File(path))
             val started = System.nanoTime()
+            // The scan makes this call as one blocking call on one thread, and
+            // the library's own reads are made on it too, so the thread's
+            // count before and after is what the file cost. It is bytes asked
+            // of the system, whether they came from the disk or from memory.
+            val readBefore = IoCounters.thread()
             fun keep(outcome: String, result: HashResult?, reason: String) {
+                val readAfter = IoCounters.thread()
                 seen[key] = Seen(platform, dirName, outcome, result?.consoleId?.toString().orEmpty(),
                                  result?.hash.orEmpty(), result?.fileMd5.orEmpty(),
                                  result?.archiveEntry.orEmpty(), reason,
-                                 (System.nanoTime() - started) / 1_000_000)
+                                 (System.nanoTime() - started) / 1_000_000,
+                                 if (readBefore != null && readAfter != null) maxOf(0L, readAfter - readBefore)
+                                 else null)
             }
             val outcome = refusal(key)?.let { HashOutcome.Failed(it) } ?: try {
                 // The last of these lines before a crash names the files that
@@ -438,6 +494,26 @@ object ScanAudit {
                 "audit: larger than $largerThan"
             else -> null
         }
+    }
+
+    /**
+     * How many bytes have been asked of the system so far, by the calling
+     * thread or by the whole process: the number after `rchar:` in the `io`
+     * file Linux keeps under /proc for each. It counts what `read` and its
+     * kin returned, native code's reads with the rest, and counts a byte that
+     * came from memory as one that came from the disk.
+     *
+     * Null where there is no such file, which is every system but Linux, or
+     * where it cannot be read; the audit then leaves the column empty.
+     */
+    internal object IoCounters {
+        fun parse(text: String): Long? = text.lineSequence()
+            .firstOrNull { it.startsWith("rchar:") }?.substringAfter(':')?.trim()?.toLongOrNull()
+
+        fun thread(): Long? = of("/proc/thread-self/io")
+        fun process(): Long? = of("/proc/self/io")
+
+        private fun of(path: String): Long? = try { parse(File(path).readText()) } catch (e: Exception) { null }
     }
 
     /**

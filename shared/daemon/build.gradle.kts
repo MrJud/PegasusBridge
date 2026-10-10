@@ -106,7 +106,7 @@ tasks.named<Sync>("installDist") {
 /**
  * Runs one scan as the daemon would and writes a row for every file (ScanAudit):
  *
- *     ./gradlew :daemon:audit -PauditArgs='--audit=<folder> --out=<file.tsv> [...]'
+ *     ./gradlew :daemon:audit -PauditArgs='--audit=<folder> --out=<file.tsv> [--keep=<dir>] [...]'
  *
  * It does not depend on buildNative, and that is the point of having it. An
  * audit is how one build's hashes are compared with another's, and the library

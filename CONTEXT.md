@@ -584,7 +584,12 @@ for and which of those rows hold it.
 `shared/`, runs one scan as the daemon would, into a data root of its own, and
 writes a row for every file: its collection, state, console, hash and whether
 the source was asked (`ScanAudit`). It makes no request unless given
-`--lookup`; `--oracle=<file>` answers from hashes recorded earlier.
+`--lookup`; `--oracle=<file>` answers from hashes recorded earlier. Each row
+also says how many bytes the scan asked the system for while it hashed the
+file (`read`, counted on Linux only), which is how a change to what a scan
+reads is measured. With `--keep=<dir>` the data root is that folder and is
+left there, so a second audit on it is a rescan and one killed and started
+again is a scan that resumes.
 `shared/tools/audit_report.py` reads the table, counts it by collection and
 state, compares it with the table of another build row by row, and looks for
 hashes that are wrong whatever the source would say (a descriptor hashed as

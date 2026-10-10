@@ -14,6 +14,7 @@ import com.pegasus.bridge.hasher.LookupOutcome
 import com.pegasus.bridge.hasher.NativeRomHasher
 import com.pegasus.bridge.hasher.RETROACHIEVEMENTS_URL
 import com.pegasus.bridge.hasher.RaApiHashLookup
+import com.pegasus.bridge.hasher.RaGameList
 import com.pegasus.bridge.hasher.RaHashLookup
 import com.pegasus.bridge.hasher.RomHasher
 import com.pegasus.bridge.hasher.RomScanPipeline
@@ -65,7 +66,11 @@ import java.util.concurrent.atomic.AtomicInteger
  * table also puts the copies taken out of archives on the disk the caller
  * chose for the output, and not in a temporary directory that may be memory.
  * With `--lookup` the credentials are read, and only read, from the data root
- * a daemon started on the same arguments would use.
+ * a daemon started on the same arguments would use. RetroAchievements is then
+ * asked as a scan asks it, for the list of each console a hash has to be
+ * looked up in, and the lists are kept in the scan's own data root: with
+ * `--keep` a second audit finds them there and asks for none. The table says
+ * what was asked in `# requests`.
  *
  * `--keep=<dir>` is for measuring what a scan does with what an earlier one
  * left: the scan's data root is that folder, made when it is not there and
@@ -161,11 +166,15 @@ object ScanAudit {
             val paths = DaemonPaths.bridgePaths(dataRoot)
             val hasher = RecordingHasher(ArchiveAwareHasher(native, File(dataRoot, "tmp")),
                                          request.largerThan, request.skip.map(::canonical))
-            val source: RaHashLookup = if (request.lookup) {
+            // The lists are kept in the audit's own data root, the one made
+            // for it or the one it was told to keep, and never in the daemon's:
+            // only the credentials are taken from there, and only read.
+            val live: RaApiHashLookup? = if (request.lookup) {
                 val ra = Config(BridgePaths(asDaemon.dataRoot), DaemonPaths.appDefaultsFile()).load().ra
-                RaApiHashLookup(ra?.user.orEmpty(), ra?.apiKey.orEmpty(), raBaseUrl,
-                                DeviceConnection(deviceOffline))
-            } else oracle ?: OracleLookup(emptyMap())
+                RaApiHashLookup(ra?.user.orEmpty(), ra?.apiKey.orEmpty(), File(paths.cache, RaGameList.DIR),
+                                raBaseUrl, device = DeviceConnection(deviceOffline))
+            } else null
+            val source: RaHashLookup = live ?: oracle ?: OracleLookup(emptyMap())
             val lookup = CountingLookup(source)
             val pipeline = BridgeDaemon.buildScanPipeline(paths, hasher, lookup, asDaemon.hashWorkers)
 
@@ -190,7 +199,7 @@ object ScanAudit {
             // The recipe the scan kept its verdicts under: made, as the scan
             // makes its own, from what the hasher it was given says it is.
             outFile.writeText(table(HashRecipe(hasher.engine).global, request, oracle, summary,
-                                    hasher.seen(), lookup, rows, readByProcess))
+                                    hasher.seen(), lookup, live, rows, readByProcess))
 
             println("audit: ${summary?.total ?: "?"} files found, ${rows.size} rows, " +
                     "${lookup.calls} lookups for ${lookup.distinct} hashes")
@@ -344,7 +353,7 @@ object ScanAudit {
     private fun table(recipe: String, request: Request, oracle: OracleLookup?,
                       summary: RomScanPipeline.Summary?,
                       seen: Map<String, RecordingHasher.Seen>, lookup: CountingLookup,
-                      rows: List<List<String>>, readByProcess: Long?): String {
+                      live: RaApiHashLookup?, rows: List<List<String>>, readByProcess: Long?): String {
         val head = mutableListOf<List<String>>()
         head += listOf("# recipe", recipe)
         request.roots.forEach { head += listOf("# root", canonical(it)) }
@@ -357,6 +366,13 @@ object ScanAudit {
         })
         head += listOf("# files", "${summary?.total ?: "?"} found, ${rows.size} rows")
         head += listOf("# lookups", "${lookup.calls} for ${lookup.distinct} hashes")
+        // What the lookups cost the source, which is no longer a request
+        // each: one for every list that was not on disk and fresh, each
+        // attempt of one that was retried counted.
+        live?.let {
+            head += listOf("# requests", "${it.requests} to RetroAchievements: " +
+                "${it.listsFetched} lists fetched, ${it.listsRead} read from disk")
+        }
         head += listOf("# outcomes", seen.values.groupingBy { it.outcome }.eachCount()
             .toSortedMap().entries.joinToString(", ") { "${it.key}=${it.value}" })
         // Every file the hasher was handed, with the ones the audit answered
@@ -591,7 +607,10 @@ object ScanAudit {
     /**
      * Remembers every hash [inner] was asked about, and is otherwise [inner]:
      * the three things a scan stops on are passed through, so that with
-     * `--lookup` an audit ends where a daemon's scan would.
+     * `--lookup` an audit ends where a daemon's scan would. The consoles a
+     * scan gives with a hash are passed on as given, for the same reason:
+     * left to the interface's own way, [inner] would be asked by the hash
+     * alone and the audit would be of another scan.
      */
     internal class CountingLookup(private val inner: RaHashLookup) : RaHashLookup {
         private val askedAbout = ConcurrentHashMap<String, AtomicInteger>()
@@ -601,9 +620,15 @@ object ScanAudit {
             return inner.lookup(hash)
         }
 
+        override suspend fun lookup(hash: String, consoles: List<Int>): LookupOutcome {
+            askedAbout.computeIfAbsent(hash) { AtomicInteger() }.incrementAndGet()
+            return inner.lookup(hash, consoles)
+        }
+
         override val consecutiveFailures: Int get() = inner.consecutiveFailures
         override val authRejected: Boolean get() = inner.authRejected
         override val offline: Boolean get() = inner.offline
+        override val keyMissing: Boolean get() = inner.keyMissing
 
         fun asked(hash: String): Boolean = askedAbout.containsKey(hash)
         val calls: Int get() = askedAbout.values.sumOf { it.get() }

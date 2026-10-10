@@ -66,6 +66,9 @@ metadata/{gameId}.json      — per-game RA metadata (scan output)
 metadata/_index.json        — discovery index: { games[], byKey{} } (scan output)
 cache/scan-ledger.json      — what a scan settled about each file, misses included, so the
                                next one does not ask again (not read by themes)
+cache/ra-lists/{console}.tsv — RetroAchievements' list of one console's games and their
+                               hashes, which a scan looks hashes up in (see §3; not read
+                               by themes)
 profile/{user}.json         — RA profile cache
 completion/{user}.json      — RA completion cache
 media/{gameId}.json         — aggregated media cache (scrape-media output)
@@ -89,11 +92,14 @@ Atomic writes use `tmp.renameTo(out)` to avoid partial-read races.
 The scan is `RomScanPipeline`, in `shared/hasher/src/android-shared/`. There is
 one copy: the Android `:hasher` module and the desktop daemon both compile it,
 and the tests of the `shared/` build are its tests. It walks the ROM tree,
-computes RA-compatible hashes (with iNES/SMC/N64 header stripping), asks
-RetroAchievements about each and writes one `metadata/{gameId}.json` per match.
-What it settles about every file goes into `cache/scan-ledger.json`, a match
-with the id of its game, so that the next scan neither reads nor asks about a
-file that has not changed, a miss no more than a match.
+computes RA-compatible hashes (with iNES/SMC/N64 header stripping), looks each
+up in RetroAchievements' list of its console and writes one
+`metadata/{gameId}.json` per match. A list is one request for a whole console,
+kept on disk for a week: no request is made for a file, and none for a game
+(see [The lists](#the-lists)). What a scan settles about every file goes into
+`cache/scan-ledger.json`, a match with the id of its game, so that the next
+scan neither reads nor looks up a file that has not changed, a miss no more
+than a match.
 
 Each shell supplies what stands around it:
 
@@ -201,7 +207,7 @@ same game. Past a change of number, or with a ledger that lost it, the match
 is taken back from the metadata file that describes that very file, by key,
 size and date, with no read and no request. A file that shares its game's
 metadata file with another, a second dump or a track beside its sheet, is not
-described by it, and is then read and asked about once. What no table shows is
+described by it, and is then read and looked up once. What no table shows is
 the code that judges, and for a change to that a number in the recipe is still
 raised by hand, `HashRecipe.RULES`, with two beside it for one corner each:
 `PLACEHOLDERS` and `CONTAINERS`. The scan logs the line the numbers are made
@@ -215,10 +221,10 @@ size, its date and its number are what they were:
 
 | state | what it says of the file | counter | stands for |
 | --- | --- | --- | --- |
-| `MATCHED` | the source answered with a game | `newEntries`, or `cachedHits` when found unchanged | as long as the file does |
-| `NOT_FOUND` | the source was asked, and has no game for the hash | `unmatched` | 14 days |
-| `KNOWN_UNSUPPORTED` | the source knows the dump and does not let it count: untested, incompatible, or in need of a patch | `incompatible` | 30 days |
-| `API_RETRY` | the source did not answer | `failedLookups` | never kept |
+| `MATCHED` | a list of the source has a game for the hash | `newEntries`, or `cachedHits` when found unchanged | as long as the file does |
+| `NOT_FOUND` | every list the hash was to be looked up in was had whole, and none has it | `unmatched` | 14 days |
+| `KNOWN_UNSUPPORTED` | the source knows the dump and does not let it count: untested, incompatible, or in need of a patch. No scan reaches it any more, and an entry an earlier build left stands its time | `incompatible` | 30 days |
+| `API_RETRY` | a list the hash was to be looked up in could not be had | `failedLookups` | never kept |
 | `UNSUPPORTED` | its collection is of a console nobody can hash for | `skippedPlatforms` | 90 days, and decided again at every scan |
 | `PLACEHOLDER` | an empty file, or a few lines of text under a ROM's name | `skippedPlatforms` | as long as the file does |
 | `UNSUPPORTED_FORMAT` | the collection can be hashed and this file cannot: a format nobody reads, a file that is no game | `hashFailed` | 90 days, and decided again at every scan where the name says it |
@@ -227,15 +233,107 @@ size, its date and its number are what they were:
 | `UNHASHABLE` | the console of its collection read the file and refused it, or its archive or its disc's sheet is one nothing can be made of | `hashFailed` | 30 days |
 | `HASH_FAILED` | the file could not be read, or not this time | `hashFailed` | never kept |
 
-The three that cost a request are the first three, and `API_RETRY` is the one
-that cost one and got nothing for it. The other seven never reach the source.
+The four that come of a lookup are the first four, and a scan now ends a file
+in three of them: `MATCHED`, `NOT_FOUND` and `API_RETRY`. None costs a request
+of its own. A request is for the list of a console, made when the first hash of
+that console needs looking up, and `API_RETRY` is what its files end in when
+the list could not be had. The other seven never reach a lookup.
+
+A dump RetroAchievements knows and does not let count is not in its lists,
+which hold the hashes it supports, so it comes out `NOT_FOUND` like a dump
+nobody has heard of. It used to be told apart, by a request about the hash
+alone that is no longer made.
+
+### The lists
+
+`RaApiHashLookup` asks `API/API_GetGameList.php?z=<user>&y=<key>&i=<console>&h=1`
+for the list of a console: every game RetroAchievements has for it, each with
+its id, title, icon, number of achievements and the hashes it is known by,
+games with no achievements included, since they hold most of the hashes.
+`RaGameList` reads the answer and keeps it as
+`cache/ra-lists/<console>.tsv`, a text file with a header (format, console,
+when it was fetched, how many games and hashes, the console's name) and a line
+per game: id, achievements, icon, hashes and title between tabs. It is read
+back line by line, and a file that is cut short, of another format or console,
+or whose counts differ from its header is not read and is asked for again.
+What a match writes down, its title, icon and count, is what the list says.
+
+A list is answered from for **7 days** from its fetch. It is loaded when the
+first hash needs it and not before: from memory, then from the file if it is
+fresh, then by one request. So a scan whose files are all settled in the
+ledger reads no list and asks nothing, and one that finds its lists on disk
+makes no request, on a plane included.
+
+**Which lists.** The pipeline gives each hash the consoles to look it up in, in
+the order to try them (`RomScanPipeline.consolesOf`), and the next list is
+loaded only after a miss in the one before:
+
+1. the console the file was hashed as;
+2. where that console came from the file's extension and not from its
+   collection (a collection the console table has no row for, or a stray file
+   in one that has), the consoles rcheevos' name for the extension stands for
+   (`STANDS_FOR`): a `.fds` is hashed as a NES file and listed under the
+   Famicom Disk System, a disc as a Sega CD's and perhaps a Saturn's;
+3. the collection's own console, then the rest of its family in the console
+   table: a `.gb` file of a Game Boy Color game is hashed as a Game Boy's and
+   listed under Game Boy Color;
+4. DS beside DSi and DSi beside DS (`FILED_BESIDE`), which no family holds.
+
+Nearly every hash is in the first list, and the others are asked for only
+after a miss in it.
+
+**A list that cannot be had** fails the lookups that need it, as `API_RETRY`
+and never as a miss: a miss is kept for 14 days and a list is every file of a
+console at once. That is a request that failed four times, a status that is
+not a success, a body that is no JSON array, an array that is another
+console's, holds no game or came without its hashes, and a list past its 7
+days whose refresh fails, which is not answered from either. Nothing is written to disk
+for a list that is not taken. The failure is remembered for the rest of the
+scan and the console is not asked for again, so a console that is down costs
+four requests however many files it has. A game the list gives no title or no
+count for fails its own hashes and no others.
+
+**Which failures count** towards the stop after 8 (below). Those where the
+source is not answering as itself: no answer, a status, a body that is no list
+at all. Each lookup that fails for one counts, with or without a request of
+its own, so a source that is down stops the scan at the eighth lookup that
+fails and the fourth request. The error can name fewer files than eight, as
+few as one: a lookup that meets a failure already known costs no time, so the
+workers that look hashes up are eight files on while the first result is still
+being counted. A whole answer that is no list of the console, an empty array or
+another console's games, does not count: it is one console's trouble, its
+files are `API_RETRY` and are hashed again at every scan, and the scan goes on
+to the collections after it. The other side of that rule is a console whose
+request fails every time while the rest answer, a 500 for that one list: it
+counts, and every scan stops at that console's eighth lookup and never reaches
+the collections after it, until the list can be had.
+
+**A miss** stands 14 days from the scan that looked. The file is then hashed
+again and looked up in a list at most 7 days old, so a hash new to
+RetroAchievements shows 14 to 21 days later at worst. A list that is fetched
+again in between does not have the standing misses looked up in it: the ledger
+keeps no hash, and a miss is only looked up again by reading its file.
+
+**Manners.** Every request names the program, its version and where its source
+is: `User-Agent: PegasusBridge/<version> (+https://github.com/MrJud/PegasusBridge)`,
+the version being `BridgeVersion.NAME`, which a test holds to the Android
+app's `versionName`. Requests go one at a time and a second apart. A request
+that brought nothing back and a 5xx are asked again after 1, 2 and 4 seconds,
+four attempts in all. A 429 is waited out for what its `Retry-After` says, a
+minute when it says nothing, and one that asks for more than 120 seconds ends
+the lookup at once; three waits at most for a list, so a scan can stand still
+for up to six minutes on one, with the wake lock held on Android. A 403, which
+from RetroAchievements is a client it has blocked, is never asked again, and
+neither is any other 4xx. A long 429 and a 403 have no stop of their own: the
+console's files fail, and after eight of them the scan ends as `SOURCE_DOWN`,
+whose advice to wait a few minutes is the wrong one for a 403.
 
 Files are hashed 2 at a time on Android and 4 on the desktop. Either can be
 told otherwise, to time a library on its own storage: `hashWorkers=N` on the
 `pegasus-data://scan` URI (1–8), `--hash-workers=N` on the daemon (1–16).
 Neither hashes more files at once than the machine has cores, whatever the
 count, and the count each puts in its log or prints is the one it runs with.
-Lookups are paced the same whatever the count.
+Requests are one at a time whatever the count.
 
 ### The job record
 
@@ -279,9 +377,22 @@ both shells:
 
 | Cause | When | The error begins |
 |-------|------|------------------|
-| `KEY_REFUSED` | RetroAchievements answered the key with a 401 | `RetroAchievements refused the API key` |
-| `OFFLINE` | a request failed without an answer and the device says it has no connection | `No internet connection: stopped after` |
-| `SOURCE_DOWN` | 8 lookups in a row got no answer | `RetroAchievements stopped responding after` |
+| `KEY_REFUSED` | no key is configured, found before any file is read, or RetroAchievements answered the key with a 401 | `RetroAchievements refused the API key` |
+| `OFFLINE` | a request for a list failed without an answer and the device says it has no connection | `No internet connection: stopped after` |
+| `SOURCE_DOWN` | 8 lookups in a row failed for a list the source would not give | `RetroAchievements stopped responding after` |
+
+**The key.** Every request for a list carries it, so a scan with none can look
+nothing up, and is stopped once its files are counted and before one is read
+(`RaHashLookup.keyMissing`): the error says `after 0 of N files`. That is the
+desktop daemon and an audit; a desktop scan of a library that is all cached is
+turned away as well. The theme sees such a scan end before its first poll, so
+it shows `job unknown to the bridge` for one poll and then the sentence. The
+Android service turns the start away earlier, with
+`Missing RA credentials in credentials.json`. A key RetroAchievements refuses
+is refused at the first request that is made and stops the scan at that
+result. None is made while the lists a scan needs are on disk and fresh, so a
+key revoked since they were fetched goes unnoticed for up to a week, and so
+does a wrong one typed in over a good one.
 
 Whichever it was, the file whose lookup failed is in the ledger as `API_RETRY`
 and never as `NOT_FOUND`, the ledger and the index are saved, and the next scan
@@ -307,7 +418,7 @@ with `durable`), so a whole ledger comes back, the last one saved or, on
 storage that will not force a directory, perhaps the one before. Nothing else
 a scan writes is forced, so a metadata file or an index written just before
 the cut can come back empty or short: the next scan reads that game's ROM and
-asks about it once more, and rebuilds the index as every scan does.
+looks it up once more, and rebuilds the index as every scan does.
 
 **No connection.** What the device knows about its connection explains a
 failure and prevents nothing. Every request is made. Only when one has failed
@@ -318,7 +429,8 @@ gives up, and the pipeline stops the scan at that result. A device that is
 wrong about being offline therefore costs nothing while requests get through,
 and one that cannot say, or throws when asked, counts as online. Nothing is
 asked before a scan, or during one that makes no request: a library scanned
-before is scanned again on a plane and ends `done`, every file cached. The
+before is scanned again on a plane and ends `done`, every file cached, and a
+new ROM of a console whose list is on disk and fresh is matched there too. The
 first answer that arrives takes the verdict back.
 
 A connection that goes in the middle of a scan stops it the same way, at the
@@ -614,8 +726,12 @@ for and which of those rows hold it.
 `./gradlew :daemon:audit -PauditArgs='--audit=<folder> --out=<file.tsv>'`, from
 `shared/`, runs one scan as the daemon would, into a data root of its own, and
 writes a row for every file: its collection, state, console, hash and whether
-the source was asked (`ScanAudit`). It makes no request unless given
-`--lookup`; `--oracle=<file>` answers from hashes recorded earlier. Each row
+the hash was looked up (`ScanAudit`). It makes no request unless given
+`--lookup`; `--oracle=<file>` answers from hashes recorded earlier. With
+`--lookup` the key is read from the data root named by `--data-root`, the
+lists are kept in the audit's own data root, and the table says under
+`# requests` how many requests were made, how many lists were fetched and how
+many read from disk; with no key there the audit stops before it hashes. Each row
 also says how many bytes the scan asked the system for while it hashed the
 file (`read`, counted on Linux only), which is how a change to what a scan
 reads is measured. With `--keep=<dir>` the data root is that folder and is

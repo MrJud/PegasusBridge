@@ -187,7 +187,10 @@ class RomScanPipeline(
 
     /** Why a scan stopped itself. What a person can do about it differs from one to the next. */
     enum class AbortCause {
-        /** The source refused the credentials. Nothing changes until the key does. */
+        /**
+         * The source refused the credentials, or there is no key to send
+         * and nothing was asked. Nothing changes until the key does.
+         */
         KEY_REFUSED,
         /** A request failed and the device says it has no connection. Nothing changes until it has one. */
         OFFLINE,
@@ -284,6 +287,18 @@ class RomScanPipeline(
             // record cannot be written ends the scan as any other failure
             // does, with the index rebuilt on the way out.
             onCounted(total)
+            // No key, no scan, and said before a file is read. Every request
+            // carries the key, so each file that needs a lookup would be read
+            // and hashed for an answer that cannot come, a disc image among
+            // them; and a scan whose files are all settled would end as done
+            // and hide that the next new ROM cannot be looked up. Thrown in
+            // here so that it ends as any stop does: the ledger and the index
+            // are written as they stand, and what earlier scans settled is
+            // left as it was.
+            if (lookup.keyMissing) {
+                throw ScanAborted("no RetroAchievements API key is configured " +
+                                  "(0 of $total processed)", AbortCause.KEY_REFUSED)
+            }
             coroutineScope {
                 val feeder = launch(Dispatchers.IO) {
                     try {
@@ -315,16 +330,23 @@ class RomScanPipeline(
                             // went on through every hash still queued, 32 of them, with
                             // the scope waiting for it.
                             if (!isActive) break
-                            // One network call per distinct hash, however many files share it.
+                            // One lookup per distinct hash, however many files share it.
                             // Claiming the hash and registering the promise happen under the
                             // same lock, so exactly one worker owns the call and the others
                             // await it instead of racing it.
+                            //
+                            // Per hash and consoles it may be of, since the answer is
+                            // to both: the same hash put to other consoles is another
+                            // question. Files of one collection that share a hash were
+                            // hashed as one console, so they still share the lookup.
                             val hash = job.hash.hash
+                            val consoles = consolesOf(job)
+                            val key = "$hash|${consoles.joinToString(",")}"
                             var mine: CompletableDeferred<LookupOutcome>? = null
                             val pending = synchronized(hashDedup) {
-                                hashDedup[hash] ?: CompletableDeferred<LookupOutcome>().also {
+                                hashDedup[key] ?: CompletableDeferred<LookupOutcome>().also {
                                     mine = it
-                                    hashDedup[hash] = it
+                                    hashDedup[key] = it
                                 }
                             }
 
@@ -342,9 +364,9 @@ class RomScanPipeline(
                                 // ever; tried with such a lookup, scan() never returned.
                                 // No lookup here throws one, so no test reaches this.
                                 outcome = try {
-                                    lookup.lookup(hash)
+                                    lookup.lookup(hash, consoles)
                                 } catch (t: Throwable) {
-                                    synchronized(hashDedup) { hashDedup.remove(hash) }
+                                    synchronized(hashDedup) { hashDedup.remove(key) }
                                     owned.completeExceptionally(t)
                                     throw t
                                 }
@@ -352,7 +374,7 @@ class RomScanPipeline(
                                 // left uncached and unrecorded so the next scan asks
                                 // again — recording it would write the game off for good.
                                 if (outcome is LookupOutcome.Failed) {
-                                    synchronized(hashDedup) { hashDedup.remove(hash) }
+                                    synchronized(hashDedup) { hashDedup.remove(key) }
                                 }
                                 owned.complete(outcome)
                             } else {
@@ -443,6 +465,14 @@ class RomScanPipeline(
                             // the ledger had to know the bases to learn which game the dump
                             // is of. No metadata file even so: that would say the game is
                             // in the library, and this dump earns nothing for it.
+                            //
+                            // The lookup a scan is built with no longer answers this. It
+                            // looks a hash up in the lists of consoles, which hold the
+                            // hashes RetroAchievements lets count and no others, so such a
+                            // dump is now a hash it does not know and is counted with the
+                            // misses. The branch is for a lookup that does answer it, as an
+                            // audit's recorded answers do; the entries it wrote stand in a
+                            // ledger until their month is out.
                             is LookupOutcome.IdOnly -> {
                                 incompatible++
                                 ledger.record(canonical(job.file), job.collection, ScanLedger.State.KNOWN_UNSUPPORTED,
@@ -456,7 +486,8 @@ class RomScanPipeline(
                                               job.fileSize, job.lastModified, now,
                                               gameId = outcome.game.gameId)
                             }
-                            // The source was asked and said no. A real verdict, remembered
+                            // The hash is in none of the lists of the consoles it may be
+                            // of, each of them read whole. A real verdict, remembered
                             // until its TTL runs out.
                             LookupOutcome.NotFound -> {
                                 unmatched++
@@ -494,11 +525,11 @@ class RomScanPipeline(
                                             unmatched, incompatible, hashFailed, failedLookups))
                     }
 
-                    // A refused key fails every match from here on, and the misses in
-                    // between, answered without the key, kept the failure count below
-                    // the limit: with one ROM in four unknown, 24 went through with no
-                    // abort, and when one did come it blamed a source that "stopped
-                    // answering". Stopped at the first refusal, and named.
+                    // A refused key fails every lookup from here on: each request
+                    // carries it, and no list can be had without one. Stopped at the
+                    // first refusal, and named. Left to the count of failures the
+                    // scan would stop eight files later and blame a source that
+                    // "stopped answering", with the advice to wait.
                     if (lookup.authRejected) {
                         throw ScanAborted("RetroAchievements refused the API key " +
                                           "($processed of $total processed)", AbortCause.KEY_REFUSED)
@@ -1018,6 +1049,34 @@ class RomScanPipeline(
         return MetaCache(byKey, keyOfGame)
     }
 
+    /**
+     * The consoles a file's hash is to be looked up in, RetroAchievements'
+     * ids, in the order to try them: the one the file was hashed as, then
+     * what that one stands for when it was taken from the file's extension
+     * ([STANDS_FOR]), then its collection's own, then the rest of the
+     * collection's family, then what [FILED_BESIDE] adds to any of those.
+     *
+     * More than the one it was hashed as because that one is where the
+     * hasher's rules put the file, and RetroAchievements files a hash under
+     * the game's console: a `.gb` file of a Game Boy Color game is hashed as
+     * a Game Boy's and listed under Game Boy Color. A lookup by hash alone
+     * found it wherever it was, and one console's list would lose it.
+     *
+     * A file hashed as no console, by a hasher that does not say, is left
+     * with its collection's.
+     */
+    private fun consolesOf(job: HashJob): List<Int> {
+        val row = RcConsoles.resolve(job.collection.shortName, job.collection.dirName) as? RcConsoles.Hashable
+        val hashedAs = job.hash.consoleId
+        // A console of the row's family is the collection's word for what the
+        // file is. Any other is rcheevos' reading of the extension: all there
+        // is for a collection with no row, and for a stray in one that has.
+        val byExtension = row == null || hashedAs !in row.family
+        val first = listOf(hashedAs) + (if (byExtension) STANDS_FOR[hashedAs].orEmpty() else emptyList()) +
+                    listOfNotNull(row?.console) + row?.family.orEmpty().sorted()
+        return (first + first.flatMap { FILED_BESIDE[it].orEmpty() }).filter { it > 0 }.distinct()
+    }
+
     private data class HashJob(
         val file: File, val cacheKey: String, val hash: HashResult,
         /**
@@ -1058,10 +1117,69 @@ class RomScanPipeline(
         fun hashProducers(hashWorkers: Int): Int =
             hashWorkers.coerceAtMost(Runtime.getRuntime().availableProcessors())
 
-        // Matches RaHashLookup.MAX_PARALLEL: more workers than permits only
-        // queues them behind the semaphore.
+        // A lookup is a read of a list in memory, and a list is fetched by
+        // one worker at a time whatever their number: the second is there
+        // so that hashes of a console whose list is loaded are answered
+        // while another console's is being fetched.
         const val DEFAULT_API_WORKERS  = 2
         const val MAX_CONSECUTIVE_FAILURES = 8
+
+        /**
+         * Consoles rcheevos hashes alike and RetroAchievements keeps apart,
+         * which no row's family holds: a DSi game in a folder of DS games is
+         * hashed as a DS game, 18, and listed under DSi, 78.
+         *
+         * Here and not in [RcConsoles]: a row's family says what a file may
+         * be hashed as, and is part of what its collection's recipe number
+         * is made from, so a console added there would have every verdict of
+         * the collection worked out again for a hash that does not change.
+         */
+        private val FILED_BESIDE = mapOf(18 to listOf(78), 78 to listOf(18))
+
+        /**
+         * What the console of a file stands for when rcheevos took it from
+         * the file's extension. It has one console for an extension, and for
+         * some the one it names is the first of several that hash a file
+         * alike: its table sends a `.fds` to the NES, a `.bin` to the Mega
+         * Drive "since they all use the same hashing algorithm", and a disc
+         * to the Sega CD, which "handles both Sega CD and Saturn". The hash
+         * is right whichever of them the file is of, and RetroAchievements
+         * lists it under the game's own console. Asked by the hash alone it
+         * was found there; in the list of the console rcheevos named, a
+         * Famicom disk or a Saturn disc in a folder nothing is known of is
+         * a hash that is not known, for fourteen days.
+         *
+         * Only for a console taken from the extension, a collection with no
+         * row or a stray in one that has. Where a row says what its files
+         * are, the console is the row's and stands for itself, and a Mega
+         * Drive cartridge RetroAchievements does not have would otherwise
+         * have eight more lists asked for.
+         *
+         * Not here: a file with an extension rcheevos has never heard of, in
+         * a collection with no row. It is hashed whole, as a Game Boy
+         * cartridge, and which console has it nothing says.
+         */
+        private val STANDS_FOR = mapOf(
+            // .bin: the 32X, the Atari 2600, the Super Cassette Vision, the
+            // Channel F, the Supervision, the Mega Duck, the Arcadia 2001
+            // and the Interton VC 4000.
+            1 to listOf(10, 25, 55, 57, 63, 69, 73, 74),
+            // .gb and .gbc go by the extension, and a cartridge that runs on
+            // both consoles is written either way.
+            4 to listOf(6),
+            6 to listOf(4),
+            // .fds: the Famicom Disk System.
+            7 to listOf(81),
+            // .cue, .chd and .iso: the Saturn.
+            9 to listOf(39),
+            // .rom: the Channel F. .dsk, which is tried as an MSX disk before
+            // any other: the Amstrad CPC, the Apple II, the ZX Spectrum.
+            29 to listOf(37, 38, 57, 59),
+            // .tap: the Oric and the ZX Spectrum.
+            30 to listOf(32, 59),
+            // .nib, tried as an Apple II disk first: the Commodore 64.
+            38 to listOf(30)
+        )
 
         /**
          * The least time between two writes of the ledger while a scan runs.

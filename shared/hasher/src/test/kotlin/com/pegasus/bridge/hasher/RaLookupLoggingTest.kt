@@ -36,19 +36,21 @@ class RaLookupLoggingTest {
     }
 
     @BeforeTest fun setUp() { BridgeLog.current = capturingLog }
-    @AfterTest  fun tearDown() { BridgeLog.current = StderrLog }
+    @AfterTest  fun tearDown() { BridgeLog.current = StderrLog; lists.deleteRecursively() }
 
     /** A port with nothing behind it: every attempt fails fast and for real. */
     private fun deadPort(): Int = ServerSocket(0).use { it.localPort }
 
+    private val lists = java.nio.file.Files.createTempDirectory("ra-logging-lists").toFile()
+
     @Test fun `an exhausted retry logs the endpoint but never the api key`() = runTest {
         val key = "SENTINEL-RA-KEY-0123456789"
-        val lookup = RaApiHashLookup("someuser", key, "http://127.0.0.1:${deadPort()}")
+        val lookup = RaApiHashLookup("someuser", key, lists, "http://127.0.0.1:${deadPort()}")
 
         // Fails at every attempt — connection refused — so the retry-exhaustion
         // branch that carries the URL is the one that runs. `runTest` skips the
         // back-off delays, so this costs milliseconds rather than seven seconds.
-        val result = lookup.lookup("8e3630186e35d477231bf8fd50e54cdd").asLegacy()
+        val result = lookup.lookup("8e3630186e35d477231bf8fd50e54cdd", listOf(7)).asLegacy()
 
         val log = captured.toString()
         assertTrue(result == null, "an unreachable source must not answer")
@@ -57,13 +59,17 @@ class RaLookupLoggingTest {
         assertFalse(log.contains("y=$key"), "the API key reached the log:\n$log")
     }
 
-    // A hash is not a secret, and losing it would make the line useless: the whole
-    // point of the log is saying which ROM the source would not answer about.
-    @Test fun `the hash under lookup is still logged`() = runTest {
-        val hash = "8e3630186e35d477231bf8fd50e54cdd"
-        RaApiHashLookup("someuser", "SENTINEL-RA-KEY", "http://127.0.0.1:${deadPort()}")
-            .lookup(hash)
-        assertTrue(captured.toString().contains(hash),
-                   "the log must still say which hash failed:\n$captured")
+    // What fails now is the list of a console, asked for once, and not a
+    // hash: a line for each hash that then cannot be looked up would be
+    // thousands. The console is not a secret, and losing it would make the
+    // line useless: the point of the log is saying what the source would not
+    // answer about.
+    @Test fun `the console whose list could not be had is still logged`() = runTest {
+        RaApiHashLookup("someuser", "SENTINEL-RA-KEY", lists, "http://127.0.0.1:${deadPort()}")
+            .lookup("8e3630186e35d477231bf8fd50e54cdd", listOf(7))
+        val log = captured.toString()
+        assertTrue(log.contains("API_GetGameList.php") && log.contains("i=7"),
+                   "the log must still say which list failed:\n$log")
+        assertFalse(log.contains("SENTINEL-RA-KEY"), "the API key reached the log:\n$log")
     }
 }

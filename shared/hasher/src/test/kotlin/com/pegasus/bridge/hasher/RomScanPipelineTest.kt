@@ -155,8 +155,8 @@ class RomScanPipelineTest {
                    "reverse lookup key missing: ${index.getJSONObject("byKey").keys().asSequence().toList()}")
     }
 
-    // RA's dorequest answers a dump it does not consider playable as is with a
-    // virtual id: a Virtual Console Metroid returns 1100001487, game 1487
+    // RA's dorequest answered a dump it does not consider playable as is with a
+    // virtual id: a Virtual Console dump returned 1100001487, game 1487
     // untested, and the Web API has no game under that number. Not a match, so
     // nothing is written and the count does not include it. But an answer, and
     // kept as one: recorded as API_RETRY, which is never cached, the file was
@@ -164,56 +164,97 @@ class RomScanPipelineTest {
     // the game's own id: as a NOT_FOUND under the number as sent, the ledger
     // said the same of it as of a dump nobody has heard of.
     //
-    // Through the lookup a scan really has, against a server that answers as
-    // RetroAchievements does, for the two things only that lookup can show: a
-    // virtual id is not asked about a second time, where the game's metadata
-    // is, and it leaves the count of failures where it was. One failure is
-    // made before the scan, so that a count put back to nothing would show.
+    // The lookup a scan has no longer answers this, since the lists it reads
+    // do not hold such a dump. What is held here is what the pipeline makes of
+    // the answer when a lookup does give it, as an audit's recorded answers
+    // do, and that the verdict stands.
     @Test fun `a virtual id is kept as KNOWN_UNSUPPORTED under the real game id`(): Unit = runBlocking {
-        val rom = rom("nes", "Metroid (Europe) (Virtual Console).nes", "hash-phantom")
-        val requests = java.util.Collections.synchronizedList(mutableListOf<String>())
+        val rom = rom("nes", "Phantom Dump (Europe) (Virtual Console).nes", "hash-phantom")
+        val lookup = object : RaHashLookup {
+            val calls = AtomicInteger()
+            override suspend fun lookup(hash: String): LookupOutcome {
+                calls.incrementAndGet()
+                return LookupOutcome.IdOnly(1487, LookupOutcome.Compatibility.UNTESTED, 1100001487)
+            }
+        }
+
+        val s = pipeline(ContentHasher(), lookup).scan(listOf(romRoot.absolutePath))
+
+        assertEquals(1, s.total)
+        assertEquals(0, s.newEntries, "a dump that is not supported must not count as a new entry")
+        assertEquals(0, s.indexed)
+        assertEquals(0, paths.metadata.listFiles { f -> !f.name.startsWith("_") }!!.size,
+                     "no metadata file should be left on disk for it")
+        assertEquals(mapOf(ScanLedger.State.KNOWN_UNSUPPORTED to 1), s.states)
+        assertEquals(counts(new = 0, cached = 0, skipped = 0, unmatched = 0, incompatible = 1,
+                            hashFailed = 0, failedLookups = 0), s.counts())
+        val entry = JSONObject(File(paths.cache, ScanLedger.FILE_NAME).readText())
+            .getJSONObject("entries").getJSONObject(rom.canonicalPath)
+        assertEquals("KNOWN_UNSUPPORTED", entry.getString("state"))
+        assertEquals(1487, entry.getInt("gameId"), "the game's own id, not the number as it was sent")
+        assertEquals("untested", entry.getString("detail"))
+
+        val h2 = ContentHasher()
+        val s2 = pipeline(h2, lookup).scan(listOf(romRoot.absolutePath))
+        assertEquals(0, h2.calls.get(), "the file was read again inside the verdict's TTL")
+        assertEquals(1, lookup.calls.get(), "the source was asked again inside the verdict's TTL")
+        assertEquals(mapOf(ScanLedger.State.KNOWN_UNSUPPORTED to 1), s2.states)
+        assertEquals(counts(new = 0, cached = 0, skipped = 0, unmatched = 0, incompatible = 1,
+                            hashFailed = 0, failedLookups = 0), s2.counts(),
+                     "the verdict found standing was counted as something else")
+    }
+
+    // The scan a daemon runs, with the lookup it runs it with, against a
+    // server that answers as RetroAchievements does: the three files cost
+    // one request, for their console's list, and a game is written down with
+    // the title, the icon and the count the list gave. Nothing else is asked
+    // that could give them. The next scan asks nothing and reads nothing.
+    @Test fun `a scan through the real lookup writes the game as the list gives it`(): Unit = runBlocking {
+        val hashes = listOf("a".repeat(32), "b".repeat(32), "c".repeat(32))
+        rom("nes", "Moss Kingdom (World).nes", hashes[0])
+        rom("nes", "Moss Kingdom (World) (Rev 1).nes", hashes[1].uppercase())
+        rom("nes", "Paper Rally (World).nes", hashes[2])
+        val asked = java.util.Collections.synchronizedList(mutableListOf<String>())
         val server = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0)
         server.createContext("/") { exchange ->
-            requests += exchange.requestURI.path
-            val body = if (requests.size == 1) "<html>not an answer</html>"
-                       else """{"Success":true,"GameID":1100001487}"""
+            asked += exchange.requestURI.path + "?" + exchange.requestURI.query
+            val body = """[{"ID":4101,"Title":"Moss Kingdom","ConsoleID":7,"ConsoleName":"Invented System",""" +
+                """"ImageIcon":"/Images/004101.png","NumAchievements":31,"Hashes":["${hashes[0]}","${hashes[1]}"]},""" +
+                """{"ID":4102,"Title":"Paper Rally","ConsoleID":7,"ConsoleName":"Invented System",""" +
+                """"ImageIcon":"/Images/004102.png","NumAchievements":0,"Hashes":["${hashes[2].uppercase()}"]}]"""
             val bytes = body.toByteArray()
             exchange.sendResponseHeaders(200, bytes.size.toLong())
             exchange.responseBody.use { it.write(bytes) }
         }
         server.start()
         try {
-            val lookup = RaApiHashLookup("someuser", "a-key", "http://127.0.0.1:${server.address.port}")
-            assertTrue(lookup.lookup("hash-of-another-file") is LookupOutcome.Failed)
-            assertEquals(1, lookup.consecutiveFailures)
+            val lists = File(paths.cache, RaGameList.DIR)
+            val lookup = RaApiHashLookup("someuser", "a-key", lists, "http://127.0.0.1:${server.address.port}")
 
             val s = pipeline(ContentHasher(), lookup).scan(listOf(romRoot.absolutePath))
 
-            assertEquals(1, s.total)
-            assertEquals(0, s.newEntries, "a dump that is not supported must not count as a new entry")
-            assertEquals(0, s.indexed)
-            assertEquals(0, paths.metadata.listFiles { f -> !f.name.startsWith("_") }!!.size,
-                         "no metadata file should be left on disk for it")
-            assertEquals(mapOf(ScanLedger.State.KNOWN_UNSUPPORTED to 1), s.states)
-            assertEquals(counts(new = 0, cached = 0, skipped = 0, unmatched = 0, incompatible = 1,
-                                hashFailed = 0, failedLookups = 0), s.counts())
-            val entry = JSONObject(File(paths.cache, ScanLedger.FILE_NAME).readText())
-                .getJSONObject("entries").getJSONObject(rom.canonicalPath)
-            assertEquals("KNOWN_UNSUPPORTED", entry.getString("state"))
-            assertEquals(1487, entry.getInt("gameId"), "the game's own id, not the number as it was sent")
-            assertEquals("untested", entry.getString("detail"))
-            assertEquals(listOf("/dorequest.php", "/dorequest.php"), requests.toList(),
-                         "a virtual id must not be asked about as a game is")
-            assertEquals(1, lookup.consecutiveFailures, "an answer that is not a match moved the count of failures")
+            assertEquals(mapOf(ScanLedger.State.MATCHED to 3), s.states)
+            assertEquals(listOf("/API/API_GetGameList.php?z=someuser&y=a-key&i=7&h=1"), asked.toList())
+            val meta = JSONObject(paths.metadata("4101").readText())
+            assertEquals("Moss Kingdom", meta.getString("title"))
+            assertEquals(31, meta.getJSONObject("ra").getInt("total"))
+            assertEquals("/Images/004101.png", meta.getJSONObject("ra").getString("imageIcon"))
+            assertEquals("nes", meta.getString("platform"))
+            val other = JSONObject(paths.metadata("4102").readText())
+            assertEquals(listOf<Any>("Paper Rally", 0, "/Images/004102.png"),
+                         listOf(other.getString("title"), other.getJSONObject("ra").getInt("total"),
+                                other.getJSONObject("ra").getString("imageIcon")))
+            assertEquals(2, s.indexed)
+            assertEquals(listOf("7.tsv"), lists.list()!!.toList())
 
             val h2 = ContentHasher()
-            val s2 = pipeline(h2, lookup).scan(listOf(romRoot.absolutePath))
-            assertEquals(0, h2.calls.get(), "the file was read again inside the verdict's TTL")
-            assertEquals(2, requests.size, "the source was asked again inside the verdict's TTL")
-            assertEquals(mapOf(ScanLedger.State.KNOWN_UNSUPPORTED to 1), s2.states)
-            assertEquals(counts(new = 0, cached = 0, skipped = 0, unmatched = 0, incompatible = 1,
-                                hashFailed = 0, failedLookups = 0), s2.counts(),
-                         "the verdict found standing was counted as something else")
+            val again = RaApiHashLookup("someuser", "a-key", lists, "http://127.0.0.1:${server.address.port}")
+            val s2 = pipeline(h2, again).scan(listOf(romRoot.absolutePath))
+            assertEquals(3, s2.cachedHits)
+            assertEquals(0, h2.calls.get(), "a file whose match stands was read again")
+            assertEquals(1, asked.size, "the source was asked again")
+            // Not even the list on disk: nothing needed looking up.
+            assertEquals(listOf(0, 0), listOf(again.requests, again.listsRead))
         } finally {
             server.stop(0)
         }
@@ -1640,6 +1681,129 @@ class RomScanPipelineTest {
         assertEquals(mapOf(ScanLedger.State.API_RETRY to 1, ScanLedger.State.MATCHED to 1), s.states)
     }
 
+    /** Hashes a file to its text, as the console the test names for the file. */
+    private class HashedAs(private val consoles: Map<String, Int>) : RomHasher {
+        override fun hash(path: String): HashResult? {
+            val f = File(path)
+            return HashResult(f.readText().removeSuffix(NUL).trim(), consoles.getValue(f.name))
+        }
+    }
+
+    /** Keeps what it was asked, the consoles with the hash, and answers what it is built to. */
+    private class ToldConsoles(private val answer: (Int) -> LookupOutcome = { LookupOutcome.NotFound }) : RaHashLookup {
+        val asked: MutableList<Pair<String, List<Int>>> = java.util.Collections.synchronizedList(mutableListOf())
+        override suspend fun lookup(hash: String): LookupOutcome = error("a scan gives the consoles with the hash")
+        override suspend fun lookup(hash: String, consoles: List<Int>): LookupOutcome {
+            asked += hash to consoles
+            return answer(asked.size)
+        }
+    }
+
+    // A lookup that answers from one console's list has to be told which
+    // lists. The console a file was hashed as comes first, since that is
+    // where nearly every hash is; then the others its collection's files may
+    // be of, because RetroAchievements files a hash under the game's console
+    // and the hasher's rules go by the file. A Game Boy Color game in a .gb
+    // file is the case: hashed as a Game Boy's, listed under Game Boy Color.
+    @Test fun `the lookup is told the console a file was hashed as, then where else its hash may be filed`(): Unit = runBlocking {
+        rom("gbc", "Game.gb", "hash-gb")
+        rom("snes", "Game.sfc", "hash-sfc")
+        rom("nes", "Game.nes", "hash-nes")
+        rom("misc", "Game.bin", "hash-bin")
+        rom("snes", "Stray.gba", "hash-gba")
+        rom("nds", "Game.nds", "hash-nds")
+        rom("fds", "Disk.fds", "hash-fds")
+        rom("saturnjp", "Disc.iso", "hash-saturn")
+        rom("megaduck", "Duck.bin", "hash-duck")
+        rom("megadrive", "Cart.gen", "hash-gen")
+        rom("snes", "Stray.fds", "hash-stray-fds")
+        val hasher = HashedAs(mapOf("Game.gb" to 4, "Game.sfc" to 3, "Game.nes" to 0, "Game.bin" to 12,
+                                    "Stray.gba" to 5, "Game.nds" to 18, "Disk.fds" to 7, "Disc.iso" to 9,
+                                    "Duck.bin" to 1, "Cart.gen" to 1, "Stray.fds" to 7))
+        val told = ToldConsoles()
+
+        val s = pipeline(hasher, told).scan(listOf(romRoot.absolutePath))
+
+        assertEquals(mapOf(
+            "hash-gb"  to listOf(4, 6),
+            "hash-sfc" to listOf(3, 4, 6),
+            // Hashed as no console: the collection's own, and its family.
+            "hash-nes" to listOf(7, 81),
+            // A folder no row is known for: only what the hasher said.
+            "hash-bin" to listOf(12),
+            // Hashed as a console its collection's row does not lead with.
+            "hash-gba" to listOf(5, 3, 4, 6),
+            // A DSi game among DS games is hashed as a DS game and listed apart.
+            "hash-nds" to listOf(18, 78),
+            // Three folders no row is known for, whose files rcheevos knows by
+            // the extension alone. It sends a .fds to the NES, a disc to the
+            // Sega CD and a .bin to the Mega Drive, each the first of several
+            // consoles that hash the file alike, and RetroAchievements lists
+            // the game under its own: the Famicom Disk System, the Saturn,
+            // the Mega Duck.
+            "hash-fds"    to listOf(7, 81),
+            "hash-saturn" to listOf(9, 39),
+            "hash-duck"   to listOf(1, 10, 25, 55, 57, 63, 69, 73, 74),
+            // Where the row says the file is a Mega Drive cartridge, it is one.
+            "hash-gen" to listOf(1, 9, 10, 11, 15, 33),
+            // A stray is known by its extension as well.
+            "hash-stray-fds" to listOf(7, 81, 3, 4, 6),
+        ), told.asked.toMap())
+        assertEquals(11, told.asked.size)
+        assertEquals(mapOf(ScanLedger.State.NOT_FOUND to 11), s.states)
+    }
+
+    @Test fun `two files of one collection with one hash are still one lookup`(): Unit = runBlocking {
+        rom("snes", "Copy A.sfc", "hash-sfc")
+        rom("snes", "Copy B.sfc", "hash-sfc")
+        rom("snes", "Copy C.sfc", "hash-sfc")
+        val told = ToldConsoles()
+
+        val s = pipeline(HashedAs(mapOf("Copy A.sfc" to 3, "Copy B.sfc" to 3, "Copy C.sfc" to 3)), told)
+            .scan(listOf(romRoot.absolutePath))
+
+        assertEquals(listOf("hash-sfc" to listOf(3, 4, 6)), told.asked.toList())
+        assertEquals(mapOf(ScanLedger.State.NOT_FOUND to 3), s.states)
+    }
+
+    // The answer is to the hash and the consoles it was looked up in. The
+    // same file kept in two collections is two questions: not known among
+    // the Game Boy's lists says nothing of the Super Nintendo's. Shared
+    // under the hash alone, the second copy would be given the first one's
+    // answer, and written off without its own lists being looked in.
+    @Test fun `one hash in two collections is looked up in the consoles of each`(): Unit = runBlocking {
+        rom("gb", "Copy A.gb", "hash-both")
+        rom("snes", "Copy B.gb", "hash-both")
+        val told = ToldConsoles()
+
+        val s = RomScanPipeline(paths, HashedAs(mapOf("Copy A.gb" to 4, "Copy B.gb" to 4)), told,
+                                throttleMs = { 0L }, hashWorkers = 1, apiWorkers = 1)
+            .scan(listOf(romRoot.absolutePath))
+
+        assertEquals(setOf("hash-both" to listOf(4, 6), "hash-both" to listOf(4, 3, 6)), told.asked.toSet())
+        assertEquals(2, told.asked.size)
+        assertEquals(mapOf(ScanLedger.State.NOT_FOUND to 2), s.states)
+    }
+
+    // The answer shared between copies is kept under the hash and its
+    // consoles, and has to be dropped under the same name when the lookup
+    // fails. Dropped under the hash alone, it stays, and the second copy is
+    // given the first one's failure.
+    @Test fun `a lookup that failed is asked again for the next file of the same hash and consoles`(): Unit = runBlocking {
+        rom("snes", "Copy A.sfc", "hash-sfc")
+        rom("snes", "Copy B.sfc", "hash-sfc")
+        val told = ToldConsoles { call ->
+            if (call == 1) LookupOutcome.Failed(LookupOutcome.Cause.TRANSPORT, "timeout") else LookupOutcome.NotFound
+        }
+
+        val s = RomScanPipeline(paths, HashedAs(mapOf("Copy A.sfc" to 3, "Copy B.sfc" to 3)), told,
+                                throttleMs = { 0L }, hashWorkers = 1, apiWorkers = 1)
+            .scan(listOf(romRoot.absolutePath))
+
+        assertEquals(2, told.asked.size, "the copy that came after a failure was given the failure")
+        assertEquals(mapOf(ScanLedger.State.API_RETRY to 1, ScanLedger.State.NOT_FOUND to 1), s.states)
+    }
+
     @Test fun `a file the hasher cannot read does not abort the scan`(): Unit = runBlocking {
         rom("nes", "Broken.nes", "UNHASHABLE")
         rom("nes", "Good.nes", "hash-smb")
@@ -1811,6 +1975,84 @@ class RomScanPipelineTest {
         assertEquals("read-only file system", thrown.message)
         assertEquals(0, h.calls.get(), "a file was read after the scan had failed")
         assertTrue(paths.discoveryIndex.isFile, "the index was not rebuilt")
+    }
+
+    /** A lookup that has no key to send, and counts what it is asked all the same. */
+    private class NoKeyLookup : RaHashLookup {
+        val calls = AtomicInteger()
+        override val keyMissing: Boolean get() = true
+        override suspend fun lookup(hash: String): LookupOutcome {
+            calls.incrementAndGet()
+            return LookupOutcome.Failed(LookupOutcome.Cause.AUTH, "no API key")
+        }
+    }
+
+    private fun ledgerEntries(): Map<String, Any> =
+        JSONObject(File(paths.cache, ScanLedger.FILE_NAME).readText()).getJSONObject("entries").toMap()
+
+    // Every request carries the key. With none, each file that needs a
+    // lookup was read and hashed for an answer that could not come, a disc
+    // image among them, and the scan stopped at the first of them. It stops
+    // at none, and is told the count first as any scan is.
+    @Test fun `a scan with no key stops before a file is read`(): Unit = runBlocking {
+        repeat(3) { rom("nes", "Game$it.nes", "hash-$it") }
+        val h = ContentHasher(); val l = NoKeyLookup()
+        val told = mutableListOf<String>()
+
+        val s = pipeline(h, l).scan(listOf(romRoot.absolutePath), onCounted = { told += "counted $it" }) {
+            told += "result ${it.processed}"
+        }
+
+        assertEquals(listOf(0, 0), listOf(h.calls.get(), l.calls.get()))
+        assertTrue(s.aborted)
+        assertEquals(RomScanPipeline.AbortCause.KEY_REFUSED, s.abortCause)
+        assertEquals("no RetroAchievements API key is configured (0 of 3 processed)", s.reason)
+        assertEquals(listOf(0, 3), listOf(s.processed, s.total))
+        assertEquals(counts(0, 0, 0, 0, 0, 0, 0), s.counts())
+        assertEquals(listOf("counted 3"), told)
+        assertEquals(emptyMap(), ledgerEntries())
+        assertEquals(0, JSONObject(paths.discoveryIndex.readText()).getInt("count"))
+        // What a shell tells the person, from the summary alone.
+        assertEquals("RetroAchievements refused the API key after 0 of 3 files (0 identified). " +
+                     "Nothing was recorded as missing. " +
+                     "Copy the Web API key from your RetroAchievements settings into credentials.json " +
+                     "and scan again.",
+                     ScanJobRecord.abortAdvice(s, raUser = ""))
+    }
+
+    // A key taken out of the settings after a scan. The scan that then stops
+    // writes the ledger and the index on its way out as every stop does, and
+    // both hold what they held: a match, a miss, and nothing of the new file.
+    @Test fun `a scan with no key leaves what earlier scans settled`(): Unit = runBlocking {
+        val invented = mapOf(
+            "hash-moss"  to GameMetadata(4101, "Moss Kingdom", "Invented System", "/Images/004101.png", 31),
+            "hash-rally" to GameMetadata(4102, "Paper Rally", "Invented System", "/Images/004102.png", 12))
+        rom("nes", "Moss Kingdom (World).nes", "hash-moss")
+        rom("nes", "Homebrew Thing.nes", "hash-unknown")
+        pipeline(ContentHasher(), MapLookup(invented)).scan(listOf(romRoot.absolutePath))
+        val metadata = paths.metadata("4101").readText()
+        val entries = ledgerEntries()
+        assertEquals(setOf("MATCHED", "NOT_FOUND"), entries.values.map { (it as Map<*, *>)["state"] }.toSet())
+        val index = JSONObject(paths.discoveryIndex.readText())
+        rom("nes", "Paper Rally (World).nes", "hash-rally")
+
+        val h = ContentHasher(); val l = NoKeyLookup()
+        val s = pipeline(h, l).scan(listOf(romRoot.absolutePath))
+
+        assertTrue(s.aborted)
+        assertEquals(listOf(0, 3, 1), listOf(s.processed, s.total, s.indexed))
+        assertEquals(listOf(0, 0), listOf(h.calls.get(), l.calls.get()))
+        assertEquals(metadata, paths.metadata("4101").readText())
+        assertEquals(entries, ledgerEntries())
+        val after = JSONObject(paths.discoveryIndex.readText())
+        assertEquals(1, after.getInt("count"))
+        assertEquals(index.getJSONObject("byKey").toMap(), after.getJSONObject("byKey").toMap())
+
+        // And with the key back the scan goes on from there: the new file
+        // is the one that is read.
+        val h3 = ContentHasher()
+        val s3 = pipeline(h3, MapLookup(invented)).scan(listOf(romRoot.absolutePath))
+        assertEquals(listOf(1, 1, 1), listOf(h3.calls.get(), s3.newEntries, s3.cachedHits))
     }
 
     @Test fun `a missing root is ignored rather than failing`(): Unit = runBlocking {

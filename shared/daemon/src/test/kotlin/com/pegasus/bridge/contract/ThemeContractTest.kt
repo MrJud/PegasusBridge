@@ -992,6 +992,49 @@ class ThemeContractTest {
         assertMarkedAndCleared(id)
     }
 
+    // A daemon with no key at all. Nothing can be looked up without one, so
+    // the scan is stopped before a file is read and nobody is asked. It is the
+    // sentence of a refused key, which says what to do about it, and its
+    // numbers are what tell the two apart: after 0 files.
+    //
+    // Such a scan is over before the theme's first poll, every time, so the
+    // theme goes through "job unknown to the bridge" first, as for any error
+    // it never saw running.
+    @Test fun `a desktop scan with no key reads as the refused-key error before any file is read`() {
+        repeat(3) { rom("snes", "Game $it.sfc", "hash-$it") }
+        val content = ContentHasher()
+        hasher = content
+        val asked = AtomicInteger()
+        lookup = object : RaHashLookup {
+            override suspend fun lookup(hash: String): LookupOutcome { asked.incrementAndGet(); return null.asOutcome() }
+            override val keyMissing: Boolean get() = true
+        }
+        val id = "scan_1791233730000_31"
+
+        val theme = desktopTheme(id)
+        val body = finished(id)
+        assertEquals("error", body.getString("status"))
+        val result = body.getJSONObject("result")
+        assertEquals(desktopResultKeys, result.keySet())
+        assertTrue(result.getBoolean("aborted"))
+        assertEquals("no RetroAchievements API key is configured (0 of 3 processed)", result.getString("reason"))
+        assertEquals("RetroAchievements refused the API key after 0 of 3 files (0 identified). " +
+                     "Nothing was recorded as missing. " +
+                     "Copy the Web API key from your RetroAchievements settings into credentials.json " +
+                     "and scan again.",
+                     body.getString("error"))
+        assertEquals(0, asked.get())
+        assertEquals(0, content.calls.get(), "a file was read by a scan that had no key")
+
+        theme.pollTwice()
+        assertEquals(View("error", 0, 0, 0, "job unknown to the bridge", 0, 0), theme.view())
+        theme.readHasherProgress()
+        // No count beside it: the theme takes its numbers from the reports
+        // of a scan, and this one made none.
+        assertEquals(View("error", 0, 0, 0, body.getString("error"), 0, 0), theme.view())
+        assertMarkedAndCleared(id)
+    }
+
     // The third abort, and on the desktop the quickest of the three: a request
     // that fails for want of a connection fails at once. Held here until the
     // theme has seen the job running; one that is over by the theme's first

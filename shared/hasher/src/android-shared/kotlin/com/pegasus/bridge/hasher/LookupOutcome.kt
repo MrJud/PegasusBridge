@@ -43,6 +43,10 @@ sealed interface LookupOutcome {
      * and not a match: there is no game to describe under [virtualId], the
      * number as it was sent. [gameId] is the real game's, and [reason] why the
      * dump is not counted as that game.
+     *
+     * [RaApiHashLookup] does not answer it: the lists it looks a hash up in
+     * do not hold such a dump, which comes out [NotFound]. An audit's
+     * recorded answers do, and ledgers hold what it used to be kept as.
      */
     data class IdOnly(val gameId: Int, val reason: Compatibility, val virtualId: Int) : LookupOutcome
 

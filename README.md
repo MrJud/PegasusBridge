@@ -162,23 +162,37 @@ for every user of the app, not just the one who leaked it.
 
 Every source here is someone else's server, usually run for a community rather
 than for profit, and the scan is the part that could hurt one. So the hash lookup
-is paced rather than parallelised as hard as the network allows:
+asks for as little as it can, and as a client that can be told apart and told to
+wait:
 
-- at most **2 requests in flight**, spaced **≥250 ms** apart;
+- **one request per console per week**, not one per ROM: the scan asks
+  RetroAchievements for the list of a console's games and their hashes, keeps it
+  on disk for 7 days and looks every hash of that console up in it;
+- **one request at a time**, **a second apart**;
+- every request names the program and its version,
+  `PegasusBridge/<version> (+https://github.com/MrJud/PegasusBridge)`;
+- a **429** is waited out for as long as its `Retry-After` says (a minute when it
+  says nothing, and not at all above two minutes: the lookup gives up instead),
+  and a **403** is never asked again;
 - "the request failed" and "the answer is no" are kept apart, and a failure is
   **never cached** — otherwise a refused request is remembered as *this game does
-  not exist* and no later scan ever asks again;
-- a rejection is retried, and after **8 consecutive failures** the scan stops with
-  a message instead of grinding through the rest of the library;
+  not exist* and no later scan ever asks again. A list that could not be had is
+  never taken for a list that does not have the hash;
+- a server error is retried three times, and after **8 consecutive failed
+  lookups** the scan stops with a message instead of grinding through the rest of
+  the library;
 - a request that fails on a device that knows it has **no internet connection** is
   not retried at all: the scan stops at that first failure and says so, where it
   used to spend half a minute on retries and then blame the source;
 - results are cached locally and rescans are incremental, so a second scan of an
-  unchanged library makes no network calls at all.
+  unchanged library makes no network calls at all, and a scan with no API key is
+  stopped before it reads a file.
 
-Measured on a 913-ROM library against RetroAchievements: **913 processed, 0 lookups
-failed**, first scan ~6.5 min, incremental rescan 32 s with no requests. Before the
-pacing existed the same library got roughly 85 answers and refusals for the rest.
+Measured on a 913-ROM library against RetroAchievements, while the lookup still
+made a request for every ROM: **913 processed, 0 lookups failed**, first scan
+~6.5 min, incremental rescan 32 s with no requests. Before the pacing existed the
+same library got roughly 85 answers and refusals for the rest. The lookup by
+lists has not been measured against RetroAchievements yet.
 
 ---
 
@@ -210,8 +224,9 @@ Its quotas are per-thread and per-day, and the refusals are specific: **429** to
 threads, **430** the daily allowance, **431** too many unrecognised ROMs. The last one
 matters here, because a real library contains bad dumps and placeholder files that will
 never be recognised, and hammering on them is exactly the behaviour a quota is meant to
-stop. The pacing above already covers all three — two requests in flight, spaced, no
-failure ever cached as a negative, and a stop after eight consecutive refusals.
+stop. The habits above already cover all three — one request at a time, spaced, a
+wait the server names waited out, no failure ever cached as a negative, and a stop
+after eight consecutive refusals.
 
 **[TheGamesDB](https://thegamesdb.net)** would come second and stay small. It has no
 hash lookup at all, only name search, so it forfeits the advantage that motivates the
@@ -522,7 +537,8 @@ build compiles and tests it, and the Android module of the same name adds the
 directory to its own sources (`:media` takes the one of `scrapers`).
 
 The ROM scan is such code. `RomScanPipeline`, the archive handling, the
-RetroAchievements lookup, the ledger and the job record are in
+RetroAchievements lookup and the lists of consoles it answers from, the ledger
+and the job record are in
 `shared/hasher/src/android-shared`, and the tests in `shared/hasher` and
 `shared/daemon` are the tests of what the tablet runs. What stays in the
 Android `hasher/` module is what only Android has:

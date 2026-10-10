@@ -2,6 +2,7 @@ package com.pegasus.bridge.pegasus
 
 import com.pegasus.bridge.core.BridgeLog
 import com.pegasus.bridge.core.NoopLog
+import com.pegasus.bridge.core.PegasusMetafile
 import com.pegasus.bridge.core.StderrLog
 import java.io.File
 import java.nio.file.Files
@@ -123,6 +124,63 @@ class MetadataAndDiscoveryTest {
 
         val found = MetadataFile.collectionsUnder(listOf(library))
         assertEquals(setOf("Nintendo Entertainment System", "SNES"), found.map { it.name }.toSet())
+    }
+
+    // There are two readers of a header now: this module's, which the launch
+    // editor is built on, and the one in core, which a scan can reach. They
+    // read the same files and must say the same of them: which files are
+    // metafiles and in what order, what the collection is called, and which
+    // extensions it declares. The one thing the core reader adds is Pegasus'
+    // own default, the name in lower case, where this one leaves a collection
+    // with no `shortname:` line without one.
+    //
+    // Over every shape of header the tests of this class write.
+    @Test fun `the header reader in core says of every fixture what this one does`() {
+        val nes = "Nintendo Entertainment System"
+        fun overlay(launch: String) = MetadataFile.renderCollection(nes, "nes", launch)
+        val fixtures: List<Pair<String, (File) -> Unit>> = listOf(
+            "the real header" to { d -> File(d, "metadata.pegasus.txt").writeText(REAL_NES) },
+            "games after the header" to { d -> File(d, "metadata.pegasus.txt").writeText(
+                "collection: NES\nshortname: nes\nextensions: nes\n\ngame: Invented Game\n" +
+                "file: Invented Game (USA).nes\ndeveloper: Nobody\n") },
+            "comments and blank lines" to { d -> File(d, "metadata.pegasus.txt").writeText(
+                "# written by hand\ncollection: NES\n\n# the platform\nshortname: nes\n") },
+            "one line each" to { d -> File(d, "metadata.pegasus.txt").writeText(
+                "collection: SNES\nshortname: snes\nextensions: sfc") },
+            "no extensions" to { d -> File(d, "metadata.pegasus.txt").writeText("collection: SNES\nshortname: snes") },
+            "no shortname" to { d -> File(d, "metadata.txt").writeText("collection: Sega Master System\nextension: sms") },
+            "a rendered overlay as the only file" to { d -> File(d, "metadata.pegasus.txt").writeText(
+                MetadataFile.renderCollection("PlayStation", "psx", "duckstation-qt -batch \"{file.path}\"",
+                                              preserve = mapOf("extensions" to "cue, bin, chd"))) },
+            "an overlay with no file of the collection's own" to { d ->
+                File(d, "zz-pegasusbridge.metadata.pegasus.txt").writeText(overlay("retroarch \"{file.path}\"")) },
+            "the collection's file standing aside for an overlay" to { d ->
+                File(d, "metadata.pegasus.txt").writeText(REAL_NES)
+                MetadataFile.commentOutLaunch(File(d, "metadata.pegasus.txt"))
+                File(d, "zz-pegasusbridge.metadata.pegasus.txt").writeText(overlay("retroarch \"{file.path}\"")) },
+            "two files that both declare a launch" to { d ->
+                File(d, "metadata.pegasus.txt").writeText(REAL_NES)
+                File(d, "zz-pegasusbridge.metadata.pegasus.txt").writeText(overlay("somethingelse")) }
+        )
+
+        val wrong = ArrayList<String>()
+        for ((index, fixture) in fixtures.withIndex()) {
+            val (what, write) = fixture
+            val dir = File(library, "fixture$index").apply { mkdirs() }
+            write(dir)
+
+            val here = MetadataFile.readCollection(dir)!!
+            val files = PegasusMetafile.filesIn(dir)
+            if (files != MetadataFile.allIn(dir)) wrong += "$what: files ${files.map { it.name }}"
+            val there = PegasusMetafile.collections(here.file).firstOrNull()
+            if (there == null) { wrong += "$what: no block"; continue }
+            if (there.name != here.name) wrong += "$what: name '${there.name}', not '${here.name}'"
+            val shortName = here.shortName.ifEmpty { here.name.lowercase() }
+            if (there.shortName != shortName) wrong += "$what: shortname '${there.shortName}', not '$shortName'"
+            if (there.declaresShortName != here.shortName.isNotEmpty()) wrong += "$what: declaresShortName"
+            if (there.extensions != here.extensions) wrong += "$what: extensions ${there.extensions}, not ${here.extensions}"
+        }
+        assertEquals(emptyList(), wrong)
     }
 
     // ── Writing ─────────────────────────────────────────────────────────────

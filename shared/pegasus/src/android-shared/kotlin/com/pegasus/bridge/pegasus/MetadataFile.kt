@@ -1,5 +1,6 @@
 package com.pegasus.bridge.pegasus
 
+import com.pegasus.bridge.core.PegasusMetafile
 import java.io.File
 
 /**
@@ -34,8 +35,12 @@ import java.io.File
  */
 object MetadataFile {
 
-    /** The names Pegasus accepts, in the order it looks for them. */
-    val FILE_NAMES = listOf("metadata.pegasus.txt", "metadata.txt")
+    /**
+     * The names Pegasus accepts, in the order it looks for them. Kept in core,
+     * with the test for a file of any other name, where the scan can read
+     * them too: the two must not come to disagree about what a metafile is.
+     */
+    val FILE_NAMES = PegasusMetafile.FILE_NAMES
 
     data class Collection(
         val name: String,
@@ -86,8 +91,7 @@ object MetadataFile {
 
     private fun overlaysIn(dir: File): List<File> =
         dir.listFiles { f ->
-            f.isFile && f.name !in FILE_NAMES &&
-            (f.name.endsWith(".metadata.pegasus.txt") || f.name.endsWith(".metadata.txt"))
+            f.isFile && f.name !in FILE_NAMES && PegasusMetafile.isMetafile(f.name)
         }?.sortedBy { it.name } ?: emptyList()
 
     /**

@@ -582,6 +582,19 @@ class ScanAuditTest {
         assertNull(ScanAudit.IoCounters.parse("rchar: a lot"))
     }
 
+    // Taking the count is itself a read of some hundred bytes, which the
+    // system adds once it has given the number out. A file's cost is the
+    // difference between two counts, and must not have the first of them in
+    // it: nothing read in between is 0.
+    @Test fun `taking the count costs the file nothing`() {
+        assumeTrue(ScanAudit.IoCounters.thread() != null, "no count of what a thread reads on this system")
+        val before = ScanAudit.IoCounters.thread()
+        val after = ScanAudit.IoCounters.thread()
+        assertEquals(0L, ScanAudit.IoCounters.between(before, after), "the count of the count itself")
+        assertNull(ScanAudit.IoCounters.between(null, after))
+        assertNull(ScanAudit.IoCounters.between(before, null))
+    }
+
     // What the column is for: a file read to its end costs its size at the
     // least, and one the hasher made nothing of costs next to nothing. The
     // library here reads the first file whole and refuses the second

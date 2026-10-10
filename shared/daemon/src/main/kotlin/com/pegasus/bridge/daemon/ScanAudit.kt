@@ -79,6 +79,10 @@ import java.util.concurrent.atomic.AtomicInteger
  * system for while it did ([IoCounters]). The `# hasher` line adds the column
  * up, and `# read` is the same count for the whole process over the scan,
  * which has the ledger, the metadata files and the classes loaded in it too.
+ * One row of a run has more than its file in it: one of the first files a
+ * scan hands to the hasher, the very first when it hashes one at a time, is
+ * charged with what the process reads to get hashing started, some 300 KB
+ * in the runs made so far, whatever the size of the file.
  */
 object ScanAudit {
 
@@ -180,8 +184,7 @@ object ScanAudit {
             // Taken here whether the scan ended or threw: what it read until
             // then is what the rows it got to cost.
             val readAfter = IoCounters.process()
-            val readByProcess = if (readBefore != null && readAfter != null) maxOf(0L, readAfter - readBefore)
-                                else null
+            val readByProcess = IoCounters.between(readBefore, readAfter)
 
             val rows = rows(File(paths.cache, ScanLedger.FILE_NAME), hasher.seen(), lookup)
             // The recipe the scan kept its verdicts under: made, as the scan
@@ -463,8 +466,7 @@ object ScanAudit {
                                  result?.hash.orEmpty(), result?.fileMd5.orEmpty(),
                                  result?.archiveEntry.orEmpty(), reason,
                                  (System.nanoTime() - started) / 1_000_000,
-                                 if (readBefore != null && readAfter != null) maxOf(0L, readAfter - readBefore)
-                                 else null)
+                                 IoCounters.between(readBefore, readAfter))
             }
             val outcome = refusal(key)?.let { HashOutcome.Failed(it) } ?: try {
                 // The last of these lines before a crash names the files that
@@ -507,13 +509,34 @@ object ScanAudit {
      * where it cannot be read; the audit then leaves the column empty.
      */
     internal object IoCounters {
+        /**
+         * A count as the system wrote it down, and what taking it cost: the
+         * length of the text, which the system adds to the count once it has
+         * handed the text over.
+         */
+        class Count(val bytes: Long, val own: Int)
+
         fun parse(text: String): Long? = text.lineSequence()
             .firstOrNull { it.startsWith("rchar:") }?.substringAfter(':')?.trim()?.toLongOrNull()
 
-        fun thread(): Long? = of("/proc/thread-self/io")
-        fun process(): Long? = of("/proc/self/io")
+        fun thread(): Count? = of("/proc/thread-self/io")
+        fun process(): Count? = of("/proc/self/io")
 
-        private fun of(path: String): Long? = try { parse(File(path).readText()) } catch (e: Exception) { null }
+        /**
+         * What was read from one count to the next, or null when either is
+         * missing. Taking the first count is a read like any other, of some
+         * hundred bytes, and is in the second: left in, every file the
+         * hasher was handed cost that much more than it had, and one that
+         * was never opened, an arcade set, did not come to 0.
+         */
+        fun between(before: Count?, after: Count?): Long? =
+            if (before == null || after == null) null
+            else maxOf(0L, after.bytes - before.bytes - before.own)
+
+        private fun of(path: String): Count? = try {
+            val text = File(path).readBytes()
+            parse(String(text, Charsets.US_ASCII))?.let { Count(it, text.size) }
+        } catch (e: Exception) { null }
     }
 
     /**

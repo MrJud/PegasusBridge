@@ -74,13 +74,13 @@ class PlaylistReaderTest {
     @Test fun `an entry in a folder below is found from the playlist's own`() {
         val one = disc("discs/one/Game (Disc 1).cue")
         assertEquals(one, entry(playlist("discs/one/Game (Disc 1).cue\n")))
-        assertEquals(one, entry(playlist("./discs/one/Game (Disc 1).cue\n")).canonicalFile)
+        assertEquals(one.canonicalFile, entry(playlist("./discs/one/Game (Disc 1).cue\n")).canonicalFile)
     }
 
     @Test fun `backslashes between folders are read as separators`() {
         val one = disc("discs/one/Game (Disc 1).cue")
         assertEquals(one, entry(playlist("discs\\one\\Game (Disc 1).cue\r\n")))
-        assertEquals(one, entry(playlist(".\\discs\\one\\Game (Disc 1).cue\r\n")).canonicalFile)
+        assertEquals(one.canonicalFile, entry(playlist(".\\discs\\one\\Game (Disc 1).cue\r\n")).canonicalFile)
     }
 
     @Test fun `an absolute entry is taken as written`() {

@@ -206,12 +206,23 @@ object RomScanner {
      * The one spelling of a path that a file is known by: to this walk, which
      * keeps each file once however many roots and links reach it, to the
      * ledger, which keeps a verdict under it, and to an audit, which writes a
-     * row for it. The canonical path, or the absolute one for a file whose
-     * canonical path the system will not give. It was written out in each of
-     * the three, alike; alike is what it has to stay.
+     * row for it. It was written out in each of the three, alike; alike is
+     * what it has to stay.
+     *
+     * The real path, every link in it followed. Asked of the canonical path
+     * alone, a link was followed on Linux and Android and not on Windows, where
+     * the JDKs this builds on leave a link in a canonical path as it is
+     * written: a folder reached through a link was a second folder there, its
+     * files were scanned twice, and a link pointing back up the tree was walked
+     * until the path grew too long to open. The real path also gives a folder
+     * its long name where Windows wrote the short one. It can be had only of
+     * a file that is there, so one that is not is known by its canonical path
+     * as before, and by the absolute one where the system gives neither.
      */
     fun canonical(file: File): String =
-        runCatching { file.canonicalPath }.getOrDefault(file.absolutePath)
+        runCatching { file.toPath().toRealPath().toString() }
+            .recoverCatching { file.canonicalPath }
+            .getOrDefault(file.absolutePath)
 
     /**
      * Directories that never hold ROMs, and cost real time to walk.

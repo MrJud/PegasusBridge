@@ -239,7 +239,7 @@ class GoldenHashTest {
             null
         }
         if (viaLink != null) {
-            assertEquals(linked.canonicalPath, viaLink.canonicalPath, "the link leads to the folder nes")
+            assertEquals(RomScanner.canonical(linked), RomScanner.canonical(viaLink), "the link leads to the folder nes")
             rows += Triple(viaLink, "arcade", MSLUG)
         }
 

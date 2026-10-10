@@ -72,9 +72,10 @@ data class RomIdentity(
             matchedByName: Boolean = false
         ): RomIdentity {
             val f = File(path)
-            // canonicalFile, not absoluteFile: two roots may reach one library
-            // through different symlinks, and they must not be two identities.
-            val canonical = runCatching { f.canonicalPath }.getOrDefault(f.absolutePath)
+            // Not the absolute path: two roots may reach one library through
+            // different symlinks, and they must not be two identities. The
+            // scanner's own spelling, so that the two never come to differ.
+            val canonical = RomScanner.canonical(f)
             return RomIdentity(
                 platform = platform,
                 canonicalPath = canonical,

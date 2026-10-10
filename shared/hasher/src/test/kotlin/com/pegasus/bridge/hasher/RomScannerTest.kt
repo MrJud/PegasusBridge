@@ -278,7 +278,7 @@ class RomScannerTest {
 
         val found = RomScanner.scan(listOf(root.path))
         assertEquals(1, found.size)
-        assertEquals(source.canonicalPath, found.single().canonicalPath)
+        assertEquals(RomScanner.canonical(source), RomScanner.canonical(found.single()))
     }
 
     /**

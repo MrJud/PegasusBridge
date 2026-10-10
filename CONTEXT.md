@@ -753,6 +753,14 @@ that collection's `shortname:`, so `psx/<game>/<game>.cue` is a `psx` game and
 not one of a platform called `<game>`. A folder under no such file is still
 taken for the collection its name says.
 
+One metafile may declare several collections. A collection that lists a folder
+in `directories:` has it. Otherwise the folders say it themselves, from the one
+right under the metafile down: the first that is called what one of the
+collections is called (`megadrive` answers to `genesis`) is that collection's,
+and one called for a console that none of them is, is the folder it is called.
+Only where the folders say nothing is the first collection declared taken, with
+a warning in the log.
+
 ## 9. What changed vs. legacy
 
 | Concern                  | Before (legacy)                        | Now (Bridge)                          |

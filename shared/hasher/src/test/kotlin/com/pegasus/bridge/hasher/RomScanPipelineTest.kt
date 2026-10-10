@@ -536,6 +536,44 @@ class RomScanPipelineTest {
         }
     }
 
+    // A library with one metafile at its top, which declares every
+    // collection and sends none to a folder: the folders under it are named
+    // for the consoles. Every one of them was the first collection declared.
+    // The PlayStation sheet was then a Nintendo file that describes a disc,
+    // refused unread; the Mega Drive cartridge was a `.md` in a collection
+    // that lists none, and no file of the scan at all; and all of it was
+    // written down under platform `nes`.
+    @Test fun `one metafile above the console folders gives each folder its own collection`(): Unit = runBlocking {
+        File(romRoot, "metadata.pegasus.txt").writeText("""
+            collection: Nintendo Entertainment System
+            shortname: nes
+            extensions: nes
+
+            collection: Sony PlayStation
+            shortname: psx
+            extensions: cue, bin
+
+            collection: Sega Mega Drive
+            shortname: megadrive
+            extensions: md, bin
+        """.trimIndent())
+        rom("nes", "Super Mario Bros. (World).nes", "hash-smb")
+        rom("psx/Lantern Keep (USA)", "Lantern Keep (USA).cue", "hash-lantern")
+        rom("megadrive", "Cart (World).md", "hash-cart")
+        rom("gba", "Pocket (World).gba", "hash-pocket")
+
+        val h = CollectionHasher()
+        val s = pipeline(h, MapLookup(catalogue + nested)).scan(listOf(romRoot.absolutePath))
+
+        assertEquals(mapOf("Super Mario Bros. (World).nes" to ("nes" to "nes"),
+                           "Lantern Keep (USA).cue" to ("psx" to "psx"),
+                           "Cart (World).md" to ("megadrive" to "megadrive"),
+                           "Pocket (World).gba" to ("gba" to "gba")),
+                     h.handed.mapValues { it.value.shortName to it.value.dirName })
+        assertEquals(mapOf(ScanLedger.State.MATCHED to 2, ScanLedger.State.NOT_FOUND to 2), s.states)
+        assertEquals("lanternkeep|psx", JSONObject(paths.metadata("3001").readText()).getString("cacheKey"))
+    }
+
     // And it is the short name wherever the folder says nothing more: a
     // folder called anything at all, and one named for a console that is not
     // of the short name's family, which the short name is taken to know

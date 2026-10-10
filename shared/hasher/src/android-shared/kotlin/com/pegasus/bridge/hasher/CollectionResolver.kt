@@ -1,6 +1,7 @@
 package com.pegasus.bridge.hasher
 
 import com.pegasus.bridge.core.BridgeLog
+import com.pegasus.bridge.core.FuzzyMatch
 import com.pegasus.bridge.core.PegasusMetafile
 import com.pegasus.bridge.core.RcConsoles
 import java.io.File
@@ -155,15 +156,33 @@ class CollectionResolver(
      * first had none.
      *
      * A block of another name is a second collection in the same place, and
-     * nothing here can say which of the two a folder is in, with one
-     * exception. `directories:` is how a metafile says that a collection's
-     * files are in another folder, so a block that lists [folder], or a
-     * folder above it, has said so, and is taken before the first. Of two
-     * that do, the one whose listed folder is nearer, as the nearer metafile
-     * is the one that counts. The collection is then that listed folder, by
-     * its name, and no longer the one the metafile is in. `extensions:` and
-     * `file:` cannot choose: they tell files apart, and the question here is
-     * asked of a folder.
+     * two things can say which of them a folder is in.
+     *
+     * `directories:` is how a metafile says that a collection's files are in
+     * another folder, so a block that lists [folder], or a folder above it,
+     * has said so, and is taken before the first. Of two that do, the one
+     * whose listed folder is nearer, as the nearer metafile is the one that
+     * counts. The collection is then that listed folder, by its name, and no
+     * longer the one the metafile is in.
+     *
+     * Failing that, the folders themselves, from the one right under the
+     * metafile down to [folder]: a library kept with one metafile at its top
+     * has a folder for each console under it, called what the console is
+     * called. The first of them that a block answers to, by its short name
+     * or by the console the two names stand for, is that block's, and is
+     * the collection's folder as a listed one would be. One that no block
+     * answers to and that the console table knows is a console the metafile
+     * does not declare: it is the folder it is called, as it would be with
+     * no metafile above it, with the extensions of every block, since
+     * nothing says whose its files are. While the first block had every
+     * such folder, a metafile of `nes`, `psx`, `megadrive` and `snes` made
+     * Nintendo cartridges of all four folders: a PlayStation sheet was
+     * refused for describing a disc, a zipped Super Nintendo cartridge held
+     * nothing playable, and a `.md` was not looked at.
+     *
+     * Where the folders say nothing either, the first block stands, and
+     * that is said. `extensions:` and `file:` cannot choose: they tell files
+     * apart, and the question here is asked of a folder.
      */
     private fun refFor(folder: File, declared: Declaration): CollectionRef {
         var home = declared.directory
@@ -177,6 +196,28 @@ class CollectionResolver(
                 // it against a second that lists the same.
                 if (folder.startsWith(target) && (!listed || target.path.length > home.path.length)) {
                     chosen = block; home = target; listed = true
+                }
+            }
+        }
+
+        if (!listed && declared.blocks.any { it.name != chosen.name }) {
+            val below = generateSequence(folder) { it.parentFile }
+                .takeWhile { it != declared.directory && it.startsWith(declared.directory) }
+                .toList().asReversed()
+            for (candidate in below) {
+                val block = declared.blocks.firstOrNull { answersTo(it, candidate.name) } ?: continue
+                chosen = block; home = candidate; listed = true
+                break
+            }
+            if (!listed) {
+                below.firstOrNull { RcConsoles.row(it.name) != null }?.let { console ->
+                    if (reported.add(declared.directory.path + "\n\n" + console.name)) {
+                        BridgeLog.w(TAG, "${declared.directory.name} declares " +
+                                         declared.blocks.map { "'${it.name}'" }.distinct().joinToString(", ") +
+                                         " and none of them is ${console.name}: taken for the folder it is called")
+                    }
+                    return CollectionRef.inferred(console.name)
+                        .copy(declaredExtensions = declared.blocks.flatMapTo(LinkedHashSet()) { it.extensions })
                 }
             }
         }
@@ -203,6 +244,18 @@ class CollectionResolver(
             declaredExtensions = same.flatMapTo(LinkedHashSet()) { it.extensions },
             source = CollectionRef.Source.DECLARED
         )
+    }
+
+    /**
+     * Whether a folder called [folderName] is [block]'s by what it is called:
+     * the block's short name as a platform is spelt, or another name of the
+     * same row of the console table, `megadrive` for a block that declares
+     * `genesis`.
+     */
+    private fun answersTo(block: PegasusMetafile.Block, folderName: String): Boolean {
+        if (FuzzyMatch.normalizePlatform(block.shortName) == FuzzyMatch.normalizePlatform(folderName)) return true
+        val row = RcConsoles.row(folderName) ?: return false
+        return row == RcConsoles.row(block.shortName)
     }
 
     private companion object {

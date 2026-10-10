@@ -224,11 +224,82 @@ class CollectionResolverTest {
         assertEquals(File(library, "carts/snes"), snes.directory)
         assertEquals(setOf("sfc"), snes.declaredExtensions)
         assertEquals("nes", resolve("nes").shortName)
-        // A folder none of them lists is the first collection's, in the
-        // metafile's own folder, and that is said.
+        // A folder none of them lists, and named for a console neither of
+        // them is, is that console's and not the first collection's, and
+        // that is said.
         val gba = resolve("gba")
-        assertEquals("nes" to library.name, gba.shortName to gba.dirName)
+        assertEquals("gba" to "gba", gba.shortName to gba.dirName)
+        assertEquals(CollectionRef.Source.INFERRED, gba.source)
+        assertTrue(warnings.any { it.contains("none of them is gba") }, warnings.toString())
+        // One whose name says nothing is the first collection's still, in
+        // the metafile's own folder, and that is said too.
+        folder("misc")
+        val misc = resolve("misc")
+        assertEquals("nes" to library.name, misc.shortName to misc.dirName)
         assertTrue(warnings.any { it.contains("'Super Nintendo'") }, warnings.toString())
+    }
+
+    // One metafile at the top of a library that declares every collection
+    // and sends none of them anywhere: the folders under it are called what
+    // the consoles are. Each was the first collection's, so a PlayStation
+    // sheet was a Nintendo file that describes a disc, and refused.
+    @Test fun `under a metafile of several collections a folder is the one it is named for`() {
+        metafile(".", """
+            collection: Nintendo Entertainment System
+            shortname: nes
+            extensions: nes
+
+            collection: Sony PlayStation
+            shortname: psx
+            extensions: cue
+
+            collection: Sega Mega Drive
+            shortname: megadrive
+            extensions: md
+
+            collection: Home Computers
+            shortname: homecomputers
+            extensions: dsk
+        """)
+        val expected = listOf(
+            // By the short name as it is written.
+            Triple("nes", "nes", "nes"),
+            Triple("psx", "psx", "psx"),
+            Triple("homecomputers", "homecomputers", "homecomputers"),
+            // A game's own folder is in the collection of the folder above it.
+            Triple("psx/Invented Quest (USA)", "psx", "psx"),
+            // By another name of the same console.
+            Triple("genesis", "megadrive", "genesis"),
+            Triple("PS1/Invented Quest (USA)", "psx", "PS1"),
+            // The folder right under the metafile is asked first.
+            Triple("psx/nes", "psx", "psx"),
+            // A console none of the four is.
+            Triple("gba", "gba", "gba"),
+            Triple("gba/Invented Pocket", "gba", "gba"),
+            // Under a folder that says nothing, the first below it that does.
+            Triple("Nintendo/nes", "nes", "nes"),
+            // Nothing on the way says anything: the first collection, as it was.
+            Triple("Odds and Ends", "nes", library.name),
+            Triple(".", "nes", library.name))
+        val resolver = CollectionResolver()
+
+        val wrong = expected.mapNotNull { (relative, shortName, dirName) ->
+            val ref = resolver.collectionOf(folder(relative))
+            if (ref.shortName == shortName && ref.dirName == dirName) null
+            else "$relative: ${ref.shortName} in ${ref.dirName}, expected $shortName in $dirName"
+        }
+        assertEquals(emptyList(), wrong)
+
+        // The collection a folder is named for is the folder's whole, with
+        // what that collection declares and no other's.
+        val psx = resolver.collectionOf(File(library, "psx/Invented Quest (USA)"))
+        assertEquals(File(library, "psx").absoluteFile to setOf("cue"), psx.directory to psx.declaredExtensions)
+        // A console the metafile does not declare has the extensions of all
+        // of them: nothing says whose the files in it are.
+        val gba = resolver.collectionOf(File(library, "gba"))
+        assertEquals(setOf("nes", "cue", "md", "dsk"), gba.declaredExtensions)
+        assertNull(gba.directory)
+        assertEquals(1, warnings.count { it.contains("none of them is gba") }, warnings.toString())
     }
 
     // The metafile's own folder is passed on the way up from every folder it

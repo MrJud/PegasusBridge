@@ -78,6 +78,12 @@ class ScanLedger(private val file: File, private val recipe: HashRecipe = HashRe
          * above a thousand million, and a reader of the ledger could not tell a
          * dump the source holds from one it has never heard of without knowing
          * what such a number means.
+         *
+         * A scan no longer writes it. A hash is looked up in the lists of
+         * consoles, which do not hold such a dump, and it comes out
+         * [NOT_FOUND]. The state is here for the entries earlier scans
+         * left, which stand until their month is out, and for an audit's
+         * recorded answers.
          */
         KNOWN_UNSUPPORTED,
         /**
@@ -135,6 +141,9 @@ class ScanLedger(private val file: File, private val recipe: HashRecipe = HashRe
          * A miss keeps for two weeks: RetroAchievements gains hashes continuously,
          * so "no" is true rather than permanent, and a fortnight is short enough
          * that a newly supported game turns up without a rescan being a full one.
+         * Counted from the scan that looked, and the list it looked in may
+         * have been a week old by then ([RaGameList.MAX_AGE_SECONDS]): a hash
+         * RetroAchievements adds can take up to three weeks to be found.
          *
          * An unsupported platform keeps for a season — the set of consoles the
          * service covers moves slowly, and re-deciding it costs nothing anyway
@@ -149,7 +158,8 @@ class ScanLedger(private val file: File, private val recipe: HashRecipe = HashRe
          * twice as long as a miss. A miss ends when somebody links the hash to a
          * game, which happens every day. This ends when somebody tests the dump
          * and the source changes its mind about it, which is rarer, and until
-         * then the answer is the same one.
+         * then the answer is the same one. No scan writes one any more; the
+         * month is for those already written.
          *
          * A format nobody reads keeps for a season, as an unsupported
          * platform does and for its reason: it is decided again on every

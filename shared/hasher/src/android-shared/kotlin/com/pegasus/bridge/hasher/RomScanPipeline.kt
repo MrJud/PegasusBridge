@@ -450,6 +450,14 @@ class RomScanPipeline(
                             // the ledger had to know the bases to learn which game the dump
                             // is of. No metadata file even so: that would say the game is
                             // in the library, and this dump earns nothing for it.
+                            //
+                            // The lookup a scan is built with no longer answers this. It
+                            // looks a hash up in the lists of consoles, which hold the
+                            // hashes RetroAchievements lets count and no others, so such a
+                            // dump is now a hash it does not know and is counted with the
+                            // misses. The branch is for a lookup that does answer it, as an
+                            // audit's recorded answers do; the entries it wrote stand in a
+                            // ledger until their month is out.
                             is LookupOutcome.IdOnly -> {
                                 incompatible++
                                 ledger.record(canonical(job.file), job.collection, ScanLedger.State.KNOWN_UNSUPPORTED,
@@ -463,7 +471,8 @@ class RomScanPipeline(
                                               job.fileSize, job.lastModified, now,
                                               gameId = outcome.game.gameId)
                             }
-                            // The source was asked and said no. A real verdict, remembered
+                            // The hash is in none of the lists of the consoles it may be
+                            // of, each of them read whole. A real verdict, remembered
                             // until its TTL runs out.
                             LookupOutcome.NotFound -> {
                                 unmatched++
@@ -501,11 +510,11 @@ class RomScanPipeline(
                                             unmatched, incompatible, hashFailed, failedLookups))
                     }
 
-                    // A refused key fails every match from here on, and the misses in
-                    // between, answered without the key, kept the failure count below
-                    // the limit: with one ROM in four unknown, 24 went through with no
-                    // abort, and when one did come it blamed a source that "stopped
-                    // answering". Stopped at the first refusal, and named.
+                    // A refused key fails every lookup from here on: each request
+                    // carries it, and no list can be had without one. Stopped at the
+                    // first refusal, and named. Left to the count of failures the
+                    // scan would stop eight files later and blame a source that
+                    // "stopped answering", with the advice to wait.
                     if (lookup.authRejected) {
                         throw ScanAborted("RetroAchievements refused the API key " +
                                           "($processed of $total processed)", AbortCause.KEY_REFUSED)
@@ -1093,8 +1102,10 @@ class RomScanPipeline(
         fun hashProducers(hashWorkers: Int): Int =
             hashWorkers.coerceAtMost(Runtime.getRuntime().availableProcessors())
 
-        // Matches RaHashLookup.MAX_PARALLEL: more workers than permits only
-        // queues them behind the semaphore.
+        // A lookup is a read of a list in memory, and a list is fetched by
+        // one worker at a time whatever their number: the second is there
+        // so that hashes of a console whose list is loaded are answered
+        // while another console's is being fetched.
         const val DEFAULT_API_WORKERS  = 2
         const val MAX_CONSECUTIVE_FAILURES = 8
 

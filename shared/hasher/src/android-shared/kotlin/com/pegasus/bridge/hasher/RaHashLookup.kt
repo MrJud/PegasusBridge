@@ -1,23 +1,27 @@
 package com.pegasus.bridge.hasher
 
 import com.pegasus.bridge.core.BridgeLog
+import com.pegasus.bridge.core.BridgePaths
 import com.pegasus.bridge.core.SafeUrl
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.sync.Mutex
-import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withLock
-import kotlinx.coroutines.sync.withPermit
 import okhttp3.Call
 import okhttp3.Callback
+import okhttp3.HttpUrl
+import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.Response
-import org.json.JSONArray
 import org.json.JSONException
 import org.json.JSONObject
+import java.io.File
 import java.io.IOException
+import java.net.URLEncoder
+import java.util.Locale
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
 import kotlin.coroutines.resumeWithException
@@ -27,11 +31,14 @@ interface RaHashLookup {
     /**
      * One of the four answers of [LookupOutcome], which callers must keep apart:
      * a match, a hash RetroAchievements does not know, a dump it knows and does
-     * not consider playable, and a request that got no usable answer.
+     * not consider playable, and a lookup that got no usable answer.
      *
      * A real id whose game could not be described is [LookupOutcome.Failed], not
      * the id alone: the title is what makes a match, and an answer that cannot
      * give one is a failure of the source.
+     *
+     * [RaApiHashLookup] answers from the lists of consoles and cannot answer
+     * this one, which names none: it fails, and asks nobody.
      */
     suspend fun lookup(hash: String): LookupOutcome
 
@@ -48,20 +55,33 @@ interface RaHashLookup {
     suspend fun lookup(hash: String, consoles: List<Int>): LookupOutcome = lookup(hash)
 
     /**
-     * Lookups in a row that ended in [LookupOutcome.Failed], so a caller can
-     * stop a doomed scan. Counted once per lookup, however many requests it
-     * took, and cleared by any answer except [LookupOutcome.IdOnly], which
-     * leaves it as it was: no description is asked for a virtual id, so it says
-     * nothing either way about whether descriptions still come back.
+     * Lookups in a row that the source failed, so a caller can stop a doomed
+     * scan. Counted once per lookup, however many requests it took or none,
+     * and cleared by a match or a miss.
+     *
+     * Not every [LookupOutcome.Failed] is one of them. What counts is the
+     * source not answering as itself: a request that brought nothing back, a
+     * status that is not a success, a body that is not what was asked for.
+     * [RaApiHashLookup] leaves out, and leaves the count as it was for, a
+     * lookup it could not make of an answer that did arrive whole: a list
+     * that is another console's or has no game in it, and a hash it was
+     * given no console for. Those are of one console, the files of a
+     * collection come one after another, and eight of them would stop a scan
+     * whose source is answering for every other. [LookupOutcome.IdOnly]
+     * leaves the count alone as well.
      */
     val consecutiveFailures: Int get() = 0
 
     /**
-     * True once the source has refused the credentials. Nothing after that can be
-     * a match, since describing a game needs the key, so a caller should stop at
-     * once. Waiting for [consecutiveFailures] does not work here: the hashes the
-     * source does not know are answered without the key, and each of them clears
-     * the count.
+     * True once the source has refused the credentials. Nothing after that
+     * can be answered, so a caller should stop at once and say that this is
+     * what it was: left to [consecutiveFailures] the scan would stop eight
+     * lookups later as one whose source is down, with the advice to wait.
+     *
+     * Every request of [RaApiHashLookup] carries the key, so a bad one is
+     * refused at the first that is made. None is made while the lists it
+     * needs are on disk and fresh, and a key refused since then goes unseen
+     * until one is.
      */
     val authRejected: Boolean get() = false
 
@@ -89,8 +109,11 @@ interface RaHashLookup {
  * VirtualGameIdService, where `r=gameid` gets its answer, down to the strict
  * comparisons: an id is virtual when it is *above* 1 000 000 000.
  *
- * The Web API has no game under such a number — API_GetGameExtended answers `[]`
- * — so asking it for one costs a request and learns nothing.
+ * The Web API has no game under such a number, and [RaApiHashLookup] no
+ * longer asks `r=gameid`: the lists it answers from hold only the hashes
+ * RetroAchievements lets count, so such a dump is not in them and comes out
+ * as a hash that is not known. What is here is for the answers that came
+ * while it was asked, which a ledger still holds, and for an audit's.
  */
 object VirtualGameId {
     const val INCOMPATIBLE_BASE = 1_000_000_000
@@ -144,10 +167,35 @@ fun interface DeviceConnection {
 /**
  * Live implementation against retroachievements.org.
  *
- * The User-Agent is set deliberately: `dorequest.php` refuses generic ones with
- * a 403 — curl's default and OkHttp's own `okhttp/4.12.0` among them — which is
- * why a plain curl reproduction appears to show the endpoint as blocked when it
- * is not.
+ * It asks for the list of a console, `API_GetGameList.php` with its hashes,
+ * and answers every hash of that console from it: one request for a console
+ * where there was one for every file and another for every match. Nothing is
+ * asked about a hash, so nothing is asked of `dorequest.php`, and the list
+ * says of a game what a match writes down, so nothing is asked about a game
+ * either.
+ *
+ * A list is asked for when the first hash needs it and not before, kept
+ * under [lists] as [RaGameList] writes it, and answered from for
+ * [RaGameList.MAX_AGE_SECONDS]. A scan whose files are all settled asks for
+ * none and reads none; one that finds its lists on disk and fresh makes no
+ * request at all.
+ *
+ * What it must never do is take a list it does not have for a list that does
+ * not have the hash. A miss is kept for fourteen days, and a list is every
+ * file of a console at once. So a hash is not known only when every list it
+ * was to be looked up in was read whole, and each held a game. A list that
+ * could not be had fails the lookups that need it, for the rest of this
+ * object's life and without being asked for again: its console's files come
+ * one after another, and asking for each would be four requests a file. A
+ * list past its time whose refresh fails is not answered from either.
+ *
+ * Every request carries the key, so the first one made shows whether it is
+ * good: see [authRejected].
+ *
+ * The User-Agent is set deliberately: RetroAchievements refuses generic ones
+ * with a 403, curl's default and OkHttp's own `okhttp/4.12.0` among them.
+ *
+ * [clock] gives the time a list is dated with and held to, in seconds.
  *
  * [device] is what the platform knows of its own connection. It is asked
  * only about a request that has just failed without an answer, to tell why,
@@ -160,7 +208,9 @@ fun interface DeviceConnection {
 class RaApiHashLookup(
     private val raUser: String,
     private val raApiKey: String,
+    private val lists: File,
     baseUrl: String = RETROACHIEVEMENTS_URL,
+    private val clock: () -> Long = BridgePaths::epochSeconds,
     private val device: DeviceConnection = DeviceConnection { false }
 ) : RaHashLookup {
 
@@ -171,17 +221,46 @@ class RaApiHashLookup(
         .readTimeout(30, TimeUnit.SECONDS)
         .build()
 
-    private val semaphore = Semaphore(MAX_PARALLEL)
-
     // nanoTime rather than the wall clock, which NTP or a person can step: a step
     // backwards made the next wait as long as the step.
     private val paceMutex = Mutex()
     private var lastRequestAt = System.nanoTime() - MIN_INTERVAL_NS
 
-    // Per lookup, not per request. Counting requests let the r=gameid call, which
-    // carries no key and so is answered 200 even when the key has been revoked,
-    // zero what the metadata call's 401 had just raised. The count swung between
-    // 0 and 1 and a scan with a dead key went through the whole library.
+    /** What became of a console's list, kept for as long as this object is. */
+    private sealed interface Loaded {
+        class Ok(val list: RaGameList) : Loaded
+
+        /**
+         * The list could not be had. [why] is what every lookup that needs
+         * it ends with, and [counts] whether that is held against the
+         * source: see [consecutiveFailures].
+         */
+        class Failed(val why: LookupOutcome.Failed, val counts: Boolean) : Loaded
+    }
+
+    // One list is loaded at a time, whoever asks: two workers that need the
+    // same console make one request, and the second finds the list there.
+    // Read without the lock first, so that a worker whose console is loaded
+    // never waits for another's to be fetched.
+    private val loadLock = Mutex()
+    private val loaded = ConcurrentHashMap<Int, Loaded>()
+
+    private val attempts = AtomicInteger()
+    private val fetched = AtomicInteger()
+    private val read = AtomicInteger()
+
+    /** Requests made, each attempt of one that was retried counted. */
+    val requests: Int get() = attempts.get()
+    /** Lists a request brought back and that were taken. */
+    val listsFetched: Int get() = fetched.get()
+    /** Lists found on disk, fresh, and answered from with no request. */
+    val listsRead: Int get() = read.get()
+
+    // Per lookup, not per request, and not for every lookup that fails: see
+    // [RaHashLookup.consecutiveFailures] for which. A lookup that meets a
+    // list already known to be missing makes no request and counts all the
+    // same, which is what stops a scan on a source that is down after eight
+    // files and four requests.
     private val failures = AtomicInteger()
     override val consecutiveFailures: Int get() = failures.get()
 
@@ -205,19 +284,14 @@ class RaApiHashLookup(
         lastRequestAt = System.nanoTime()
     }
 
-    override suspend fun lookup(hash: String): LookupOutcome = semaphore.withPermit {
+    override suspend fun lookup(hash: String): LookupOutcome = lookup(hash, emptyList())
+
+    override suspend fun lookup(hash: String, consoles: List<Int>): LookupOutcome {
+        var counts = true
         val outcome = try {
-            when (val asked = fetchGameId(hash)) {
-                is Step.GaveUp -> asked.failed
-                is Step.Got -> {
-                    val gameId = asked.value
-                    // A virtual id is answered by the id alone: the Web API has no game
-                    // under it to describe. Of 143 ROMs one library had that RA's hash
-                    // list did not match, 65 came back as such ids, each costing a
-                    // metadata request that answered [].
-                    LookupOutcome.ofIdAlone(gameId) ?: fetchMetadata(gameId)
-                }
-            }
+            val answer = answer(hash, consoles)
+            counts = answer.counts
+            answer.outcome
         } catch (c: CancellationException) {
             // CancellationException is an Exception, so the broad catch below used
             // to swallow it and answer `null` — which reads as "no answer" and
@@ -235,50 +309,165 @@ class RaApiHashLookup(
             LookupOutcome.Failed(LookupOutcome.Cause.TRANSPORT, kind(e))
         }
         when (outcome) {
-            is LookupOutcome.Failed -> failures.incrementAndGet()
-            // Neither way. Clearing the count here let a broken metadata endpoint
-            // hide behind a library's virtual ids, and counting it would let a run
-            // of them stop a scan whose source is answering perfectly well.
+            is LookupOutcome.Failed -> if (counts) failures.incrementAndGet()
+            // Neither way. Nothing here answers it any more, and the type is
+            // one whose every case has to be named.
             is LookupOutcome.IdOnly -> Unit
             is LookupOutcome.Match, LookupOutcome.NotFound -> failures.set(0)
         }
-        outcome
+        return outcome
+    }
+
+    private class Answer(val outcome: LookupOutcome, val counts: Boolean = true)
+
+    /**
+     * The hash in the first of its consoles' lists that has it.
+     *
+     * The lists are gone through in the order given and the next is loaded
+     * only after a miss in the one before, so a hash found where it was
+     * hashed costs its own console's list and no other. A list that could
+     * not be had ends the lookup there as a failure: the hash may be in it,
+     * and "not known" is for a hash every list was looked in.
+     *
+     * In lowercase, as the lists' keys are whatever case they came in.
+     */
+    private suspend fun answer(hash: String, consoles: List<Int>): Answer {
+        val md5 = hash.lowercase(Locale.ROOT)
+        val wanted = consoles.filter { it > 0 }.distinct()
+        // Not the source's doing, and so not held against it.
+        if (wanted.isEmpty()) {
+            return Answer(LookupOutcome.Failed(LookupOutcome.Cause.MALFORMED, "no console to look the hash up in"),
+                          counts = false)
+        }
+        for (console in wanted) {
+            val list = when (val had = listFor(console)) {
+                is Loaded.Failed -> return Answer(had.why, had.counts)
+                is Loaded.Ok -> had.list
+            }
+            val game = list[md5] ?: continue
+            // The title is what makes a match, and a count that is no number
+            // would be written down as a game with no achievements. The list
+            // is taken all the same: this is one game of it.
+            if (game.title.isBlank() || game.numAchievements < 0) {
+                BridgeLog.w(TAG, "console $console: no usable description of game ${game.gameId} for hash $md5")
+                return Answer(LookupOutcome.Failed(LookupOutcome.Cause.MALFORMED,
+                                                   "no usable description of game ${game.gameId}"))
+            }
+            return Answer(LookupOutcome.Match(GameMetadata(
+                gameId          = game.gameId,
+                title           = game.title,
+                consoleName     = list.consoleName,
+                imageIcon       = game.imageIcon,
+                numAchievements = game.numAchievements
+            )))
+        }
+        return Answer(LookupOutcome.NotFound)
+    }
+
+    private suspend fun listFor(console: Int): Loaded =
+        loaded[console] ?: loadLock.withLock {
+            // A failure is kept as a list is. What is thrown, a cancelled
+            // scan or a fault in here, keeps nothing and lets go of the lock.
+            loaded[console] ?: load(console).also { loaded[console] = it }
+        }
+
+    /** From disk when the list there is whole and fresh, and by a request when not. */
+    private suspend fun load(console: Int): Loaded {
+        // The key has been refused once and is the same key: no request is
+        // spent on hearing it again for another console.
+        if (rejected) return Loaded.Failed(LookupOutcome.Failed(LookupOutcome.Cause.AUTH, "HTTP 401"), counts = true)
+        val now = clock()
+        val kept = RaGameList.read(lists, console)?.takeIf { it.freshAt(now) } ?: return fetch(console)
+        read.incrementAndGet()
+        BridgeLog.i(TAG, "console $console: ${kept.games} games, ${kept.hashes} hashes, read from disk, " +
+                         "${(now - kept.fetchedAt).coerceAtLeast(0) / DAY_SECONDS} days old")
+        return Loaded.Ok(kept)
     }
 
     /**
-     * What one request, or the part of a lookup made of it, came to: the thing
-     * it was after, or the failure the lookup ends with. The failure is made
-     * where it happens, which is the only place that knows what kind it was.
+     * Asks for the list, without `f=1`: games with no achievements are most
+     * of a list and hold most of its hashes, and a file of one of them is a
+     * game RetroAchievements knows.
+     *
+     * A 401 is the key refused, and sets [authRejected]. It is what RAWeb's
+     * api-token guard answers, `{"message":"Unauthenticated.",…}`, whenever `y`
+     * matches no account's web API key: a wrong key, a revoked one, an empty one,
+     * and a banned account's, since a ban clears the key. The user name is not
+     * checked at all.
+     *
+     * Nothing is written to disk for a list that is not taken.
+     */
+    private suspend fun fetch(console: Int): Loaded {
+        // Built and not written out: a key or a name with a character a URL
+        // gives a meaning to, an `&` or a `+`, would arrive as something else.
+        val url = "$base/API/API_GetGameList.php".toHttpUrl().newBuilder()
+            .addQueryParameter("z", raUser)
+            .addQueryParameter("y", raApiKey)
+            .addQueryParameter("i", console.toString())
+            .addQueryParameter("h", "1")
+            .build().toString()
+        val reply = when (val got = getWithRetry(url)) {
+            is Step.GaveUp -> return Loaded.Failed(got.failed, counts = true)
+            is Step.Got -> got.value
+        }
+        if (reply.code == 401) {
+            rejected = true
+            return failed(LookupOutcome.Cause.AUTH, "HTTP 401")
+        }
+        if (!reply.ok) return failed(LookupOutcome.Cause.REFUSED, "HTTP ${reply.code}")
+        val body = reply.body.orEmpty()
+        val noList = "no usable list of console $console"
+        return when (val parsed = RaGameList.parse(console, body, clock())) {
+            // Not a list at all: a page served with 200 by a proxy or a
+            // maintenance screen, an answer cut short, an object that says no.
+            // The source is not answering as itself, whatever the console.
+            RaGameList.Parsed.NotAnArray -> {
+                BridgeLog.w(TAG, "$noList: ${excerpt(body)}")
+                val obj = try { JSONObject(body) } catch (e: JSONException) { null }
+                if (saysNo(obj)) failed(LookupOutcome.Cause.REFUSED, "the list of console $console was refused")
+                else failed(LookupOutcome.Cause.MALFORMED, noList)
+            }
+            // A whole answer that is not this console's list. The source
+            // answered, so this is not held against it: it is one console's
+            // trouble, and the rest of the library is still to be scanned.
+            is RaGameList.Parsed.Refused -> {
+                BridgeLog.w(TAG, "$noList, ${parsed.why}: ${excerpt(body)}")
+                failed(LookupOutcome.Cause.MALFORMED, noList, counts = false)
+            }
+            is RaGameList.Parsed.Listed -> {
+                val list = parsed.list
+                // No console a scan asks about is empty: its files were
+                // hashed as a console RetroAchievements has games for. An
+                // empty list is an answer gone wrong, and believed it would
+                // make a miss of every file of the console for fourteen days.
+                if (list.listed == 0) {
+                    BridgeLog.w(TAG, "an empty list of console $console: not taken, and not kept")
+                    return failed(LookupOutcome.Cause.MALFORMED, "an empty list of console $console", counts = false)
+                }
+                // A list that cannot be kept is still the list: this scan
+                // answers from it, and the next asks again.
+                try { list.write(lists) } catch (e: Exception) {
+                    BridgeLog.w(TAG, "console $console: the list could not be kept on disk: ${describe(e)}")
+                }
+                fetched.incrementAndGet()
+                BridgeLog.i(TAG, "console $console: ${list.listed} listed, ${list.games} games, " +
+                                 "${list.hashes} hashes, fetched")
+                Loaded.Ok(list)
+            }
+        }
+    }
+
+    private fun failed(cause: LookupOutcome.Cause, detail: String, counts: Boolean = true) =
+        Loaded.Failed(LookupOutcome.Failed(cause, detail), counts)
+
+    /**
+     * What one request came to: the reply, or the failure the lookup ends
+     * with. The failure is made where it happens, which is the only place
+     * that knows what kind it was.
      */
     private sealed interface Step<out T> {
         class Got<T>(val value: T) : Step<T>
         class GaveUp(val failed: LookupOutcome.Failed) : Step<Nothing>
-    }
-
-    /**
-     * The game id, 0 for a hash RA does not know, or the failure when the body
-     * is not an answer.
-     *
-     * Only `Success: true` with a whole GameID counts. Most of what falls short used
-     * to read as 0 — an HTML page served with 200 by a proxy or a maintenance
-     * screen, `Success: false`, a missing GameID — and 0 is NOT_FOUND, which the
-     * ledger keeps for fourteen days. RAWeb answers a client it has blocked with
-     * `Success: false` and `GameID: 0`; read loosely, that writes off every ROM in
-     * the library at once.
-     */
-    private suspend fun fetchGameId(hash: String): Step<Int> {
-        val reply = when (val got = getWithRetry("$base/dorequest.php?r=gameid&m=$hash")) {
-            is Step.GaveUp -> return got
-            is Step.Got -> got.value
-        }
-        if (!reply.ok) return gaveUp(LookupOutcome.Cause.REFUSED, "HTTP ${reply.code}")
-        val body = reply.body.orEmpty()
-        val obj = try { JSONObject(body) } catch (e: JSONException) { null }
-        val id = obj?.takeIf { it.opt("Success") == true }?.let { wholeNumber(it, "GameID") }
-        if (id != null) return Step.Got(id)
-        BridgeLog.w(TAG, "no usable game id for hash $hash: ${excerpt(body)}")
-        return gaveUp(if (saysNo(obj)) LookupOutcome.Cause.REFUSED else LookupOutcome.Cause.MALFORMED,
-                      "no usable game id")
     }
 
     private fun gaveUp(cause: LookupOutcome.Cause, detail: String) =
@@ -292,93 +481,29 @@ class RaApiHashLookup(
     private fun saysNo(obj: JSONObject?): Boolean =
         obj != null && obj.has("Success") && obj.opt("Success") != true
 
-    /**
-     * Uses `API_GetGameExtended.php`, not `API_GetGame.php`.
-     *
-     * The plain endpoint does not return `NumAchievements` at all — its response
-     * carries only Title, Console*, Image*, Developer, Publisher, Genre and
-     * Released — so reading the field there always yielded 0 and every scanned
-     * game was recorded with zero achievements.
-     *
-     * Only a real id is asked about, and RA hands one out only for a game it has,
-     * so a body that does not describe that game — `[]`, a page that is not
-     * JSON, another game's ID, no title, no achievement count, `Success: false` —
-     * is the endpoint failing, and comes back as a failure. It used to come back as
-     * the id alone, which cleared the failure count: a metadata endpoint serving
-     * a maintenance page with 200 went unnoticed through a whole library, every
-     * match retried and none of it counted as failing.
-     *
-     * A 401 is the key refused, and sets [authRejected]. It is what RAWeb's
-     * api-token guard answers, `{"message":"Unauthenticated.",…}`, whenever `y`
-     * matches no account's web API key: a wrong key, a revoked one, an empty one,
-     * and a banned account's, since a ban clears the key. The user name is not
-     * checked at all. The 404 RAWeb gives for a banned user is about the user a
-     * request names in `u`, which this one does not carry.
-     */
-    private suspend fun fetchMetadata(gameId: Int): LookupOutcome {
-        val url = "$base/API/API_GetGameExtended.php?z=$raUser&y=$raApiKey&i=$gameId"
-        val reply = when (val got = getWithRetry(url)) {
-            is Step.GaveUp -> return got.failed
-            is Step.Got -> got.value
-        }
-        if (reply.code == 401) {
-            rejected = true
-            return LookupOutcome.Failed(LookupOutcome.Cause.AUTH, "HTTP 401")
-        }
-        if (!reply.ok) return LookupOutcome.Failed(LookupOutcome.Cause.REFUSED, "HTTP ${reply.code}")
-        val body = reply.body.orEmpty()
-        val obj = try { firstObject(body) } catch (e: JSONException) { null }
-        if (saysNo(obj)) {
-            BridgeLog.w(TAG, "metadata for game $gameId refused: ${excerpt(body)}")
-            return LookupOutcome.Failed(LookupOutcome.Cause.REFUSED, "metadata for game $gameId refused")
-        }
-        val title = (obj?.opt("Title") as? String)?.takeIf { it.isNotBlank() }
-        val achievements = obj?.let { wholeNumber(it, "NumAchievements") }
-        if (obj == null || wholeNumber(obj, "ID") != gameId || title == null || achievements == null) {
-            BridgeLog.w(TAG, "no usable metadata for game $gameId: ${excerpt(body)}")
-            return LookupOutcome.Failed(LookupOutcome.Cause.MALFORMED, "no usable metadata for game $gameId")
-        }
-        return LookupOutcome.Match(GameMetadata(
-            gameId          = gameId,
-            title           = title,
-            consoleName     = obj.optString("ConsoleName"),
-            imageIcon       = obj.optString("ImageIcon"),
-            numAchievements = achievements
-        ))
-    }
-
-    /**
-     * A whole number from 0 up, or null.
-     *
-     * `optInt` was the trap: it turns 0.5 into 0, a missing field into 0 and
-     * 4294967296 into 0 as well, and a GameID of 0 means "RA does not know this
-     * ROM". A decimal string passes, being the same number written differently.
-     */
-    private fun wholeNumber(obj: JSONObject, key: String): Int? =
-        obj.opt(key)?.toString()?.toIntOrNull()?.takeIf { it >= 0 }
-
-    private fun firstObject(body: String): JSONObject? {
-        val t = body.trim()
-        return when {
-            t.startsWith("{") -> JSONObject(t)
-            t.startsWith("[") -> {
-                val arr = JSONArray(t)
-                (0 until arr.length()).firstNotNullOfOrNull { arr.opt(it) as? JSONObject }
-            }
-            else -> null
-        }
-    }
+    // The key as it travels in a URL, where it differs from the key as
+    // typed: once as the request carries it and once as a form would write
+    // it, with a `+` for a space.
+    private val keyForms: List<String> = if (raApiKey.isBlank()) emptyList() else listOfNotNull(
+        raApiKey,
+        try {
+            HttpUrl.Builder().scheme("http").host("localhost").addQueryParameter("y", raApiKey)
+                .build().encodedQuery?.removePrefix("y=")
+        } catch (e: Exception) { null },
+        try { URLEncoder.encode(raApiKey, "UTF-8") } catch (e: Exception) { null }
+    ).filter { it.isNotEmpty() }.distinct().sortedByDescending { it.length }
 
     /**
      * Text from outside made fit for a log: one line, short, and without the API
-     * key. An error page can echo the query it was sent, and the metadata query
-     * carries `y=<key>`; exception messages go through here too, because nothing
-     * promises what a library puts in one.
+     * key. An error page can echo the query it was sent, and every query
+     * carries `y=<key>`, as typed or as a URL writes it; exception messages
+     * go through here too, because nothing promises what a library puts in
+     * one.
      */
     private fun excerpt(text: String?): String {
         val line = text.orEmpty().replace(WHITESPACE, " ").trim()
         if (line.isEmpty()) return "(empty)"
-        val safe = if (raApiKey.isBlank()) line else line.replace(raApiKey, "***")
+        val safe = keyForms.fold(line) { kept, key -> kept.replace(key, "***") }
         return if (safe.length <= EXCERPT_CHARS) safe else safe.take(EXCERPT_CHARS) + "…"
     }
 
@@ -405,8 +530,8 @@ class RaApiHashLookup(
      * A success, or the first refusal that asking again would not change, or the
      * failure once every attempt has failed: what the last of them was, a status
      * or no answer at all. The refusal is handed back as the reply it is rather
-     * than as a failure because one of them, a 401, says the key is no good, and
-     * only the caller knows whether its request carried the key.
+     * than as a failure because one of them, a 401, says the key is no good,
+     * and what follows from that is the caller's to do.
      */
     private suspend fun getWithRetry(url: String): Step<HttpReply> {
         var last = LookupOutcome.Failed(LookupOutcome.Cause.TRANSPORT, "no attempt made")
@@ -417,6 +542,7 @@ class RaApiHashLookup(
             try {
                 pace()
                 val req = Request.Builder().url(url).header("User-Agent", USER_AGENT).build()
+                attempts.incrementAndGet()
                 val reply = execute(req)
                 // An answer, whatever it says, came over a connection. Said
                 // to the platform's side as well, and nothing it throws is
@@ -459,10 +585,10 @@ class RaApiHashLookup(
             // there added eight seconds to every request that failed for good.
             if (attempt < MAX_RETRIES - 1) delay(1000L shl attempt)
         }
-        // Redacted, because this URL is `API_GetGameExtended.php?z=…&y=<api key>`
+        // Redacted, because this URL is `API_GetGameList.php?z=…&y=<api key>`
         // and the desktop log is stderr or a journal that ends up in bug reports.
-        // What survives — host, endpoint and the game id — is what makes the line
-        // worth having; the key never was.
+        // What survives — host, endpoint and the console — is what makes the
+        // line worth having; the key never was.
         BridgeLog.e(TAG, "all retries exhausted for ${SafeUrl.redact(url)} ($said)")
         return Step.GaveUp(last)
     }
@@ -494,14 +620,14 @@ class RaApiHashLookup(
     private companion object {
         const val TAG = "RaApiHashLookup"
         const val USER_AGENT = "PegasusBridge/1.0"
-        // Eight in flight with no pacing gets this client refused by RA after
-        // about 85 requests, after which every lookup fails. Two in flight, at
-        // most one every 250 ms.
-        const val MAX_PARALLEL = 2
+        // A request is a whole console now and there are few of them, one at
+        // a time behind the lock that loads a list. The spacing is the one
+        // there was for a request per file.
         const val MIN_INTERVAL_MS = 250L
         val MIN_INTERVAL_NS = TimeUnit.MILLISECONDS.toNanos(MIN_INTERVAL_MS)
         const val MAX_RETRIES = 4
         const val EXCERPT_CHARS = 160
+        const val DAY_SECONDS = 24L * 60 * 60
         val WHITESPACE = Regex("\\s+")
     }
 }

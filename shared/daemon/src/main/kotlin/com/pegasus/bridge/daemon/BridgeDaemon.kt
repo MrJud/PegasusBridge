@@ -9,6 +9,7 @@ import com.pegasus.bridge.hasher.DeviceConnection
 import com.pegasus.bridge.hasher.NativeRomHasher
 import com.pegasus.bridge.hasher.RETROACHIEVEMENTS_URL
 import com.pegasus.bridge.hasher.RaApiHashLookup
+import com.pegasus.bridge.hasher.RaGameList
 import com.pegasus.bridge.hasher.RaHashLookup
 import com.pegasus.bridge.hasher.RomHasher
 import com.pegasus.bridge.hasher.RomScanPipeline
@@ -104,8 +105,8 @@ class BridgeDaemon(
                 buildScanPipeline(
                     paths,
                     ArchiveAwareHasher(it, File(dataRoot, "tmp")),
-                    RaApiHashLookup(ra?.user.orEmpty(), ra?.apiKey.orEmpty(), raBaseUrl,
-                                    DeviceConnection(deviceOffline)),
+                    RaApiHashLookup(ra?.user.orEmpty(), ra?.apiKey.orEmpty(), File(paths.cache, RaGameList.DIR),
+                                    raBaseUrl, device = DeviceConnection(deviceOffline)),
                     hashWorkers
                 )
             }

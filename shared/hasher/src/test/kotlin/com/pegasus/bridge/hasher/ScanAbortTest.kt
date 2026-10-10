@@ -270,34 +270,39 @@ class ScanAbortTest {
         assertEquals(s.indexed, JSONObject(paths.discoveryIndex.readText()).getInt("count"))
     }
 
+    /** Where the real lookup of these tests keeps its lists: where a daemon's does. */
+    private fun lists() = File(paths.cache, RaGameList.DIR)
+
     /**
-     * A revoked key as RetroAchievements serves it, end to end: r=gameid needs no
-     * key and answers, the metadata call answers 401. One ROM in four is unknown
-     * to RA, and each of those misses cleared the failure count, so a library
-     * like this one went through without an abort: 42 requests, 18 API_RETRY,
-     * never more than 5 failures in a row. The first refusal stops it now, and
-     * the reason names the key instead of a source that stopped answering.
+     * A server that answers every request with [status] and [body], and
+     * counts them in [requests]. Stopped by whoever started it.
      */
-    @Test fun `a refused key stops the scan at the first refusal, whatever the misses do`(): Unit = runBlocking {
-        repeat(24) { i -> rom("nes", "Game$i.nes", if (i % 4 == 0) "miss-$i" else "known-$i") }
-        val metadataRequests = AtomicInteger()
-        val server = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0)
-        server.createContext("/") { exchange ->
-            val (status, body) = if (exchange.requestURI.path == "/dorequest.php") {
-                val hash = exchange.requestURI.query.substringAfter("m=")
-                200 to (if (hash.startsWith("miss-")) """{"Success":true,"GameID":0}"""
-                        else """{"Success":true,"GameID":${1000 + hash.substringAfter('-').toInt()}}""")
-            } else {
-                metadataRequests.incrementAndGet()
-                401 to """{"message":"Unauthenticated.","errors":[{"status":"401","code":"unauthorized","title":"Unauthenticated."}]}"""
+    private fun answering(status: Int, body: String, requests: AtomicInteger): HttpServer =
+        HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0).apply {
+            createContext("/") { exchange ->
+                requests.incrementAndGet()
+                val bytes = body.toByteArray()
+                exchange.sendResponseHeaders(status, bytes.size.toLong())
+                exchange.responseBody.use { it.write(bytes) }
             }
-            val bytes = body.toByteArray()
-            exchange.sendResponseHeaders(status, bytes.size.toLong())
-            exchange.responseBody.use { it.write(bytes) }
+            start()
         }
-        server.start()
+
+    /**
+     * A revoked key as RetroAchievements serves it, end to end: the request
+     * for a console's list carries the key and is answered 401. It is the
+     * first request of the scan, so the first lookup stops it, and the reason
+     * names the key instead of a source that stopped answering. While a hash
+     * was asked about without the key and only a match needed it, a library
+     * with one ROM in four unknown went through without an abort: each miss
+     * cleared the count of failures.
+     */
+    @Test fun `a refused key stops the scan at the first refusal`(): Unit = runBlocking {
+        repeat(24) { i -> rom("nes", "Game$i.nes", "%032x".format(i + 1)) }
+        val requests = AtomicInteger()
+        val server = answering(401, """{"message":"Unauthenticated.","errors":[{"status":"401","code":"unauthorized","title":"Unauthenticated."}]}""", requests)
         try {
-            val lookup = RaApiHashLookup("someuser", "revoked-key", "http://127.0.0.1:${server.address.port}")
+            val lookup = RaApiHashLookup("someuser", "revoked-key", lists(), "http://127.0.0.1:${server.address.port}")
             // One worker per stage, so the lookups run in a line and "after the
             // first refusal" means one thing.
             val s = withTimeout(20_000) {
@@ -309,13 +314,76 @@ class ScanAbortTest {
             assertTrue(s.aborted, "a scan with a refused key ran to the end")
             assertTrue(s.reason.startsWith("RetroAchievements refused the API key"), s.reason)
             assertEquals(RomScanPipeline.AbortCause.KEY_REFUSED, s.abortCause)
-            assertEquals(1, metadataRequests.get(), "the scan went on asking after the key was refused")
+            assertEquals(1, requests.get(), "the scan went on asking after the key was refused")
             assertEquals(1, s.failedLookups)
             assertEquals(1, s.states[ScanLedger.State.API_RETRY])
-            // The misses answered before the refusal are the rest of what it saw.
-            assertEquals(s.processed - 1, s.unmatched)
+            assertEquals(mapOf("API_RETRY" to 1), statesOnDisk(), "a file was written off on a refused key")
             assertEquals(s.processed, s.counted())
             assertTrue(s.processed < s.total)
+            assertEquals(emptyList(), lists().list().orEmpty().toList())
+        } finally {
+            server.stop(0)
+        }
+    }
+
+    /**
+     * RetroAchievements answers the list of the console with `[]`. No console
+     * a scan asks about has no games, so this is an answer gone wrong, and
+     * two things must not come of it. The files are not misses: a miss is
+     * kept for fourteen days, and here it would be every file of the console.
+     * And the scan is not stopped: the source answered, this is one console's
+     * trouble, and stopped here the scan would stop here every time, with the
+     * collections after it never reached.
+     */
+    @Test fun `a console whose list is empty does not stop the scan and writes nothing off`(): Unit = runBlocking {
+        repeat(10) { i -> rom("nes", "Game$i.nes", "%032x".format(i + 1)) }
+        val requests = AtomicInteger()
+        val server = answering(200, "[]", requests)
+        try {
+            val lookup = RaApiHashLookup("someuser", "a-key", lists(), "http://127.0.0.1:${server.address.port}")
+            val s = withTimeout(20_000) {
+                RomScanPipeline(paths, ContentHasher(), lookup, throttleMs = { 0L })
+                    .scan(listOf(romRoot.absolutePath))
+            }
+
+            assertFalse(s.aborted, "the scan was stopped: ${s.reason}")
+            assertEquals(10, s.processed)
+            assertEquals(mapOf("API_RETRY" to 10), statesOnDisk())
+            assertEquals(10, s.failedLookups)
+            assertEquals(0, s.unmatched)
+            assertEquals(1, requests.get())
+            assertEquals(0, lookup.consecutiveFailures)
+            assertEquals(emptyList(), lists().list().orEmpty().toList())
+        } finally {
+            server.stop(0)
+        }
+    }
+
+    /**
+     * RetroAchievements is down: every request is answered 503. The list is
+     * asked for four times, for the first file, and is then known to be
+     * missing: the files after it fail without a request, each counted, and
+     * the eighth stops the scan. Asked for at every file it would be
+     * thirty-two requests and close to a minute of back-off. These are real
+     * seconds, the seven of the one back-off.
+     */
+    @Test fun `a source that answers no list stops the scan after eight lookups and four requests`(): Unit = runBlocking {
+        repeat(12) { i -> rom("nes", "Game$i.nes", "%032x".format(i + 1)) }
+        val requests = AtomicInteger()
+        val server = answering(503, "unavailable", requests)
+        try {
+            val lookup = RaApiHashLookup("someuser", "a-key", lists(), "http://127.0.0.1:${server.address.port}")
+            val s = withTimeout(30_000) {
+                RomScanPipeline(paths, ContentHasher(), lookup, throttleMs = { 0L })
+                    .scan(listOf(romRoot.absolutePath))
+            }
+
+            assertEquals(RomScanPipeline.AbortCause.SOURCE_DOWN, s.abortCause, s.reason)
+            assertEquals(4, requests.get())
+            assertTrue(lookup.consecutiveFailures >= RomScanPipeline.MAX_CONSECUTIVE_FAILURES)
+            assertEquals(s.processed, s.failedLookups)
+            assertTrue(s.processed in 1..12, "processed ${s.processed}")
+            assertEquals(mapOf("API_RETRY" to s.processed), statesOnDisk(), "a file was written off on a source that was down")
         } finally {
             server.stop(0)
         }
@@ -503,17 +571,21 @@ class ScanAbortTest {
 
     /**
      * The tablet's scan as it was run: thirteen files nobody has asked about,
-     * the real lookup with its two requests at a time, and no connection. A
-     * port with nothing behind it stands for the network that is not there,
-     * and the device says it has none. It took 31 seconds, through four
-     * attempts and seven seconds of back-off for each of eight lookups. No
-     * back-off is waited through now, and these are real seconds: the first
-     * result of a scan that waited would be seven of them away.
+     * the real lookup, and no connection. A port with nothing behind it
+     * stands for the network that is not there, and the device says it has
+     * none. It took 31 seconds, through four attempts and seven seconds of
+     * back-off for each of eight lookups. No back-off is waited through now,
+     * and these are real seconds: the first result of a scan that waited
+     * would be seven of them away.
+     *
+     * One request is made, for the list of the files' console, and the
+     * device is asked about that one. The lookups that follow it before the
+     * scan stops find the list known to be missing and ask nobody.
      */
     @Test fun `thirteen files with no connection are stopped at once and none is written off`(): Unit = runBlocking {
         repeat(13) { rom("nes", "Game$it.nes", "hash-$it") }
         val asked = AtomicInteger()
-        val lookup = RaApiHashLookup("someuser", "a-key", "http://127.0.0.1:${deadPort()}") {
+        val lookup = RaApiHashLookup("someuser", "a-key", lists(), "http://127.0.0.1:${deadPort()}") {
             asked.incrementAndGet(); true
         }
 
@@ -526,10 +598,8 @@ class ScanAbortTest {
 
         assertEquals(RomScanPipeline.AbortCause.OFFLINE, s.abortCause)
         assertTrue(tookMs < 3_000, "the scan took $tookMs ms: a back-off was waited through")
-        // One request in flight for each worker and, paced a quarter of a second
-        // behind them, whatever a worker began before the abort reached it.
-        assertTrue(asked.get() in 1 until RomScanPipeline.MAX_CONSECUTIVE_FAILURES,
-                   "the device was asked ${asked.get()} times: the scan went on asking after the first failure")
+        assertEquals(1, asked.get(), "the scan went on asking after the first failure")
+        assertEquals(1, lookup.requests)
         assertTrue(s.processed in 1 until 13, "processed ${s.processed} of 13")
         assertEquals(s.processed, s.failedLookups)
         assertEquals(s.processed, s.counted())
@@ -550,7 +620,7 @@ class ScanAbortTest {
         assertEquals(13, first.newEntries)
 
         val asked = AtomicInteger()
-        val lookup = RaApiHashLookup("someuser", "a-key", "http://127.0.0.1:${deadPort()}") {
+        val lookup = RaApiHashLookup("someuser", "a-key", lists(), "http://127.0.0.1:${deadPort()}") {
             asked.incrementAndGet(); true
         }
         val s = withTimeout(5_000) {

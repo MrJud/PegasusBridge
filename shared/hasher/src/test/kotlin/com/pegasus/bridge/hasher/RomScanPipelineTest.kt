@@ -155,8 +155,8 @@ class RomScanPipelineTest {
                    "reverse lookup key missing: ${index.getJSONObject("byKey").keys().asSequence().toList()}")
     }
 
-    // RA's dorequest answers a dump it does not consider playable as is with a
-    // virtual id: a Virtual Console Metroid returns 1100001487, game 1487
+    // RA's dorequest answered a dump it does not consider playable as is with a
+    // virtual id: a Virtual Console dump returned 1100001487, game 1487
     // untested, and the Web API has no game under that number. Not a match, so
     // nothing is written and the count does not include it. But an answer, and
     // kept as one: recorded as API_RETRY, which is never cached, the file was
@@ -164,56 +164,97 @@ class RomScanPipelineTest {
     // the game's own id: as a NOT_FOUND under the number as sent, the ledger
     // said the same of it as of a dump nobody has heard of.
     //
-    // Through the lookup a scan really has, against a server that answers as
-    // RetroAchievements does, for the two things only that lookup can show: a
-    // virtual id is not asked about a second time, where the game's metadata
-    // is, and it leaves the count of failures where it was. One failure is
-    // made before the scan, so that a count put back to nothing would show.
+    // The lookup a scan has no longer answers this, since the lists it reads
+    // do not hold such a dump. What is held here is what the pipeline makes of
+    // the answer when a lookup does give it, as an audit's recorded answers
+    // do, and that the verdict stands.
     @Test fun `a virtual id is kept as KNOWN_UNSUPPORTED under the real game id`(): Unit = runBlocking {
-        val rom = rom("nes", "Metroid (Europe) (Virtual Console).nes", "hash-phantom")
-        val requests = java.util.Collections.synchronizedList(mutableListOf<String>())
+        val rom = rom("nes", "Phantom Dump (Europe) (Virtual Console).nes", "hash-phantom")
+        val lookup = object : RaHashLookup {
+            val calls = AtomicInteger()
+            override suspend fun lookup(hash: String): LookupOutcome {
+                calls.incrementAndGet()
+                return LookupOutcome.IdOnly(1487, LookupOutcome.Compatibility.UNTESTED, 1100001487)
+            }
+        }
+
+        val s = pipeline(ContentHasher(), lookup).scan(listOf(romRoot.absolutePath))
+
+        assertEquals(1, s.total)
+        assertEquals(0, s.newEntries, "a dump that is not supported must not count as a new entry")
+        assertEquals(0, s.indexed)
+        assertEquals(0, paths.metadata.listFiles { f -> !f.name.startsWith("_") }!!.size,
+                     "no metadata file should be left on disk for it")
+        assertEquals(mapOf(ScanLedger.State.KNOWN_UNSUPPORTED to 1), s.states)
+        assertEquals(counts(new = 0, cached = 0, skipped = 0, unmatched = 0, incompatible = 1,
+                            hashFailed = 0, failedLookups = 0), s.counts())
+        val entry = JSONObject(File(paths.cache, ScanLedger.FILE_NAME).readText())
+            .getJSONObject("entries").getJSONObject(rom.canonicalPath)
+        assertEquals("KNOWN_UNSUPPORTED", entry.getString("state"))
+        assertEquals(1487, entry.getInt("gameId"), "the game's own id, not the number as it was sent")
+        assertEquals("untested", entry.getString("detail"))
+
+        val h2 = ContentHasher()
+        val s2 = pipeline(h2, lookup).scan(listOf(romRoot.absolutePath))
+        assertEquals(0, h2.calls.get(), "the file was read again inside the verdict's TTL")
+        assertEquals(1, lookup.calls.get(), "the source was asked again inside the verdict's TTL")
+        assertEquals(mapOf(ScanLedger.State.KNOWN_UNSUPPORTED to 1), s2.states)
+        assertEquals(counts(new = 0, cached = 0, skipped = 0, unmatched = 0, incompatible = 1,
+                            hashFailed = 0, failedLookups = 0), s2.counts(),
+                     "the verdict found standing was counted as something else")
+    }
+
+    // The scan a daemon runs, with the lookup it runs it with, against a
+    // server that answers as RetroAchievements does: the three files cost
+    // one request, for their console's list, and a game is written down with
+    // the title, the icon and the count the list gave. Nothing else is asked
+    // that could give them. The next scan asks nothing and reads nothing.
+    @Test fun `a scan through the real lookup writes the game as the list gives it`(): Unit = runBlocking {
+        val hashes = listOf("a".repeat(32), "b".repeat(32), "c".repeat(32))
+        rom("nes", "Moss Kingdom (World).nes", hashes[0])
+        rom("nes", "Moss Kingdom (World) (Rev 1).nes", hashes[1].uppercase())
+        rom("nes", "Paper Rally (World).nes", hashes[2])
+        val asked = java.util.Collections.synchronizedList(mutableListOf<String>())
         val server = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0)
         server.createContext("/") { exchange ->
-            requests += exchange.requestURI.path
-            val body = if (requests.size == 1) "<html>not an answer</html>"
-                       else """{"Success":true,"GameID":1100001487}"""
+            asked += exchange.requestURI.path + "?" + exchange.requestURI.query
+            val body = """[{"ID":4101,"Title":"Moss Kingdom","ConsoleID":7,"ConsoleName":"Invented System",""" +
+                """"ImageIcon":"/Images/004101.png","NumAchievements":31,"Hashes":["${hashes[0]}","${hashes[1]}"]},""" +
+                """{"ID":4102,"Title":"Paper Rally","ConsoleID":7,"ConsoleName":"Invented System",""" +
+                """"ImageIcon":"/Images/004102.png","NumAchievements":0,"Hashes":["${hashes[2].uppercase()}"]}]"""
             val bytes = body.toByteArray()
             exchange.sendResponseHeaders(200, bytes.size.toLong())
             exchange.responseBody.use { it.write(bytes) }
         }
         server.start()
         try {
-            val lookup = RaApiHashLookup("someuser", "a-key", "http://127.0.0.1:${server.address.port}")
-            assertTrue(lookup.lookup("hash-of-another-file") is LookupOutcome.Failed)
-            assertEquals(1, lookup.consecutiveFailures)
+            val lists = File(paths.cache, RaGameList.DIR)
+            val lookup = RaApiHashLookup("someuser", "a-key", lists, "http://127.0.0.1:${server.address.port}")
 
             val s = pipeline(ContentHasher(), lookup).scan(listOf(romRoot.absolutePath))
 
-            assertEquals(1, s.total)
-            assertEquals(0, s.newEntries, "a dump that is not supported must not count as a new entry")
-            assertEquals(0, s.indexed)
-            assertEquals(0, paths.metadata.listFiles { f -> !f.name.startsWith("_") }!!.size,
-                         "no metadata file should be left on disk for it")
-            assertEquals(mapOf(ScanLedger.State.KNOWN_UNSUPPORTED to 1), s.states)
-            assertEquals(counts(new = 0, cached = 0, skipped = 0, unmatched = 0, incompatible = 1,
-                                hashFailed = 0, failedLookups = 0), s.counts())
-            val entry = JSONObject(File(paths.cache, ScanLedger.FILE_NAME).readText())
-                .getJSONObject("entries").getJSONObject(rom.canonicalPath)
-            assertEquals("KNOWN_UNSUPPORTED", entry.getString("state"))
-            assertEquals(1487, entry.getInt("gameId"), "the game's own id, not the number as it was sent")
-            assertEquals("untested", entry.getString("detail"))
-            assertEquals(listOf("/dorequest.php", "/dorequest.php"), requests.toList(),
-                         "a virtual id must not be asked about as a game is")
-            assertEquals(1, lookup.consecutiveFailures, "an answer that is not a match moved the count of failures")
+            assertEquals(mapOf(ScanLedger.State.MATCHED to 3), s.states)
+            assertEquals(listOf("/API/API_GetGameList.php?z=someuser&y=a-key&i=7&h=1"), asked.toList())
+            val meta = JSONObject(paths.metadata("4101").readText())
+            assertEquals("Moss Kingdom", meta.getString("title"))
+            assertEquals(31, meta.getJSONObject("ra").getInt("total"))
+            assertEquals("/Images/004101.png", meta.getJSONObject("ra").getString("imageIcon"))
+            assertEquals("nes", meta.getString("platform"))
+            val other = JSONObject(paths.metadata("4102").readText())
+            assertEquals(listOf<Any>("Paper Rally", 0, "/Images/004102.png"),
+                         listOf(other.getString("title"), other.getJSONObject("ra").getInt("total"),
+                                other.getJSONObject("ra").getString("imageIcon")))
+            assertEquals(2, s.indexed)
+            assertEquals(listOf("7.tsv"), lists.list()!!.toList())
 
             val h2 = ContentHasher()
-            val s2 = pipeline(h2, lookup).scan(listOf(romRoot.absolutePath))
-            assertEquals(0, h2.calls.get(), "the file was read again inside the verdict's TTL")
-            assertEquals(2, requests.size, "the source was asked again inside the verdict's TTL")
-            assertEquals(mapOf(ScanLedger.State.KNOWN_UNSUPPORTED to 1), s2.states)
-            assertEquals(counts(new = 0, cached = 0, skipped = 0, unmatched = 0, incompatible = 1,
-                                hashFailed = 0, failedLookups = 0), s2.counts(),
-                         "the verdict found standing was counted as something else")
+            val again = RaApiHashLookup("someuser", "a-key", lists, "http://127.0.0.1:${server.address.port}")
+            val s2 = pipeline(h2, again).scan(listOf(romRoot.absolutePath))
+            assertEquals(3, s2.cachedHits)
+            assertEquals(0, h2.calls.get(), "a file whose match stands was read again")
+            assertEquals(1, asked.size, "the source was asked again")
+            // Not even the list on disk: nothing needed looking up.
+            assertEquals(listOf(0, 0), listOf(again.requests, again.listsRead))
         } finally {
             server.stop(0)
         }

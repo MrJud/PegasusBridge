@@ -1,6 +1,8 @@
 package com.pegasus.bridge.hasher
 
 import android.content.Context
+import com.pegasus.bridge.core.Paths
+import java.io.File
 
 /**
  * The three things a scan is made of that this shell has to supply: the
@@ -53,7 +55,9 @@ internal object ScanCollaborators {
      */
     @Volatile
     var lookup: (raUser: String, raApiKey: String, device: DeviceConnection) -> RaHashLookup =
-        { raUser, raApiKey, device -> RaApiHashLookup(raUser, raApiKey, device = device) }
+        { raUser, raApiKey, device ->
+            RaApiHashLookup(raUser, raApiKey, File(Paths.bridge.cache, RaGameList.DIR), device = device)
+        }
 
     /**
      * What the device says of its connection, each time it is asked. The

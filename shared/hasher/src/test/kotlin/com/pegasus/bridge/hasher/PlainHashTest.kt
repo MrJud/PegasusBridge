@@ -126,8 +126,10 @@ class PlainHashTest {
         // Game Boy Advance, hashed whole: up to the limit and not a byte over.
         assertTrue(taken(5, 64 * mib))
         assertFalse(taken(5, 64 * mib + 1))
-        // Super Nintendo and Mega Drive: read into memory, or whole with playlists.
-        assertTrue(taken(3, 1))
+        // Super Nintendo and Mega Drive: read into memory, or whole with
+        // playlists. Each over a megabyte, where the size alone would not
+        // have had them taken.
+        assertTrue(taken(3, 4 * mib))
         assertTrue(taken(1, 8 * mib))
         // A disc is hashed from a few of its sectors, whatever its size, and
         // only a sheet or a stub of one is small enough to be read anyway.

@@ -320,8 +320,8 @@ class HashRecipeTest {
 
     // ── The matches ─────────────────────────────────────────────────────────
 
-    // A match is found through its metadata file before the ledger is
-    // asked, by the file's name, size and date. So none of the changes
+    // A match whose number has changed is taken back from its metadata
+    // file, by the file's name, size and date. So none of the changes
     // above has it read again: what a new number costs is the files that
     // did not match. Its entry in the ledger is written again under the
     // number of the day all the same.

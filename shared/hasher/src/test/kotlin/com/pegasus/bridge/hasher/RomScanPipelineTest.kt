@@ -38,9 +38,10 @@ class RomScanPipelineTest {
      * Hashes a file to its own content, so tests control matching exactly.
      *
      * It also fills the plain hashes, because in production every hasher reaches
-     * the pipeline wrapped in [ArchiveAwareHasher], which supplies them. A double
-     * that left them empty would look like pre-plain-hash metadata and be
-     * rescanned forever.
+     * the pipeline wrapped in [ArchiveAwareHasher], which supplies them for a
+     * file this small. A scan no longer asks for them before it takes a
+     * metadata file for a match; they are here so that what a test reads in
+     * such a file is what a scan writes there.
      */
     private class ContentHasher : RomHasher {
         val calls = AtomicInteger()

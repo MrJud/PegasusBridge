@@ -502,8 +502,8 @@ class ThemeContractTest {
 
     /**
      * Hashes a file to its own text, and fills the plain hashes as
-     * ArchiveAwareHasher does in production: without them a metadata file looks
-     * like one from before they existed and is never taken as cached.
+     * ArchiveAwareHasher does in production for a file this small, so that
+     * the metadata files here have every key a scan writes.
      */
     private class ContentHasher : RomHasher {
         val calls = AtomicInteger()

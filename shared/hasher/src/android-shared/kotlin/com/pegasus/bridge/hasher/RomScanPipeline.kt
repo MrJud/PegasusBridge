@@ -76,6 +76,16 @@ class RomScanPipeline(
         require(ledgerSaveEveryMs >= 0) { "ledgerSaveEveryMs must not be negative, was $ledgerSaveEveryMs" }
     }
 
+    // How every save of the ledger is written: forced to disk before it takes
+    // the place of the ledger there is. The ledger is the one file a scan
+    // writes over itself as it goes, and with nothing forced a power cut
+    // could leave its name on an empty file: every answer of "no" a library
+    // had been given, asked for again. Only the ledger: a metadata file and
+    // the index are written whole once and a scan puts back whichever is
+    // lost, and the record of a running job is not worth a force each time.
+    private val writeLedger: (File, String) -> Unit =
+        { f, text -> BridgePaths.writeAtomic(f, text, durable = true) }
+
     /**
      * How far a scan has got. The seven counts after [currentFile] are the ones
      * [Summary] ends with, and in every report they add up to [processed].
@@ -474,7 +484,7 @@ class RomScanPipeline(
                     // whole ledger. Nothing is forgotten here: that is for a
                     // scan that gets to its end.
                     if (ledger.dirty && (System.nanoTime() - savedAt) / 1_000_000 >= ledgerSaveEveryMs) {
-                        ledger.save { f, text -> BridgePaths.writeAtomic(f, text) }
+                        ledger.save(writeLedger)
                         savedAt = System.nanoTime()
                     }
 
@@ -553,7 +563,7 @@ class RomScanPipeline(
                              "keeping the index and the ledger")
             runCatching { writeDiscoveryIndex() }
                 .onFailure { BridgeLog.w(TAG, "could not rebuild the index: ${it.message}") }
-            ledger.save { f, text -> BridgePaths.writeAtomic(f, text) }
+            ledger.save(writeLedger)
             throw t
         } finally {
             // Cancel, not close: closing refuses new sends but leaves one already
@@ -577,7 +587,7 @@ class RomScanPipeline(
         // order: the ledger is asked only about files the walk found, which are
         // never the ones dropped, and the counts are of this run.
         ledger.forget(files.map { canonical(it.file) }.toSet(), roots.map { canonical(File(it)) })
-        ledger.save { f, text -> BridgePaths.writeAtomic(f, text) }
+        ledger.save(writeLedger)
         // The index after the ledger, and not before it as it was. A write of
         // the index that fails is thrown from here, so that a scan whose index
         // is not on disk does not end as done, and nothing under it is reached.

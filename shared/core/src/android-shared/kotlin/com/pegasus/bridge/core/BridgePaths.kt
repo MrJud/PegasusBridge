@@ -1,9 +1,13 @@
 package com.pegasus.bridge.core
 
 import java.io.File
+import java.io.FileDescriptor
+import java.io.FileOutputStream
 import java.io.IOException
+import java.nio.channels.FileChannel
 import java.nio.file.Files
 import java.nio.file.StandardCopyOption
+import java.nio.file.StandardOpenOption
 
 /**
  * Where the Bridge keeps its data. The Android build passes `/sdcard/PegasusData`;
@@ -107,20 +111,70 @@ class BridgePaths(val root: File) {
          * What follows a move that fails is what there was before, for a
          * filesystem that cannot do one: the plain rename, then the rewrite
          * in place.
+         *
+         * [durable] is for a file that has to be there after a power cut as
+         * well. The move guards against a kill, where the system goes on and
+         * writes out what the process left it. It does not guard against a
+         * cut: nothing has put the temporary file's bytes on disk when the
+         * name is moved onto it, and a filesystem may record the move first,
+         * so the name can come back holding an empty or a short file in place
+         * of the whole one it replaced. A durable write forces the bytes to
+         * disk before the move, and after it the directory, which is where
+         * the move itself is recorded. A file that cannot be forced is not
+         * moved, and the write fails with the old file in place. A directory
+         * that cannot is let go: Windows has no way to do it, and Android's
+         * shared storage may refuse.
+         *
+         * It is asked for by the scan's ledger and by nothing else, and is
+         * not the default on purpose. A force waits for the storage, each
+         * time, and this function also writes a metadata file for every
+         * match and, in the daemon, the record of a running job for every
+         * report it is given. Forced, those would wear a tablet's flash and
+         * slow a scan, to keep a file the next scan puts back and one nobody
+         * needs after a cut.
          */
-        fun writeAtomic(target: File, content: String) {
+        fun writeAtomic(target: File, content: String, durable: Boolean = false) {
             target.parentFile?.mkdirs()
             val tmp = File(target.parentFile, "${target.name}.tmp")
-            tmp.writeText(content)
+            write(tmp, content, durable)
             try {
                 Files.move(tmp.toPath(), target.toPath(),
                            StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING)
             } catch (_: IOException) {
                 if (!tmp.renameTo(target)) {
-                    target.writeText(content)
+                    write(target, content, durable)
                     tmp.delete()
                 }
             }
+            if (durable) target.absoluteFile.parentFile?.let { dir -> runCatching { force.directory(dir) } }
+        }
+
+        // The text as writeText writes it, and forced before the file is
+        // closed when the write is a durable one.
+        private fun write(file: File, content: String, durable: Boolean) {
+            if (!durable) return file.writeText(content)
+            FileOutputStream(file).use { out ->
+                out.write(content.toByteArray())
+                force.file(file, out.fd)
+            }
+        }
+
+        /**
+         * What a durable [writeAtomic] asks of the system. A var as
+         * [BridgeLog.current] is, and for the same reason: nothing else
+         * shows a test that a file was forced, or when, and a test can put
+         * in one that refuses.
+         */
+        @Volatile var force: Force = Force()
+    }
+
+    open class Force {
+        /** [file] is open for writing as [fd], with all of its text written. */
+        open fun file(file: File, fd: FileDescriptor) = fd.sync()
+
+        /** Throws where a directory cannot be opened or forced. */
+        open fun directory(dir: File) {
+            FileChannel.open(dir.toPath(), StandardOpenOption.READ).use { it.force(true) }
         }
     }
 }

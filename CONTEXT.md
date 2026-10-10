@@ -301,6 +301,14 @@ there without a read; one that shares that file with another ROM of its game
 is read once more. A killed scan rebuilds no index and leaves its record at
 `running`.
 
+A power cut costs the ledger what a kill does: each save is forced to disk
+before it takes the place of the ledger there is (`BridgePaths.writeAtomic`
+with `durable`), so a whole ledger comes back, the last one saved or, on
+storage that will not force a directory, perhaps the one before. Nothing else
+a scan writes is forced, so a metadata file or an index written just before
+the cut can come back empty or short: the next scan reads that game's ROM and
+asks about it once more, and rebuilds the index as every scan does.
+
 **No connection.** What the device knows about its connection explains a
 failure and prevents nothing. Every request is made. Only when one has failed
 without an answer of any kind — an exception, not an HTTP status — does the
@@ -374,11 +382,11 @@ write failed first:
 - **The ledger** — logged, and that is all. It is written while a scan
   runs, no more often than every ten seconds and only when something was
   settled since the last write, and as the scan ends: the whole file each
-  time (74 KB on a tablet with 339 files), through a temporary file that
-  takes its place in one move, so that what is on disk is always a whole
-  ledger. One that fails while the scan runs is tried again ten seconds on.
-  The scan ends as it would have. When no write got through, the next one
-  asks again about every file that is not a match.
+  time (74 KB on a tablet with 339 files), through a temporary file that is
+  forced to disk and then takes its place in one move, so that what is on
+  disk is always a whole ledger. One that fails while the scan runs is tried
+  again ten seconds on. The scan ends as it would have. When no write got
+  through, the next one asks again about every file that is not a match.
 
 A start request turned away for missing credentials writes an error record
 too. When that cannot be written it is logged, and the request ends as it

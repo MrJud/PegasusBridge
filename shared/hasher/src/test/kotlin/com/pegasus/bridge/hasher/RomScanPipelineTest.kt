@@ -522,6 +522,29 @@ class RomScanPipelineTest {
         assertTrue(paths.metadata("1446").isFile)
     }
 
+    // What a power cut can leave. The ledger is forced to disk and a metadata
+    // file is not, so the ledger can come back saying a file matched a game
+    // whose metadata file came back empty, or with the start of its text.
+    // That is a match with no file to stand on, as when the file is gone.
+    @Test fun `a match whose metadata file came back empty or short is identified again`(): Unit = runBlocking {
+        rom("nes", "Lantern Keep (World).nes", "hash-smb")
+        pipeline(ContentHasher(), MapLookup(catalogue)).scan(listOf(romRoot.absolutePath))
+        val whole = paths.metadata("1446").readText()
+
+        for (left in listOf("", whole.take(whole.length / 2))) {
+            paths.metadata("1446").writeText(left)
+
+            val h2 = ContentHasher(); val l2 = MapLookup(catalogue)
+            val s2 = pipeline(h2, l2).scan(listOf(romRoot.absolutePath))
+
+            assertEquals(listOf(1, 1), listOf(h2.calls.get(), l2.calls.get()), "read and asked, left '$left'")
+            assertEquals(1, s2.newEntries)
+            assertEquals(1, s2.indexed, "the game is back in the list")
+            assertEquals(JSONObject(whole).getJSONObject("rom").toString(),
+                         JSONObject(paths.metadata("1446").readText()).getJSONObject("rom").toString())
+        }
+    }
+
     // What this is all for: with nothing changed, and every verdict one that
     // is kept, a second scan opens no ROM and makes no request, whatever the
     // first one found each file to be.
@@ -1867,6 +1890,38 @@ class RomScanPipelineTest {
         assertEquals(cores, RomScanPipeline.hashProducers(cores))
         assertEquals(cores, RomScanPipeline.hashProducers(cores + 1))
         assertEquals(cores, RomScanPipeline.hashProducers(1000))
+    }
+
+    // A scan asks for its ledger to be on disk before it takes the place of
+    // the one there is, at a save in the middle and at the one that ends it.
+    // Everything else it writes through the same function it leaves to the
+    // system: the metadata file of a match and the index, here, and on the
+    // desktop the record of the job for every report.
+    @Test fun `a scan forces its ledger to disk and nothing else it writes`(): Unit = runBlocking {
+        rom("nes", "Lantern Keep (World).nes", "hash-smb")
+        rom("nes", "Homebrew Thing.nes", "hash-unknown")
+        val forced = java.util.Collections.synchronizedList(mutableListOf<String>())
+        BridgePaths.force = object : BridgePaths.Force() {
+            override fun file(file: File, fd: java.io.FileDescriptor) {
+                forced += "file " + file.relativeTo(dataRoot).invariantSeparatorsPath
+            }
+            override fun directory(dir: File) {
+                forced += "directory " + dir.relativeTo(dataRoot).invariantSeparatorsPath
+            }
+        }
+        try {
+            RomScanPipeline(paths, ContentHasher(), MapLookup(catalogue), throttleMs = { 0L },
+                            hashWorkers = 1, apiWorkers = 1, ledgerSaveEveryMs = 0)
+                .scan(listOf(romRoot.absolutePath))
+        } finally {
+            BridgePaths.force = BridgePaths.Force()
+        }
+
+        assertTrue(paths.metadata("1446").isFile && paths.discoveryIndex.isFile,
+                   "the scan wrote a metadata file and the index")
+        // One save for each of the two results, and the one at the end.
+        val ledger = "cache/${ScanLedger.FILE_NAME}"
+        assertEquals(List(3) { listOf("file $ledger.tmp", "directory cache") }.flatten(), forced.toList())
     }
 
     private fun md5(text: String): String =

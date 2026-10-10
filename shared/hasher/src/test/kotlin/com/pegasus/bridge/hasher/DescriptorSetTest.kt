@@ -1,5 +1,6 @@
 package com.pegasus.bridge.hasher
 
+import java.io.File
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertIs
@@ -136,6 +137,35 @@ class DescriptorSetTest {
         // And the longest a name can be is one.
         val longest = "\u00e9".repeat(125) + "x.bin"
         assertIs<DescriptorSet.Match.Found>(DescriptorSet.match(listOf(longest), listOf(e(longest))))
+    }
+
+    // A track is written under the name its sheet gives it, and on Windows
+    // some names are not files: what is written to them goes to a port or
+    // nowhere, and what reads them waits. Nothing here runs on Windows, so
+    // the test says which system it is asking about.
+    @Test fun `a name Windows keeps for a device is refused there, and is a file's anywhere else`() {
+        val devices = listOf("CON", "con.bin", "Prn.bin", "AUX.iso", "nul.bin", "NUL .bin", "nul.tar.bin",
+                             "COM1.bin", "com9", "COM0.bin", "COM\u00b2.bin", "LPT1.bin", "lpt9.raw", "CONIN$", "conout$.bin")
+        val wrong = devices.mapNotNull { name ->
+            val there = DescriptorSet.match(listOf(name), listOf(e(name)), onWindows = true)
+            val elsewhere = DescriptorSet.match(listOf(name), listOf(e(name)), onWindows = false)
+            val expected = DescriptorSet.Match.Refused("it names '$name', which on Windows is a device and no file")
+            if (there == expected && elsewhere is DescriptorSet.Match.Found) null
+            else "'$name': on Windows $there, elsewhere $elsewhere"
+        }
+        assertEquals(emptyList(), wrong)
+
+        // And names that only begin as one does are files on Windows too.
+        val files = listOf("CONSOLE.bin", "con1.bin", "COM10.bin", "COM.bin", "LPT.bin", "LPTA.bin", "null.bin",
+                           "aux2.bin", "track.con", "x.nul", "Disc (COM1).bin")
+        assertEquals(emptyList(), files.filter {
+            DescriptorSet.match(listOf(it), listOf(e(it)), onWindows = true) !is DescriptorSet.Match.Found
+        })
+
+        // Left to itself it goes by the system it runs on.
+        val here = DescriptorSet.match(listOf("nul.bin"), listOf(e("nul.bin")))
+        if (File.separatorChar == '\\') assertIs<DescriptorSet.Match.Refused>(here)
+        else assertIs<DescriptorSet.Match.Found>(here)
     }
 
     @Test fun `a name that is two entries, or two names for one entry, is refused`() {

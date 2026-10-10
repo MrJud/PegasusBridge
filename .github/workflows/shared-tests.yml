@@ -18,6 +18,14 @@
 # checks themselves are tested there too, on libraries and compilers made to
 # fail them: in a run where all is well none of them is seen to refuse.
 #
+# The `windows` job is the only place rahasher.dll is ever loaded. The library
+# for Windows is built from the same C by the same script, with mingw-w64, and
+# no machine this is developed on can do more with it than build it and read
+# its tables. So the job builds it on Windows, holds it to the same checks,
+# and runs the hasher's tests on it: the golden hashes, the consoles by
+# number, the files made to hurt, each of which fails where the library does
+# not load. No DLL is committed.
+#
 # What it downloads: the Gradle distribution from services.gradle.org, the
 # Kotlin plugin from the Gradle plugin portal, every library from Maven Central
 # — except NewPipeExtractor and nanojson, which only JitPack serves (:video
@@ -177,6 +185,72 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: test-reports-native
+          path: |
+            shared/hasher/build/reports/tests/test/
+            shared/hasher/build/test-results/test/*.xml
+
+  windows:
+    # mingw-w64 (x86_64-w64-mingw32-gcc and its objdump), Git's bash and
+    # python are on the image. As in the job above nothing is written to the
+    # checkout: the DLL goes to the runner's temporary directory and the tests
+    # are told where it is.
+    name: Windows DLL
+    runs-on: windows-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: bash
+    steps:
+      # Git for Windows rewrites line endings as it checks files out, unless
+      # told otherwise, and bash does not run a script whose lines end in CR.
+      # With this the job has the files the other jobs have, byte for byte.
+      - name: Check files out as they are committed
+        run: git config --global core.autocrlf false
+
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: gradle
+
+      - name: Build the DLL
+        working-directory: shared
+        run: ./native/build.sh "$RUNNER_TEMP/native"
+
+      # Before the check is believed: what it refuses, on DLLs linked here.
+      - name: The check of a DLL passes its own tests
+        working-directory: shared/tests
+        run: python -m unittest -v native_checks_test.DllCheckTest
+
+      - name: The manifest of the DLL just built names what it was built from
+        working-directory: shared
+        run: python tests/native_manifest_check.py "$RUNNER_TEMP/native/rahasher.manifest"
+
+      # A DLL that needs another beside it, libgcc's or the compiler's
+      # threads, loads on the machine that built it and on no user's.
+      - name: The DLL needs nothing but Windows and exports no more than its two functions
+        working-directory: shared
+        run: ./tests/native_lib_check.sh "$RUNNER_TEMP/native/rahasher.dll"
+
+      # All of :hasher and not only the classes that call the library: what
+      # is around it reads paths and writes files too, and has never run on
+      # Windows anywhere else. The second line is what shows the tests ran on
+      # the DLL named, as in the job above; the hasher logs the path as
+      # Windows writes it.
+      - name: The hasher's tests on the DLL just built
+        working-directory: shared
+        run: |
+          ./gradlew --no-daemon :hasher:test -Ppegasus.nativeLibrary="$RUNNER_TEMP/native/rahasher.dll"
+          grep -F "native hasher loaded from $(cygpath -w "$RUNNER_TEMP/native/rahasher.dll")" \
+            hasher/build/test-results/test/TEST-com.pegasus.bridge.hasher.GoldenHashTest.xml
+
+      - name: Upload test reports
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-reports-windows
           path: |
             shared/hasher/build/reports/tests/test/
             shared/hasher/build/test-results/test/*.xml

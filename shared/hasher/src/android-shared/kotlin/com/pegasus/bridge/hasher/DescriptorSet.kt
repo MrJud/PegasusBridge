@@ -1,5 +1,7 @@
 package com.pegasus.bridge.hasher
 
+import java.io.File
+
 /**
  * The files a disc descriptor names, and which entries of an archive they
  * are.
@@ -122,8 +124,21 @@ object DescriptorSet {
      * rcheevos would ask for by other bytes than a file written here could
      * be given; and one longer than any file's ([NAME_LIMIT]), which is
      * found out here and not when the tracks before it have been written.
+     *
+     * And [onWindows], which is where this runs unless a test says
+     * otherwise, a name Windows keeps for a device ([isWindowsDevice]). A
+     * file opened under such a name there is the device, in any folder: the
+     * track would be written to a serial port or to nowhere and the write
+     * would succeed, and rcheevos, opening the name to read it, would wait
+     * on the keyboard for a track called CON. No folder on Windows holds a
+     * file of such a name, so no disc kept loose there has a track of one
+     * either. Anywhere else the name is a file's like another.
      */
-    fun match(references: List<String>, entries: List<ArchiveSelector.Entry>): Match {
+    fun match(
+        references: List<String>,
+        entries: List<ArchiveSelector.Entry>,
+        onWindows: Boolean = ON_WINDOWS
+    ): Match {
         if (references.isEmpty()) return Match.Refused("it names no file")
         val files = entries.filter { !it.isDirectory }
         val tracks = mutableListOf<Track>()
@@ -135,6 +150,8 @@ object DescriptorSet {
                     return Match.Refused("it names '$shown', which is not a name a file can have")
                 '/' in name || '\\' in name || name == "." || name == ".." || hasDrive(name) ->
                     return Match.Refused("it names '$shown', which is not a file beside it")
+                onWindows && isWindowsDevice(name) ->
+                    return Match.Refused("it names '$shown', which on Windows is a device and no file")
             }
             val length = name.toByteArray(Charsets.UTF_8).size
             if (length > NAME_LIMIT)
@@ -155,4 +172,24 @@ object DescriptorSet {
 
     /** `C:name`, which Windows reads as a file on another drive. */
     private fun hasDrive(name: String): Boolean = name.length >= 2 && name[1] == ':' && name[0].isLetter()
+
+    /**
+     * Whether Windows takes [name] for a device: CON, PRN, AUX, NUL, the two
+     * ends of the console by themselves, and COM and LPT with one digit, of
+     * which Windows counts the superscript 1, 2 and 3 as well. In any case of
+     * letters, and whatever follows the first dot: `nul.bin` is NUL to
+     * Windows up to 10 and to some programs after it, and the blanks before
+     * that dot are not counted.
+     */
+    internal fun isWindowsDevice(name: String): Boolean {
+        val stem = name.substringBefore('.').trimEnd(' ').uppercase()
+        return stem in DEVICES ||
+            (stem.length == 4 && (stem.startsWith("COM") || stem.startsWith("LPT")) && stem[3] in PORTS)
+    }
+
+    private val DEVICES = setOf("CON", "PRN", "AUX", "NUL", "CONIN$", "CONOUT$")
+    private const val PORTS = "0123456789\u00b9\u00b2\u00b3"
+
+    /** Known by the stroke between folders, which no other system this runs on writes that way. */
+    private val ON_WINDOWS = File.separatorChar == '\\'
 }

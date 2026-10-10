@@ -21,4 +21,4 @@ input dcf9e3e345ab709cffe8408f75fb15084a48e55d2b625deaa00614794376dca3 hasher/sr
 input fd38ee6a43316007d4aa816f23c24a8355c58df106b4c54e43ec44afc55df521 hasher/src/main/cpp/rcheevos/src/rhash/md5.c
 input 8341e2a307d7cfaeb816b261d92ce87a07be62e3eb58c98d2c769e75a6e2b959 hasher/src/main/cpp/rcheevos/src/rhash/md5.h
 input 90b930b1ce1f0c160640ed54627cd460a6cb32e73b0d12c464e206c3ed1e6870 hasher/src/main/cpp/rcheevos/src/rhash/rc_hash_internal.h
-input 6f5ef04bb7e7a2638b9bd1d90ad5d7f157ebd8badc1fe382013a1ba1986f2114 shared/native/build.sh
+input 3eaf595616fb29febd939f2c62cbf61d9414ac324c8101c6975392c54c46ede5 shared/native/build.sh

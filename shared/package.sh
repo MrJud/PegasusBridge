@@ -11,11 +11,11 @@ out="${1:-$here/dist/pegasus-bridge}"
 # Under Git Bash / MSYS2 everything below works unchanged — jlink, jdeps, tar and
 # sha256sum are all there — but two things do have to know the host: the bundle
 # needs a launcher Windows can run, and the archive name has to stop claiming to
-# be a Linux build.
+# be a Linux build. And a third: which file the native hasher is here.
 case "$(uname -s)" in
-    MINGW*|MSYS*|CYGWIN*) host_os="windows" ;;
-    Darwin)               host_os="macos"   ;;
-    *)                    host_os="linux"   ;;
+    MINGW*|MSYS*|CYGWIN*) host_os="windows" ; native_lib="rahasher.dll"      ;;
+    Darwin)               host_os="macos"   ; native_lib="librahasher.dylib" ;;
+    *)                    host_os="linux"   ; native_lib="librahasher.so"    ;;
 esac
 
 : "${JAVA_HOME:?set JAVA_HOME to a JDK — jlink and jni.h both live there}"
@@ -29,6 +29,22 @@ echo "==> building the daemon distribution"
 
 install_dir="$here/daemon/build/install/daemon"
 [[ -d "$install_dir/lib" ]] || { echo "installDist produced nothing at $install_dir" >&2; exit 1; }
+
+# A bundle is what a user installs, and one without the hasher for this system
+# installs and runs and never scans a ROM. That is what a bundle made on
+# Windows was: the library in it was the one committed for Linux, which no
+# Windows loads. installDist puts in this system's library or none, and with
+# none there is no bundle.
+if [[ ! -f "$install_dir/lib/native/$native_lib" ]]; then
+    echo "no $native_lib in $install_dir/lib/native: the bundle would have no ROM hasher." >&2
+    if [[ "$host_os" == "windows" ]]; then
+        echo "native/build.sh builds it with x86_64-w64-mingw32-gcc (mingw-w64), which has to be on PATH" >&2
+        echo "beside bash; then run this again." >&2
+    else
+        echo "native/build.sh builds it; its own message says what it lacked." >&2
+    fi
+    exit 1
+fi
 
 echo "==> resolving the JDK modules the jars actually need"
 # --ignore-missing-deps: optional dependencies of okhttp and NewPipe are absent

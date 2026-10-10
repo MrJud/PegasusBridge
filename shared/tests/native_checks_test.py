@@ -9,7 +9,10 @@ each refuses is not seen in an ordinary run, where there is nothing to refuse:
   native_lib_check.sh    Given small libraries linked here: one as build.sh
                          links, one that asks for a newer glibc through a
                          symbol, one that asks for it with no symbol at all,
-                         one that exports a name too many.
+                         one that exports a name too many. And DLLs, where
+                         there is the compiler that makes them: one as
+                         build.sh links, one that needs a DLL Windows does
+                         not have of its own, one that exports too much.
   native/build.sh        Given a compiler that cannot say what the library is
                          compiled from, or leaves a source out of the answer.
                          The build must stop before it writes anything.
@@ -19,6 +22,12 @@ each refuses is not seen in an ordinary run, where there is nothing to refuse:
 It needs what the build needs: gcc and binutils, and JAVA_HOME naming a JDK.
 tools-dir is where `native/build.sh <out> --tools=<tools-dir>` put rahash_cli;
 with no argument it is built first, into a temporary directory.
+
+The tests on DLLs need x86_64-w64-mingw32-gcc and are skipped, each with a
+line that says so, where it is not on PATH. They are the only ones that can
+run on Windows, where the rest have no glibc to ask about:
+
+    python -m unittest -v native_checks_test.DllCheckTest     (from tests/)
 """
 
 import os
@@ -41,6 +50,15 @@ SOURCE_LIST = REPOSITORY / "hasher" / "src" / "main" / "cpp" / "rahasher.sources
 # Set in main() from the command line; None is "build them".
 TOOLS = None
 
+# The compiler native/build.sh makes rahasher.dll with, on Windows and
+# elsewhere, or None.
+MINGW = shutil.which("x86_64-w64-mingw32-gcc")
+
+# By the place it is found in on PATH. Windows, asked to start `bash`, looks
+# in its own folders first, and what is there starts a Linux beside Windows
+# that has never heard of these files.
+BASH = shutil.which("bash") or "bash"
+
 
 def run(command, env=None):
     done = subprocess.run([str(word) for word in command], env=env, cwd=str(SHARED),
@@ -58,8 +76,8 @@ class Scratch(unittest.TestCase):
         self.tmp = Path(tmp.name)
 
 
-class LibCheckTest(Scratch):
-    """native_lib_check.sh on libraries of one small function each."""
+class LibraryCheck(Scratch):
+    """What the tests of native_lib_check.sh on either kind of library need."""
 
     def expected_exports(self):
         """The names the check holds a library to, read from the check, so
@@ -68,6 +86,13 @@ class LibCheckTest(Scratch):
                           re.MULTILINE)
         self.assertIsNotNone(found, "native_lib_check.sh no longer has expected_exports=\"…\"")
         return found.group(1).split()
+
+    def check(self, library):
+        return run([BASH, LIB_CHECK, library])
+
+
+class LibCheckTest(LibraryCheck):
+    """native_lib_check.sh on libraries of one small function each."""
 
     def library(self, name, body="", link=(), exports=None):
         """A library as build.sh compiles one: the names in `exports` (the
@@ -86,9 +111,6 @@ class LibCheckTest(Scratch):
                               "-shared", "-o", library, source, *link])
         self.assertEqual(status, 0, f"gcc could not link the library of this test:\n{output}")
         return library
-
-    def check(self, library):
-        return run(["bash", LIB_CHECK, library])
 
     def test_a_library_linked_as_the_build_links_passes(self):
         status, output = self.check(self.library("good"))
@@ -142,8 +164,91 @@ class LibCheckTest(Scratch):
         text.write_text("not a library\n", encoding="utf-8")
         for arguments in ([text], [self.tmp / "missing.so"], []):
             with self.subTest(arguments):
-                status, output = run(["bash", LIB_CHECK, *arguments])
+                status, output = run([BASH, LIB_CHECK, *arguments])
                 self.assertEqual(status, 2, output)
+
+
+@unittest.skipIf(MINGW is None, "no x86_64-w64-mingw32-gcc on PATH to make a DLL with")
+class DllCheckTest(LibraryCheck):
+    """native_lib_check.sh on DLLs of one small function each. They are made
+    and read here and never loaded, so this runs wherever the compiler does."""
+
+    # The flags of build.sh for a DLL, but for the two that only make the same
+    # file come out twice.
+    AS_BUILT = ("-static", "-static-libgcc")
+
+    def library(self, name, body="", link=AS_BUILT, exports=None):
+        """A DLL as build.sh compiles one: the names in `exports` (the
+        expected ones unless given), each marked for the DLL to show as
+        jni_md.h has JNIEXPORT mark the two real ones."""
+        exports = self.expected_exports() if exports is None else exports
+        source = self.tmp / f"{name}.c"
+        source.write_text(
+            "#include <string.h>\n"
+            "#define SHOWN __declspec(dllexport)\n"
+            + "".join(f"SHOWN void* {export}(void* to, const void* from, size_t size)\n"
+                      "{ return memcpy(to, from, size); }\n" for export in exports)
+            + body, encoding="utf-8")
+        library = self.tmp / f"{name}.dll"
+        status, output = run([MINGW, "-std=gnu11", "-O2", "-shared", "-o", library, source, *link])
+        self.assertEqual(status, 0, f"{MINGW} could not link the DLL of this test:\n{output}")
+        return library
+
+    def test_a_dll_linked_as_the_build_links_passes(self):
+        status, output = self.check(self.library("good"))
+        self.assertEqual(status, 0, output)
+        self.assertRegex(output, r"ok   needs \d+ DLL\(s\), all of them Windows' own")
+        self.assertRegex(output, r"(?i)\n +kernel32\.dll\n")
+        self.assertIn(f"ok   exports {len(self.expected_exports())} function(s) and nothing else",
+                      output)
+
+    def test_a_dll_that_is_not_windows_own_is_refused_and_named(self):
+        # The windows and the sounds are Windows' own as well, and are not
+        # the kernel or the C library: a hasher that needs them is one that
+        # has come to do something else. What -static keeps out, libgcc and
+        # the threads of mingw-w64, cannot be brought in on purpose with
+        # every build of the compiler; a name is refused the same way
+        # whatever it is.
+        library = self.library("windowed", link=[*self.AS_BUILT, "-luser32"],
+                               body="__declspec(dllimport) int __stdcall MessageBeep(unsigned kind);\n"
+                                    "SHOWN int beep(void) { return MessageBeep(0); }\n")
+        status, output = self.check(library)
+        self.assertEqual(status, 1, output)
+        self.assertIn("FAIL needs 1 DLL(s) that Windows does not have of its own", output)
+        self.assertRegex(output, r"(?i)\n +user32\.dll\n")
+
+    def test_a_name_too_many_in_a_dll_is_refused(self):
+        library = self.library("wide", body="SHOWN int one_more(void) { return 1; }\n")
+        status, output = self.check(library)
+        self.assertEqual(status, 1, output)
+        self.assertIn(f"FAIL exports {len(self.expected_exports()) + 1} symbols", output)
+        self.assertIn("exported  one_more", output)
+
+    def test_a_dll_with_nothing_marked_shows_everything_and_is_refused(self):
+        # With no function marked, the linker shows every one there is: the
+        # two the JVM looks up are then among them by their names alone, and
+        # so is all of rcheevos.
+        library = self.library("unmarked", exports=[],
+                               body="".join(f"int {name}(void) {{ return 1; }}\n"
+                                            for name in [*self.expected_exports(), "md5_init"]))
+        status, output = self.check(library)
+        self.assertEqual(status, 1, output)
+        # How many it shows is the linker's affair: some builds of it show
+        # what the C library put in beside these.
+        self.assertRegex(output, r"FAIL exports \d+ symbols")
+        self.assertIn("exported  md5_init", output)
+
+    def test_a_name_too_few_in_a_dll_is_refused(self):
+        library = self.library("narrow", exports=["some_other_name"])
+        status, output = self.check(library)
+        self.assertEqual(status, 1, output)
+        self.assertIn("FAIL exports 1 symbols", output)
+
+    def test_what_begins_as_a_dll_and_is_none_is_a_usage_error(self):
+        text = self.tmp / "text.dll"
+        text.write_text("MZ and no more\n", encoding="utf-8")
+        status, output = self.check(text)
+        self.assertEqual(status, 2, output)
 
 
 class BuildListTest(Scratch):

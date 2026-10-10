@@ -1151,10 +1151,9 @@ class RomScanPipelineTest {
     // What is not text is no placeholder however small it is, and what is
     // text and long is none either: both go to the hasher as they did. So
     // does text under a name that is text by rights, a playlist here, which
-    // is read as one. And a sentence called `.cso` stays a file of a format
-    // nobody reads: that was known from its name, before the file was opened
-    // to see that it is a sentence. So was the collection nobody can hash
-    // for, ahead of everything: an empty file and a sentence under `switch`
+    // is read as one. And a few bytes called `.cso` that are not text stay
+    // a file of a format nobody reads. The collection nobody can hash for
+    // comes ahead of everything: an empty file and a sentence under `switch`
     // are files of that platform, with its reason, as every other is.
     //
     // The longest text there can be is among them, 512 bytes, to hold the
@@ -1165,7 +1164,7 @@ class RomScanPipelineTest {
         val longest = stub("nes", "As Long As It Gets (World).nes", "x".repeat(512))
         val long = stub("nes", "Long (World).nes", "hash-ctra".padEnd(513))
         val playlist = stub("psx", "Lantern Keep (USA).m3u", "Lantern Keep (USA).cue\n")
-        val packed = stub("psp", "Not Here Yet.cso")
+        val packed = rom("psp", "A Real Small One.cso", "CISO")
         val uncovered = listOf(stub("switch", "Nothing Yet.nes", ""), stub("switch", "Not Here Yet.nes"))
         val tmp = Files.createTempDirectory("hasher-tmp").toFile()
         try {
@@ -1189,6 +1188,59 @@ class RomScanPipelineTest {
         } finally {
             tmp.deleteRecursively()
         }
+    }
+
+    // A sentence under the name of a format nobody reads. A library that
+    // keeps a line of text for a game it does not hold calls it what the
+    // game would be called, a packed disc image as readily as a cartridge,
+    // and the scan asked the name before it asked the file: each such stub
+    // was a `.cso` or a `.cdi` that could not be hashed, at every scan, and
+    // a tablet with thirty of them ended each scan saying that thirty files
+    // could not be hashed. It is a placeholder like any other, counted with
+    // what was skipped.
+    //
+    // The scan opens such a file because it is small enough to be a stub,
+    // and for no other reason: the same few bytes that are not text stay a
+    // format nobody reads, and so does a file that says by its name that it
+    // is no game, which a collection can list all the same. On a rescan the
+    // stubs are found standing and are not opened: the bytes of one are
+    // changed under the scan, at the same size and date, and it is a
+    // placeholder still.
+    @Test fun `a sentence under a format nobody reads is a placeholder and not a file that could not be hashed`(): Unit = runBlocking {
+        collection("psp", "PlayStation Portable", "psp", extensions = "iso, cso, cfg")
+        val stubs = listOf(stub("psp", "Not Here Yet.cso"), stub("dreamcast", "Not Here Yet.cdi"),
+                           stub("wii", "Not Here Yet.wbfs"), stub("ps2", "Not Here Yet.chd"),
+                           stub("arcade", "nothere.bin"), stub("psx", "Not Here Yet.pbp"))
+        val images = listOf(rom("psp", "Small And Real.cso", "CISO"), rom("wii", "Small And Real.wbfs", "WBFS"))
+        val notes = stub("psp", "launcher.cfg", "kept beside the games")
+        val expected = counts(new = 0, cached = 0, skipped = 6, unmatched = 0, incompatible = 0,
+                              hashFailed = 3, failedLookups = 0)
+        val states = mapOf(ScanLedger.State.PLACEHOLDER to 6, ScanLedger.State.UNSUPPORTED_FORMAT to 3)
+
+        val h = CollectionHasher()
+        val s = pipeline(h, NeverAsked()).scan(listOf(romRoot.absolutePath))
+
+        assertEquals(expected, s.counts())
+        assertEquals(states, s.states)
+        assertEquals(emptySet(), h.handed.keys, "the files the hasher was handed")
+        for (f in stubs) {
+            assertEquals("PLACEHOLDER" to "text file, ${f.length()} bytes: not a ROM image",
+                         ledgerEntry(f).let { it.getString("state") to it.getString("detail") }, f.path)
+        }
+        assertEquals(listOf(".cso is a format rcheevos does not read", ".wbfs is a format this build has no reader for",
+                            "a .cfg file is not a game"),
+                     (images + notes).map { ledgerEntry(it).getString("detail") })
+
+        val unread = stubs[0]
+        val date = unread.lastModified()
+        unread.writeBytes(ByteArray(unread.length().toInt()))
+        unread.setLastModified(date)
+
+        val s2 = pipeline(CollectionHasher(), NeverAsked()).scan(listOf(romRoot.absolutePath))
+
+        assertEquals(expected, s2.counts())
+        assertEquals(states, s2.states)
+        assertEquals("PLACEHOLDER", ledgerEntry(unread).getString("state"), "a stub that stood was opened again")
     }
 
     // A size of no bytes is also what the system answers for a file that

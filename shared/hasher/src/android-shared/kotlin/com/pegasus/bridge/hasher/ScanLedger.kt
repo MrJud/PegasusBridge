@@ -83,7 +83,9 @@ class ScanLedger(private val file: File, private val recipe: HashRecipe = HashRe
          * The collection can be hashed and this file cannot: a compressed
          * disc image this build has no reader for, a container rcheevos
          * does not read at all, a file that is no game. Known from the
-         * file's name and its collection, so no I/O was done. Handed to
+         * file's name and its collection, so no I/O was done, but for one
+         * look at a file small enough to be a sentence under such a name,
+         * which is a [PLACEHOLDER] and not one of these. Handed to
          * rcheevos, such a file gave the hash of its container, and was
          * asked about and kept as a game the database lacks.
          *

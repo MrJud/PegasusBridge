@@ -142,9 +142,12 @@ never reaches the hasher: an empty file, whatever it is called, or one of at
 most 512 bytes that is nothing but text and is not a `.cue`, `.gdi`, `.m3u`,
 `.ccd`, `.toc` or `.hex` (`PlaceholderRule`). It is not asked about, it is
 counted with the platforms skipped, and the verdict stands for as long as the
-file's size and date do. What a file's collection or its name already says of
-it is said first: in a collection nobody can hash for it is `UNSUPPORTED` as
-every file there is, and a sentence called `.cso` is `UNSUPPORTED_FORMAT`.
+file's size and date do. What a file's collection says of it is said first: in
+a collection nobody can hash for it is `UNSUPPORTED` as every file there is.
+What its name says is not: a sentence called `.cso` or `.cdi` is a placeholder
+too, and only a file whose name says it is no game at all (`.txt`, `.cfg`) or
+whose bytes are not text is `UNSUPPORTED_FORMAT`. A scan opens a file of a
+format nobody reads only when it is small enough to be such a sentence.
 
 A disc in an archive is a `.cue` or a `.gdi` and the tracks it names, and
 rcheevos opens the tracks from beside the sheet. `DescriptorSet` reads the names

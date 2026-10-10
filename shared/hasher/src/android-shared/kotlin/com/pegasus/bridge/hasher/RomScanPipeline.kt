@@ -630,10 +630,43 @@ class RomScanPipeline(
             return
         }
 
+        /** Whether the file is a few lines of text and nothing else, which takes reading it. */
+        suspend fun isTextStub(): Boolean = size in 1..PlaceholderRule.TEXT_LIMIT &&
+            runInterruptible(Dispatchers.IO) {
+                PlaceholderRule.classify(file.extension, size) { head(file, PlaceholderRule.TEXT_LIMIT + 1) }
+            } == PlaceholderRule.Kind.TEXT_STUB
+
         // The file: its collection can be hashed and it cannot. It gives
         // no hash to ask about, and is counted with the others that do
         // not.
+        //
+        // Unless it is a sentence under that name. A library that keeps a
+        // line of text for a game it does not hold calls it what the game
+        // would be called, `.cso` or `.cdi` as readily as `.gbc`, and a
+        // packed disc image of forty bytes is no more a disc than an empty
+        // one is. Asked of the name alone, each of those ended every scan
+        // among the files that could not be hashed, which reads as a
+        // fault in the library: on one tablet thirty of them. So a file
+        // small enough to be a stub is looked at before its format is held
+        // against it, and one found standing as a placeholder is left so
+        // without a read. No real image of a format nobody reads is that
+        // small, so this opens nothing a scan would otherwise leave shut
+        // but stubs. A file whose name says it is no game at all, a `.txt`
+        // or a `.cfg` a collection lists, is what it says and not a stub.
         if (plan is ConsoleChoice.Plan.UnsupportedFormat) {
+            if (size in 1..PlaceholderRule.TEXT_LIMIT && file.extension.lowercase() !in ConsoleChoice.NOT_A_ROM) {
+                val standing = ledger.canSkip(path, collection, size, modified, now)
+                if (standing?.state == ScanLedger.State.PLACEHOLDER) {
+                    ledger.count(path, standing)
+                    resultQueue.send(ResultJob(HashJob(file, "", HashResult("", 0), collection, size, modified),
+                                               preRecorded = ScanLedger.State.PLACEHOLDER))
+                    return
+                }
+                if (isTextStub()) {
+                    placeholder("text file, $size bytes: not a ROM image")
+                    return
+                }
+            }
             ledger.record(path, collection, ScanLedger.State.UNSUPPORTED_FORMAT, size, modified, now,
                           detail = plan.reason)
             resultQueue.send(ResultJob(
@@ -680,14 +713,9 @@ class RomScanPipeline(
         // be one is opened. What is refused here would otherwise go on as
         // the MD5 of a sentence. The words are of the file and not of a
         // game: the line a launcher keeps for one is such a text as well.
-        if (size in 1..PlaceholderRule.TEXT_LIMIT) {
-            val kind = runInterruptible(Dispatchers.IO) {
-                PlaceholderRule.classify(file.extension, size) { head(file, PlaceholderRule.TEXT_LIMIT + 1) }
-            }
-            if (kind == PlaceholderRule.Kind.TEXT_STUB) {
-                placeholder("text file, $size bytes: not a ROM image")
-                return
-            }
+        if (isTextStub()) {
+            placeholder("text file, $size bytes: not a ROM image")
+            return
         }
 
         // Throwable: one file that cannot be read must cost that file, not the

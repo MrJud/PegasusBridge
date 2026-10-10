@@ -20,6 +20,10 @@ static int rc_hash_iterator_buffer(char hash[33], const rc_hash_iterator_t* iter
 
 int rc_hash_7800(char hash[33], const rc_hash_iterator_t* iterator)
 {
+  /* local patch 0005: a file that ends with its header, or inside it, has nothing to hash */
+  if (iterator->buffer_size <= 128)
+    return rc_hash_iterator_error(iterator, "File is not longer than a 7800 header (128 bytes)");
+
   /* if the file contains a header, ignore it */
   if (memcmp(&iterator->buffer[1], "ATARI7800", 9) == 0) {
     rc_hash_iterator_verbose(iterator, "Ignoring 7800 header");
@@ -183,6 +187,10 @@ int rc_hash_arduboy(char hash[33], const rc_hash_iterator_t* iterator)
 
 int rc_hash_lynx(char hash[33], const rc_hash_iterator_t* iterator)
 {
+  /* local patch 0005: a file that ends with its header, or inside it, has nothing to hash */
+  if (iterator->buffer_size <= 64)
+    return rc_hash_iterator_error(iterator, "File is not longer than a LYNX header (64 bytes)");
+
   /* if the file contains a header, ignore it */
   if (memcmp(&iterator->buffer[0], "LYNX", 5) == 0) {
     rc_hash_iterator_verbose(iterator, "Ignoring LYNX header");
@@ -194,6 +202,10 @@ int rc_hash_lynx(char hash[33], const rc_hash_iterator_t* iterator)
 
 int rc_hash_nes(char hash[33], const rc_hash_iterator_t* iterator)
 {
+  /* local patch 0005: a file that ends with its header, or inside it, has nothing to hash */
+  if (iterator->buffer_size <= 16)
+    return rc_hash_iterator_error(iterator, "File is not longer than a NES or FDS header (16 bytes)");
+
   /* if the file contains a header, ignore it */
   if (memcmp(&iterator->buffer[0], "NES\x1a", 4) == 0) {
     rc_hash_iterator_verbose(iterator, "Ignoring NES header");
@@ -403,6 +415,10 @@ int rc_hash_pce(char hash[33], const rc_hash_iterator_t* iterator)
 
 int rc_hash_scv(char hash[33], const rc_hash_iterator_t* iterator)
 {
+  /* local patch 0005: a file that ends with its header, or inside it, has nothing to hash */
+  if (iterator->buffer_size <= 32)
+    return rc_hash_iterator_error(iterator, "File is not longer than a SCV header (32 bytes)");
+
   /* if the file contains a header, ignore it */
   /* https://gitlab.com/MaaaX-EmuSCV/libretro-emuscv/-/blob/master/readme.txt#L211 */
   if (memcmp(iterator->buffer, "EmuSCV", 6) == 0) {

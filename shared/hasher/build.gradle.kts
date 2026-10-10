@@ -44,6 +44,17 @@ tasks.named<Test>("test") {
         ?: rootProject.file("native/out/" + System.mapLibraryName("rahasher"))
     inputs.files(library).withPropertyName("nativeLibrary").withPathSensitivity(PathSensitivity.NONE)
     systemProperty("pegasus.bridge.nativeLibrary", library.absolutePath)
+
+    // NativeCrashReproTest makes each native call in a JVM it starts itself,
+    // since the files it hands over are ones that used to end the process, and
+    // that JVM needs the tests' class path. It is given here and not read off
+    // the worker's java.class.path: what Gradle starts its workers with is its
+    // own affair. Worked out when the task runs, so that configuring the build
+    // resolves nothing.
+    val testClasspath = sourceSets["test"].runtimeClasspath
+    jvmArgumentProviders.add(CommandLineArgumentProvider {
+        listOf("-Dpegasus.bridge.testClasspath=${testClasspath.asPath}")
+    })
 }
 
 // src/android-shared holds the files the Android shell compiles too. Keeping them in

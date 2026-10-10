@@ -10,18 +10,20 @@ library is, and rahash_cli_sanitized, the same with the address and
 undefined-behaviour sanitizers. With no argument both are built first, into a
 temporary directory, which needs JAVA_HOME as build.sh does.
 
-Why a program and not a test of the library: a file cut short after its header
-ends rcheevos with a signal, and one kind of disc image leaves it reading for
-ever. In a Gradle test worker the first takes the worker with it and the second
-holds the build until its job is killed. Here each file is one process, killed
-after ten seconds, and what it did is a line of the output.
+Why a program and not a test of the library: a disc image whose tables say
+more than the file holds ends rcheevos with a signal, and one kind leaves it
+reading for ever. In a Gradle test worker the first takes the worker with it
+and the second holds the build until its job is killed. Here each file is one
+process, killed after ten seconds, and what it did is a line of the output.
 
 Every file is made here, from the few bytes that matter and filler; none is a
 game. Two kinds of row:
 
   must pass   The answer is known before the program runs: the MD5 this script
               works out from the bytes by the rule for that console, or no hash
-              and a reason. Run on both builds. On the sanitized one a report
+              and a reason. Run on both builds, and given five seconds,
+              where each takes a few thousandths of one: a file that is
+              refused is to be refused at once. On the sanitized build a report
               fails the row whatever else it printed. A sanitizer left to
               itself prints its report and exits 1, which is what a refusal
               looks like, and the undefined-behaviour one prints and carries
@@ -57,6 +59,10 @@ from pathlib import Path
 SHARED = Path(__file__).resolve().parent.parent
 
 TIMEOUT_SECONDS = 10
+
+# What a row that must pass is given. The ten seconds above are for the known
+# gaps, where still running at the end is one of the ways a gap shows.
+MUST_PASS_SECONDS = 5
 
 # The exit status both sanitizers are told to end with, so that a report cannot
 # pass for rahash_cli's own "no hash", which is 1.
@@ -119,6 +125,53 @@ def sega_cd_track(sectors=32):
     put(track, 16, b"SEGADISCSYSTEM  REPROTEST ")
     put(track, 16 + 0x100, b"SEGA MEGA DRIVE ")
     return bytes(track)
+
+
+def gdi(track_line):
+    """A .gdi sheet of three tracks of which only the third has a line. Track 3
+    is the one a Dreamcast disc is first asked for, so the line is read whether
+    the track is asked for by its number or as the first with data."""
+    return b"3\n" + track_line
+
+
+DREAMCAST_FIRST_SECTOR = 45000
+
+
+def dreamcast_track():
+    """A Dreamcast data track as a .gdi sheet names one, and what a disc made
+    of it hashes to. 24 cooked sectors of 2048 bytes, the first of them sector
+    45000 of the disc, which is where the sheet says the track begins and what
+    every sector number inside it is counted from: the boot record with the
+    console's name and, 96 bytes in, the name of the program to start; the
+    volume descriptor in sector 16; a directory of one file in sector 18; and
+    the program in sectors 20 and 21. The hash is of the boot record's first
+    256 bytes and then the program."""
+    program = noise(3000, seed="dreamcast-program")
+    track = bytearray(24 * 2048)
+
+    boot = bytearray(b" " * 256)
+    put(boot, 0, b"SEGA SEGAKATANA ")
+    put(boot, 96, b"1ST_READ.BIN")
+    put(boot, 128, b"REPRO TEST")
+    put(track, 0, boot)
+
+    volume = 16 * 2048
+    put(track, volume, b"\x01CD001\x01")
+    put(track, volume + 128, (2048).to_bytes(2, "little"))      # block size
+    put(track, volume + 156 + 2, (DREAMCAST_FIRST_SECTOR + 18).to_bytes(3, "little"))
+    put(track, volume + 156 + 10, (2048).to_bytes(4, "little"))  # the directory's length
+
+    name = b"1ST_READ.BIN;1"
+    record = bytearray(33 + len(name))
+    record[0] = len(record)
+    put(record, 2, (DREAMCAST_FIRST_SECTOR + 20).to_bytes(3, "little"))
+    put(record, 10, len(program).to_bytes(4, "little"))
+    record[32] = len(name)
+    put(record, 33, name)
+    put(track, 18 * 2048, record)
+
+    put(track, 20 * 2048, program)
+    return bytes(track), md5(bytes(boot) + program)
 
 
 def wii_image(partition_count=None):
@@ -202,9 +255,129 @@ def write_fixtures(directory):
          0, "Missing.nes", REFUSED),
     ]
 
-    write("tiny.nes", bytes.fromhex("4E45531A0101"))
-    write("tiny.lnx", bytes.fromhex("4C594E580001"))
-    write("tiny.a78", b"\x01ATARI7800")
+    # A file that ends inside its header, or with it. Each of these consoles
+    # takes a header off the front of a file that opens with its magic word and
+    # hashes what follows. With nothing following, "what follows" was a length
+    # below zero, which in C is a very large one; local patch 0005 refuses any
+    # file of these consoles that is no longer than the header.
+    # (extension, console, header size, a header's first bytes)
+    headered = [
+        ("nes", 7, 16, b"NES\x1a\x01\x01"),
+        ("fds", 81, 16, b"FDS\x1a\x00\x00"),
+        ("lnx", 13, 64, b"LYNX\x00\x01"),
+        ("a78", 51, 128, b"\x01ATARI7800"),
+        ("cart", 55, 32, b"EmuSCV"),
+    ]
+    for extension, console, size, magic in headered:
+        write(f"tiny.{extension}", magic)
+        whole = magic + bytes(size - len(magic))
+        write(f"header-only.{extension}", whole)
+        write(f"header-and-one.{extension}", whole + b"\x5a")
+        must_pass += [
+            # With no console given, as the library is asked today, and with
+            # the console named: .fds goes to console 7 by its extension and
+            # to 81 when told, through the same function.
+            (f"a .{extension} header cut to {len(magic)} bytes, with no console given",
+             0, f"tiny.{extension}", REFUSED),
+            (f"the same file under console {console}",
+             console, f"tiny.{extension}", REFUSED),
+            # The two sides of "no longer than the header": these hold the
+            # size written for each console, and that it is the header that is
+            # refused and not the first byte after it.
+            (f"a .{extension} header of {size} bytes and nothing after it",
+             console, f"header-only.{extension}", REFUSED),
+            (f"a .{extension} header and one byte, which is what is hashed",
+             console, f"header-and-one.{extension}", f"{md5(b'Z')}|{console}"),
+        ]
+    # Shorter than the magic word itself, so that even the comparison with it
+    # read past the end; and no bytes at all, which used to be given the MD5
+    # of nothing, a hash like any other to look up.
+    write("three.nes", b"NES")
+    write("empty.nes", b"")
+    must_pass += [
+        ("a .nes of 3 bytes, shorter than the word a header opens with",
+         0, "three.nes", REFUSED),
+        ("an empty .nes", 0, "empty.nes", REFUSED),
+    ]
+
+    # A .gdi sheet whose fields are longer than the parser's buffers for them,
+    # or end before they should (local patch 0006). The sector size is copied
+    # twice, into 16 bytes and from there into the 9 that are left after
+    # "MODE1/" in another 16, so twelve digits fit the first and not the second.
+    write("digits.gdi", gdi(b"3 45000 4 " + b"9" * 64 + b" track03.bin 0\n"))
+    write("digits-12.gdi", gdi(b"3 45000 4 " + b"9" * 12 + b" track03.bin 0\n"))
+    write("long.gdi", gdi(b"3 45000 4 2352 " + b"n" * 300 + b" 0\n"))
+    write("long-256.gdi", gdi(b"3 45000 4 2352 " + b"n" * 256 + b" 0\n"))
+    write("quote.gdi", gdi(b'3 45000 4 2352 "track03.bin 0\n'))
+    must_pass += [
+        ("a .gdi whose sector size is 64 digits", 0, "digits.gdi", REFUSED),
+        ("a .gdi whose sector size is 12 digits", 0, "digits-12.gdi", REFUSED),
+        ("a .gdi whose track is a file name of 300 characters", 0, "long.gdi", REFUSED),
+        # One more than the 255 that fit with the NUL that ends them.
+        ("a .gdi whose track is a file name of 256 characters", 0, "long-256.gdi", REFUSED),
+        ("a .gdi whose file name opens a quote and never closes it", 0, "quote.gdi", REFUSED),
+    ]
+    # Sheets that are right, which every .gdi row above is not. The parser's
+    # patched lines are not off to one side where only a bad sheet goes: the
+    # digits of the sector size, the step after each number and the copy of
+    # the name are run for every line of every sheet. A bound drawn too tight
+    # would refuse them all, and all the rows above would still pass, being
+    # refusals themselves. So here is a disc of three tracks as a dump holds
+    # it, with its data track named plainly and in quotes with a space, and
+    # the answer is its hash.
+    track, dreamcast = dreamcast_track()
+    write("Repro GD (Track 3).bin", track)
+    write("repro-gd-03.bin", track)
+    sheet = (b"3\n"
+             b"1 0 4 2352 repro-gd-01.bin 0\n"
+             b"2 600 0 2352 repro-gd-02.raw 0\n")
+    line = b"3 %d 4 2048 %%s 0\n" % DREAMCAST_FIRST_SECTOR
+    write("valid.gdi", sheet + line % b"repro-gd-03.bin")
+    write("valid-quoted.gdi", sheet + line % b'"Repro GD (Track 3).bin"')
+    # The data track is the second of two, behind an audio track with a longer
+    # name. No line is track 3, so the disc is asked for its first track with
+    # data, and asked that way the parser copies the name of every line it
+    # passes: the short name lands on the long one, and is the track's name
+    # only if it is ended where it ends.
+    write("valid-first-data.gdi",
+          b"2\n"
+          b"1 0 0 2352 repro-gd-audio-track-with-a-long-name.raw 0\n"
+          + b"2 %d 4 2048 repro-gd-03.bin 0\n" % DREAMCAST_FIRST_SECTOR)
+    # The two sides of "more than nine digits". Nine is no error, and since
+    # the track is there and says by its content what its sectors are, the
+    # disc hashes. Ten are one more than fit after "MODE1/", by the NUL that
+    # ends them. With the track there, a build that let ten through would
+    # hash this one too, and so fail the row with no sanitizer to see the
+    # byte written.
+    nines = b"3\n3 %d 4 %%s repro-gd-03.bin 0\n" % DREAMCAST_FIRST_SECTOR
+    write("digits-9.gdi", nines % (b"9" * 9))
+    write("digits-10.gdi", nines % (b"9" * 10))
+    must_pass += [
+        ("a .gdi of three tracks, hashed from its third", 0, "valid.gdi", f"{dreamcast}|40"),
+        ("the same sheet with the track's name in quotes and a space in it",
+         0, "valid-quoted.gdi", f"{dreamcast}|40"),
+        ("the same sheet under console 40", 40, "valid.gdi", f"{dreamcast}|40"),
+        ("a .gdi whose data track is its second, after a longer name",
+         0, "valid-first-data.gdi", f"{dreamcast}|40"),
+        ("a .gdi whose sector size is 9 digits, and whose track is there",
+         0, "digits-9.gdi", f"{dreamcast}|40"),
+        ("the same with 10 digits", 0, "digits-10.gdi", REFUSED),
+    ]
+
+    # A sheet that ends in the middle of its line, after the first, second,
+    # third or fourth number. The parser used to step over the character after
+    # a number without looking, and here that is the NUL that closes what was
+    # read. Past it lies whatever the buffer held before, which no sanitizer
+    # minds being read, so these sheets are of the one length that leaves
+    # nothing past it: 1023 bytes, all that is read at a time, the line made
+    # that long by the spaces it opens with.
+    numbers = [b"3", b"45000", b"4", b"2352"]
+    for count, after in enumerate(("track", "start", "type", "sector size"), start=1):
+        cut = b" ".join(numbers[:count])
+        write(f"cut-{count}.gdi", gdi(b" " * (1023 - 2 - len(cut)) + cut))
+        must_pass.append((f"a .gdi of 1023 bytes that ends after its {after}",
+                          0, f"cut-{count}.gdi", REFUSED))
+
     write("wii-no-partitions.iso", wii_image())
     write("wii-partition-count.iso", wii_image(partition_count=0x20000000))
     write("opera-short.iso", opera_image())
@@ -216,9 +389,6 @@ def write_fixtures(directory):
     # (what the row shows, file). All with no console given, which is how the
     # library is asked today.
     known_gaps = [
-        ("an iNES header and nothing after it, 6 bytes", "tiny.nes"),
-        ("a Lynx header cut to 6 bytes", "tiny.lnx"),
-        ("an Atari 7800 header cut to 10 bytes", "tiny.a78"),
         ("a Wii image with no partitions", "wii-no-partitions.iso"),
         ("a Wii image that counts 0x20000000 partitions", "wii-partition-count.iso"),
         ("an OperaFS volume whose root directory is past the end", "opera-short.iso"),
@@ -233,7 +403,8 @@ def write_fixtures(directory):
 
 class Outcome:
     """How one run of rahash_cli ended: `kind` is hash, refused, signal,
-    timeout or exit, and `text` what goes with it."""
+    timeout or exit, and `text` what goes with it (for a timeout, the seconds
+    it was given)."""
 
     def __init__(self, kind, text, status=None, stderr=""):
         self.kind = kind
@@ -249,7 +420,7 @@ class Outcome:
         if self.kind == "signal":
             return f"signal {self.text}"
         if self.kind == "timeout":
-            return f"still running after {TIMEOUT_SECONDS} s, killed"
+            return f"still running after {self.text} s, killed"
         return f"exit {self.status}: {self.text!r}"
 
     def sanitizer_report(self):
@@ -262,15 +433,16 @@ class Outcome:
         return None
 
 
-def run(binary, console, path, extra_env=None):
+def run(binary, console, path, extra_env=None, seconds=TIMEOUT_SECONDS):
     env = dict(os.environ)
     env.update(extra_env or {})
     try:
         done = subprocess.run([str(binary), str(console), str(path)], env=env,
                               stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-                              stderr=subprocess.PIPE, timeout=TIMEOUT_SECONDS)
+                              stderr=subprocess.PIPE, timeout=seconds)
     except subprocess.TimeoutExpired as late:   # run() has killed it by now
-        return Outcome("timeout", "", stderr=(late.stderr or b"").decode("utf-8", "replace"))
+        return Outcome("timeout", str(seconds),
+                       stderr=(late.stderr or b"").decode("utf-8", "replace"))
 
     out = done.stdout.decode("utf-8", "replace").strip()
     err = done.stderr.decode("utf-8", "replace").strip()
@@ -374,7 +546,7 @@ def main(argv):
             build_tools(tools)
         plain, sanitized = tools / "rahash_cli", tools / "rahash_cli_sanitized"
         for binary in (plain, sanitized):
-            # Without this a missing program would be nine known gaps "still
+            # Without this a missing program would be every known gap "still
             # open": not being there is not a clean refusal either.
             if not (binary.is_file() and os.access(binary, os.X_OK)):
                 print(f"native_repro_test: no {binary.name} in {tools}; "
@@ -399,7 +571,7 @@ def main(argv):
         for binary, label, env in builds:
             print(f"must pass, {label} build:")
             for what, console, name, answer in must_pass:
-                outcome = run(binary, console, files / name, env)
+                outcome = run(binary, console, files / name, env, MUST_PASS_SECONDS)
                 wrong = check_must_pass(outcome, answer, sanitized=env is not None)
                 if wrong:
                     failures += 1

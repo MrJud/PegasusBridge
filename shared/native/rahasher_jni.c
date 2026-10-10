@@ -3,8 +3,9 @@
  *
  * Mirrors the Android binding but is compiled for the host platform and bound to
  * com.pegasus.bridge.hasher.NativeRomHasher instead of the Android-only class.
- * The rcheevos sources are unmodified: the same ROM yields the same hash from
- * the arm64 and x86_64 builds, which is what makes the port safe.
+ * The rcheevos sources are the ones the Android library is compiled from,
+ * local patches included: the same ROM yields the same hash from the arm64
+ * and x86_64 builds, which is what makes the port safe.
  *
  * Returns "MD5|CONSOLE_ID", or NULL when the file yields no hash.
  */

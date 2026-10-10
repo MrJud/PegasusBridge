@@ -17,3 +17,7 @@ hasher/src/main/cpp/rcheevos/** -text
 # in CR.
 shared/native/** -text
 hasher/src/main/cpp/** -text
+
+# A patch file writes a context line that is empty as one space. That is the
+# format, and `git diff --check` is not to call it trailing whitespace.
+hasher/src/main/cpp/rcheevos-patches/*.patch -whitespace

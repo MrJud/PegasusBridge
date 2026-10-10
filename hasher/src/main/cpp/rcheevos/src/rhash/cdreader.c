@@ -579,6 +579,7 @@ static void* cdreader_open_gdi_track(const char* path, uint32_t track, const rc_
     return NULL;
 
   file[0] = '\0';
+  sector_size[0] = '\0'; /* local patch 0006: it is read below even when no line gave one */
   do
   {
     num_read = iterator->callbacks.filereader.read(file_handle, buffer, sizeof(buffer) - 1);
@@ -616,9 +617,12 @@ static void* cdreader_open_gdi_track(const char* path, uint32_t track, const rc_
       if (track && current_track != track && track != RC_HASH_CDTRACK_FIRST_DATA)
         continue;
 
+      /* local patch 0006: the character after a field is stepped over only if there is one.
+       * the text read ends with a NUL, and past it the buffer holds whatever was there before. */
       while (isdigit((unsigned char)*ptr))
         ++ptr;
-      ++ptr;
+      if (*ptr)
+        ++ptr;
 
       while (isspace((unsigned char)*ptr))
         ++ptr;
@@ -626,7 +630,8 @@ static void* cdreader_open_gdi_track(const char* path, uint32_t track, const rc_
       lba = atoi(ptr);
       while (isdigit((unsigned char)*ptr))
         ++ptr;
-      ++ptr;
+      if (*ptr)
+        ++ptr;
 
       while (isspace((unsigned char)*ptr))
         ++ptr;
@@ -634,34 +639,75 @@ static void* cdreader_open_gdi_track(const char* path, uint32_t track, const rc_
       track_type = atoi(ptr);
       while (isdigit((unsigned char)*ptr))
         ++ptr;
-      ++ptr;
+      if (*ptr)
+        ++ptr;
 
       while (isspace((unsigned char)*ptr))
         ++ptr;
 
       ptr2 = sector_size;
       while (isdigit((unsigned char)*ptr))
+      {
+        /* local patch 0006: the digits are copied again below, after "MODE1/" in mode,
+         * which is the smaller of the two buffers */
+        if (ptr2 - sector_size >= (int)(sizeof(mode) - sizeof("MODE1/")))
+        {
+          if (iterator->callbacks.filereader.close)
+            iterator->callbacks.filereader.close(file_handle);
+
+          rc_hash_iterator_error_formatted(iterator, "Sector size has more than %u digits", (unsigned)(sizeof(mode) - sizeof("MODE1/")));
+          return NULL;
+        }
+
         *ptr2++ = *ptr++;
+      }
       *ptr2 = '\0';
-      ++ptr;
+      if (*ptr)
+        ++ptr;
 
       while (isspace((unsigned char)*ptr))
         ++ptr;
 
-      ptr2 = file;
+      /* local patch 0006: the name is measured where it lies and copied only if it fits */
       if (*ptr == '\"')
       {
-        ++ptr;
+        ptr2 = ++ptr; /* ignore leading quote */
         while (*ptr != '\"')
-          *ptr2++ = *ptr++;
-        ++ptr;
+        {
+          if (!*ptr)
+          {
+            if (iterator->callbacks.filereader.close)
+              iterator->callbacks.filereader.close(file_handle);
+
+            rc_hash_iterator_error(iterator, "Quoted string without closing quote");
+            return NULL;
+          }
+
+          ++ptr;
+        }
+
+        num_read = ptr - ptr2;
+        ++ptr; /* ignore trailing quote */
       }
       else
       {
-        while (*ptr != ' ')
-          *ptr2++ = *ptr++;
+        ptr2 = ptr;
+        while (*ptr != ' ' && *ptr)
+          ++ptr;
+        num_read = ptr - ptr2;
       }
-      *ptr2 = '\0';
+
+      if (num_read >= sizeof(file))
+      {
+        if (iterator->callbacks.filereader.close)
+          iterator->callbacks.filereader.close(file_handle);
+
+        rc_hash_iterator_error_formatted(iterator, "Cannot copy %u byte filename into %u byte buffer", (unsigned)num_read, (unsigned)sizeof(file));
+        return NULL;
+      }
+
+      memcpy(file, ptr2, num_read);
+      file[num_read] = '\0';
 
       if (track == current_track)
       {

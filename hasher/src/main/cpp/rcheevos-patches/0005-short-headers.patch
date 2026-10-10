@@ -1,10 +1,10 @@
-Local patch 0005 on rcheevos 12.3.0: a file no longer than its console's header
+Local patch 0005 on rcheevos 12.5.0: a file no longer than its console's header
 is an error. What it is for, and what upstream does, is in PATCHES.md.
 
     git apply --directory=hasher/src/main/cpp/rcheevos <this file>
 
 diff --git a/src/rhash/hash_rom.c b/src/rhash/hash_rom.c
-index 996c308..6952eb8 100644
+index 3f4e260..ef10590 100644
 --- a/src/rhash/hash_rom.c
 +++ b/src/rhash/hash_rom.c
 @@ -20,6 +20,10 @@ static int rc_hash_iterator_buffer(char hash[33], const rc_hash_iterator_t* iter
@@ -16,9 +16,9 @@ index 996c308..6952eb8 100644
 +    return rc_hash_iterator_error(iterator, "File is not longer than a 7800 header (128 bytes)");
 +
    /* if the file contains a header, ignore it */
-   if (memcmp(&iterator->buffer[1], "ATARI7800", 9) == 0) {
+   if (iterator->buffer_size > 128 && memcmp(&iterator->buffer[1], "ATARI7800", 9) == 0) {
      rc_hash_iterator_verbose(iterator, "Ignoring 7800 header");
-@@ -183,6 +187,10 @@ int rc_hash_arduboy(char hash[33], const rc_hash_iterator_t* iterator)
+@@ -194,6 +198,10 @@ int rc_hash_arduboy(char hash[33], const rc_hash_iterator_t* iterator)
  
  int rc_hash_lynx(char hash[33], const rc_hash_iterator_t* iterator)
  {
@@ -27,9 +27,9 @@ index 996c308..6952eb8 100644
 +    return rc_hash_iterator_error(iterator, "File is not longer than a LYNX header (64 bytes)");
 +
    /* if the file contains a header, ignore it */
-   if (memcmp(&iterator->buffer[0], "LYNX", 5) == 0) {
+   if (iterator->buffer_size > 64 && memcmp(&iterator->buffer[0], "LYNX", 5) == 0) {
      rc_hash_iterator_verbose(iterator, "Ignoring LYNX header");
-@@ -194,6 +202,10 @@ int rc_hash_lynx(char hash[33], const rc_hash_iterator_t* iterator)
+@@ -205,6 +213,10 @@ int rc_hash_lynx(char hash[33], const rc_hash_iterator_t* iterator)
  
  int rc_hash_nes(char hash[33], const rc_hash_iterator_t* iterator)
  {
@@ -38,9 +38,9 @@ index 996c308..6952eb8 100644
 +    return rc_hash_iterator_error(iterator, "File is not longer than a NES or FDS header (16 bytes)");
 +
    /* if the file contains a header, ignore it */
-   if (memcmp(&iterator->buffer[0], "NES\x1a", 4) == 0) {
+   if (iterator->buffer_size > 16 && memcmp(&iterator->buffer[0], "NES\x1a", 4) == 0) {
      rc_hash_iterator_verbose(iterator, "Ignoring NES header");
-@@ -403,6 +415,10 @@ int rc_hash_pce(char hash[33], const rc_hash_iterator_t* iterator)
+@@ -500,6 +512,10 @@ int rc_hash_pce(char hash[33], const rc_hash_iterator_t* iterator)
  
  int rc_hash_scv(char hash[33], const rc_hash_iterator_t* iterator)
  {
@@ -50,4 +50,4 @@ index 996c308..6952eb8 100644
 +
    /* if the file contains a header, ignore it */
    /* https://gitlab.com/MaaaX-EmuSCV/libretro-emuscv/-/blob/master/readme.txt#L211 */
-   if (memcmp(iterator->buffer, "EmuSCV", 6) == 0) {
+   if (iterator->buffer_size > 32 && memcmp(iterator->buffer, "EmuSCV", 6) == 0) {

@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.22.1)
 project("rahasher" C)
 
 # rcheevos is vendored in rcheevos/, as plain files of this repository: upstream
-# 12.3.0 with the local patches rcheevos-patches/ describes.
+# 12.5.0 with the local patches rcheevos-patches/ describes.
 set(RCHEEVOS_DIR "${CMAKE_CURRENT_SOURCE_DIR}/rcheevos")
 
 # One list of sources for both builds. shared/native/build.sh reads the same

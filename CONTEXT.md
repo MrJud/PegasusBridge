@@ -110,19 +110,26 @@ Both hash with the same library: rcheevos behind one JNI file,
 to leave that to the file's extension, and hands back what rcheevos said of a
 file it gave no hash for; the scan records that after the file's name
 (`the hasher could not read X: <reason>`). `version` is the rcheevos release and
-the number of local patches on it (`12.3.0+pb6`). `NativeHasher` and
+the number of local patches on it (`12.5.0+pb6`). `NativeHasher` and
 `NativeRomHasher` only load the library, and each holds that version against
-the one it was built for before any file is hashed.
+the one it was built for before any file is hashed. The rcheevos it is compiled
+from is the folder `hasher/src/main/cpp/rcheevos`: upstream's tree as
+`rcheevos.version` beside it names it, file by file, with the patches of
+`rcheevos-patches/` on it, which `shared/tests/vendored_check.py` holds it to.
 
 What a file is hashed as is decided before rcheevos sees it, from the file's
 collection and its name (`RcConsoles`, `ConsoleChoice`), and `ArchiveAwareHasher`
 does what was decided. In a collection the console table knows, rcheevos is told
 the console: what it refuses there is kept (`UNHASHABLE`) and not tried at
 every scan, unless the file could not be opened. An arcade set is hashed by its
-name and never opened. Any other zip or 7z is opened for the one entry that is
+name and never opened; a Neo Geo cartridge kept as one `.neo` file is the one
+file of such a collection that is, and is hashed by its ROMs. Any other zip or 7z is opened for the one entry that is
 the game, and is never hashed as the file it is: one with no game in it is
 `NO_PLAYABLE_ENTRY`. A playlist is hashed as the first file it names. Only in a
-collection nothing is known of is the console still left to the extension.
+collection nothing is known of is the console still left to the extension, and
+a hash rcheevos then gives under a console that is held back
+(`RcConsoles.HELD_BACK`: the PlayStation 3, which it tries an `.iso` as) is a
+failure that is kept, and not a hash.
 
 A file that stands for a game the library does not hold is a `PLACEHOLDER` and
 never reaches the hasher: an empty file, whatever it is called, or one of at

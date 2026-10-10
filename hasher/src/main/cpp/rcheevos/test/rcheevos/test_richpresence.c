@@ -405,6 +405,9 @@ static void test_conditional_display_invalid() {
 
   ASSERT_NUM_EQUALS(rc_richpresence_size_lines("Display:\n?0x0000=1 0x0001=2?True\nFalse\n", &lines_read), RC_INVALID_OPERATOR);
   ASSERT_NUM_EQUALS(lines_read, 2);
+
+  ASSERT_NUM_EQUALS(rc_richpresence_size_lines("Display:\n?0x0000=1)?True\nFalse\n", &lines_read), RC_INVALID_OPERATOR);
+  ASSERT_NUM_EQUALS(lines_read, 2);
 }
 
 static void test_conditional_display_trailing_addaddress() {
@@ -1202,6 +1205,13 @@ static void test_macro_mathematic_chain() {
   ASSERT_NUM_EQUALS(lines, 5);
 }
 
+static void test_macro_invalid_recall_chain() {
+  int lines;
+  int result = rc_richpresence_size_lines("Format:Points\nFormatType=VALUE\n\nDisplay:\n@Points(K:{recall}+6_A:{recall}_M:0) Points", &lines);
+  ASSERT_NUM_EQUALS(result, RC_INVALID_MEMORY_OPERAND);
+  ASSERT_NUM_EQUALS(lines, 5);
+}
+
 static void test_builtin_macro(const char* macro, const char* expected) {
   uint8_t ram[] = { 0x39, 0x30 };
   memory_t memory;
@@ -1523,6 +1533,7 @@ void test_richpresence(void) {
   TEST(test_macro_without_parameter_conditional_display);
   TEST(test_macro_non_numeric_parameter);
   TEST(test_macro_mathematic_chain);
+  TEST(test_macro_invalid_recall_chain);
 
   /* builtin macros */
   TEST_PARAMS2(test_builtin_macro, "Number", "12,345");

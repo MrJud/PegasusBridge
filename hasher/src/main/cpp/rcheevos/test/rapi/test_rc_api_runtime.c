@@ -276,8 +276,8 @@ static void test_process_fetch_game_data_response_achievements() {
   ASSERT_STR_EQUALS(achievement->definition, "0=1");
   ASSERT_STR_EQUALS(achievement->author, "User1");
   ASSERT_STR_EQUALS(achievement->badge_name, "00234");
-  ASSERT_NUM_EQUALS(achievement->created, 1367266583);
-  ASSERT_NUM_EQUALS(achievement->updated, 1376929305);
+  ASSERT_TIMET_EQUALS(achievement->created, 1367266583);
+  ASSERT_TIMET_EQUALS(achievement->updated, 1376929305);
 
   ++achievement;
   ASSERT_NUM_EQUALS(achievement->id, 5502);
@@ -288,8 +288,8 @@ static void test_process_fetch_game_data_response_achievements() {
   ASSERT_STR_EQUALS(achievement->definition, "0=2");
   ASSERT_STR_EQUALS(achievement->author, "User1");
   ASSERT_STR_EQUALS(achievement->badge_name, "00235");
-  ASSERT_NUM_EQUALS(achievement->created, 1376970283);
-  ASSERT_NUM_EQUALS(achievement->updated, 1376970283);
+  ASSERT_TIMET_EQUALS(achievement->created, 1376970283);
+  ASSERT_TIMET_EQUALS(achievement->updated, 1376970283);
 
   ++achievement;
   ASSERT_NUM_EQUALS(achievement->id, 5503);
@@ -300,8 +300,8 @@ static void test_process_fetch_game_data_response_achievements() {
   ASSERT_STR_EQUALS(achievement->definition, "0=3");
   ASSERT_STR_EQUALS(achievement->author, "User2");
   ASSERT_STR_EQUALS(achievement->badge_name, "00236");
-  ASSERT_NUM_EQUALS(achievement->created, 1376969412);
-  ASSERT_NUM_EQUALS(achievement->updated, 1376969412);
+  ASSERT_TIMET_EQUALS(achievement->created, 1376969412);
+  ASSERT_TIMET_EQUALS(achievement->updated, 1376969412);
 
   ++achievement;
   ASSERT_NUM_EQUALS(achievement->id, 5504);
@@ -312,8 +312,8 @@ static void test_process_fetch_game_data_response_achievements() {
   ASSERT_STR_EQUALS(achievement->definition, "0=4");
   ASSERT_STR_EQUALS(achievement->author, "User1");
   ASSERT_STR_EQUALS(achievement->badge_name, "00236");
-  ASSERT_NUM_EQUALS(achievement->created, 1504474554);
-  ASSERT_NUM_EQUALS(achievement->updated, 1504474554);
+  ASSERT_TIMET_EQUALS(achievement->created, 1504474554);
+  ASSERT_TIMET_EQUALS(achievement->updated, 1504474554);
 
   rc_api_destroy_fetch_game_data_response(&fetch_game_data_response);
 }
@@ -501,8 +501,8 @@ static void test_process_fetch_game_data_response_achievement_null_author()
   ASSERT_STR_EQUALS(achievement->badge_name, "00234");
   ASSERT_STR_EQUALS(achievement->badge_url, "http://host/Badge/00234.png");
   ASSERT_STR_EQUALS(achievement->badge_locked_url, "http://host/Badge/00234_lock.png");
-  ASSERT_NUM_EQUALS(achievement->created, 1367266583);
-  ASSERT_NUM_EQUALS(achievement->updated, 1376929305);
+  ASSERT_TIMET_EQUALS(achievement->created, 1367266583);
+  ASSERT_TIMET_EQUALS(achievement->updated, 1376929305);
 
   ++achievement;
   ASSERT_NUM_EQUALS(achievement->id, 5502);
@@ -515,8 +515,8 @@ static void test_process_fetch_game_data_response_achievement_null_author()
   ASSERT_STR_EQUALS(achievement->badge_name, "00235");
   ASSERT_STR_EQUALS(achievement->badge_url, "https://media.retroachievements.org/Badge/00235.png");
   ASSERT_STR_EQUALS(achievement->badge_locked_url, "https://media.retroachievements.org/Badge/00235_lock.png");
-  ASSERT_NUM_EQUALS(achievement->created, 1376970283);
-  ASSERT_NUM_EQUALS(achievement->updated, 1376970283);
+  ASSERT_TIMET_EQUALS(achievement->created, 1376970283);
+  ASSERT_TIMET_EQUALS(achievement->updated, 1376970283);
 
   ++achievement;
   ASSERT_NUM_EQUALS(achievement->id, 5503);
@@ -529,8 +529,8 @@ static void test_process_fetch_game_data_response_achievement_null_author()
   ASSERT_STR_EQUALS(achievement->badge_name, "00236");
   ASSERT_STR_EQUALS(achievement->badge_url, "https://media.retroachievements.org/Badge/00236.png");
   ASSERT_STR_EQUALS(achievement->badge_locked_url, "https://media.retroachievements.org/Badge/00236_lock.png");
-  ASSERT_NUM_EQUALS(achievement->created, 1376969412);
-  ASSERT_NUM_EQUALS(achievement->updated, 1376969412);
+  ASSERT_TIMET_EQUALS(achievement->created, 1376969412);
+  ASSERT_TIMET_EQUALS(achievement->updated, 1376969412);
 
   ++achievement;
   ASSERT_NUM_EQUALS(achievement->id, 5504);
@@ -543,10 +543,25 @@ static void test_process_fetch_game_data_response_achievement_null_author()
   ASSERT_STR_EQUALS(achievement->badge_name, "00236");
   ASSERT_STR_EQUALS(achievement->badge_url, "https://media.retroachievements.org/Badge/00236.png");
   ASSERT_STR_EQUALS(achievement->badge_locked_url, "https://media.retroachievements.org/Badge/00236_lock.png");
-  ASSERT_NUM_EQUALS(achievement->created, 1504474554);
-  ASSERT_NUM_EQUALS(achievement->updated, 1504474554);
+  ASSERT_TIMET_EQUALS(achievement->created, 1504474554);
+  ASSERT_TIMET_EQUALS(achievement->updated, 1504474554);
 
   rc_api_destroy_fetch_game_data_response(&fetch_game_data_response);
+}
+
+static void test_process_fetch_game_data_response_achievement_null_title() {
+  rc_api_fetch_game_data_response_t response;
+  const char* server_response = "{\"Success\":true,\"PatchData\":{"
+    "\"ID\":20,\"Title\":\"Game\",\"ConsoleID\":19,\"ImageIcon\":\"/Images/112233.png\","
+    "\"Achievements\":[{\"ID\":1,\"Title\":null,\"Description\":\"Desc\",\"Flags\":3,\"Points\":5,"
+    "\"MemAddr\":\"0=1\",\"Author\":\"User\",\"BadgeName\":\"00234\","
+    "\"Created\":1367266583,\"Modified\":1376929305}],\"Leaderboards\":[]}}";
+
+  memset(&response, 0, sizeof(response));
+
+  ASSERT_NUM_EQUALS(rc_api_process_fetch_game_data_response(&response, server_response), RC_MISSING_VALUE);
+
+  rc_api_destroy_fetch_game_data_response(&response);
 }
 
 static void test_process_fetch_game_data_response_leaderboards() {
@@ -906,8 +921,8 @@ static void test_process_fetch_game_sets_response_achievements() {
   ASSERT_NUM_EQUALS(achievement->type, RC_ACHIEVEMENT_TYPE_STANDARD);
   ASSERT_FLOAT_EQUALS(achievement->rarity, 100.0f);
   ASSERT_FLOAT_EQUALS(achievement->rarity_hardcore, 66.67f);
-  ASSERT_NUM_EQUALS(achievement->created, 1367266583);
-  ASSERT_NUM_EQUALS(achievement->updated, 1376929305);
+  ASSERT_TIMET_EQUALS(achievement->created, 1367266583);
+  ASSERT_TIMET_EQUALS(achievement->updated, 1376929305);
 
   ++achievement;
   ASSERT_NUM_EQUALS(achievement->id, 5502);
@@ -921,8 +936,8 @@ static void test_process_fetch_game_sets_response_achievements() {
   ASSERT_NUM_EQUALS(achievement->type, RC_ACHIEVEMENT_TYPE_MISSABLE);
   ASSERT_FLOAT_EQUALS(achievement->rarity, 57.43f);
   ASSERT_FLOAT_EQUALS(achievement->rarity_hardcore, 57.43f);
-  ASSERT_NUM_EQUALS(achievement->created, 1376970283);
-  ASSERT_NUM_EQUALS(achievement->updated, 1376970283);
+  ASSERT_TIMET_EQUALS(achievement->created, 1376970283);
+  ASSERT_TIMET_EQUALS(achievement->updated, 1376970283);
 
   ++achievement;
   ASSERT_NUM_EQUALS(achievement->id, 5503);
@@ -936,8 +951,8 @@ static void test_process_fetch_game_sets_response_achievements() {
   ASSERT_NUM_EQUALS(achievement->type, RC_ACHIEVEMENT_TYPE_PROGRESSION);
   ASSERT_FLOAT_EQUALS(achievement->rarity, 6.8f);
   ASSERT_FLOAT_EQUALS(achievement->rarity_hardcore, 0.0f);
-  ASSERT_NUM_EQUALS(achievement->created, 1376969412);
-  ASSERT_NUM_EQUALS(achievement->updated, 1376969412);
+  ASSERT_TIMET_EQUALS(achievement->created, 1376969412);
+  ASSERT_TIMET_EQUALS(achievement->updated, 1376969412);
 
   ++achievement;
   ASSERT_NUM_EQUALS(achievement->id, 5504);
@@ -951,8 +966,8 @@ static void test_process_fetch_game_sets_response_achievements() {
   ASSERT_NUM_EQUALS(achievement->type, RC_ACHIEVEMENT_TYPE_WIN);
   ASSERT_FLOAT_EQUALS(achievement->rarity, 100.0f);
   ASSERT_FLOAT_EQUALS(achievement->rarity_hardcore, 100.0f);
-  ASSERT_NUM_EQUALS(achievement->created, 1504474554);
-  ASSERT_NUM_EQUALS(achievement->updated, 1504474554);
+  ASSERT_TIMET_EQUALS(achievement->created, 1504474554);
+  ASSERT_TIMET_EQUALS(achievement->updated, 1504474554);
 
   ++achievement;
   ASSERT_NUM_EQUALS(achievement->id, 5505);
@@ -966,8 +981,8 @@ static void test_process_fetch_game_sets_response_achievements() {
   ASSERT_NUM_EQUALS(achievement->type, RC_ACHIEVEMENT_TYPE_MISSABLE);
   ASSERT_FLOAT_EQUALS(achievement->rarity, 100.0f);
   ASSERT_FLOAT_EQUALS(achievement->rarity_hardcore, 100.0f);
-  ASSERT_NUM_EQUALS(achievement->created, 1504474554);
-  ASSERT_NUM_EQUALS(achievement->updated, 1504474554);
+  ASSERT_TIMET_EQUALS(achievement->created, 1504474554);
+  ASSERT_TIMET_EQUALS(achievement->updated, 1504474554);
 
   ++achievement;
   ASSERT_NUM_EQUALS(achievement->id, 5506);
@@ -981,8 +996,8 @@ static void test_process_fetch_game_sets_response_achievements() {
   ASSERT_NUM_EQUALS(achievement->type, RC_ACHIEVEMENT_TYPE_MISSABLE);
   ASSERT_FLOAT_EQUALS(achievement->rarity, 100.0f);
   ASSERT_FLOAT_EQUALS(achievement->rarity_hardcore, 100.0f);
-  ASSERT_NUM_EQUALS(achievement->created, 1504474554);
-  ASSERT_NUM_EQUALS(achievement->updated, 1504474554);
+  ASSERT_TIMET_EQUALS(achievement->created, 1504474554);
+  ASSERT_TIMET_EQUALS(achievement->updated, 1504474554);
 
   ++achievement;
   ASSERT_NUM_EQUALS(achievement->id, 5507);
@@ -996,8 +1011,8 @@ static void test_process_fetch_game_sets_response_achievements() {
   ASSERT_NUM_EQUALS(achievement->type, RC_ACHIEVEMENT_TYPE_STANDARD); /* no type specified */
   ASSERT_FLOAT_EQUALS(achievement->rarity, 100.0f);
   ASSERT_FLOAT_EQUALS(achievement->rarity_hardcore, 100.0f);
-  ASSERT_NUM_EQUALS(achievement->created, 1367266583);
-  ASSERT_NUM_EQUALS(achievement->updated, 1376929305);
+  ASSERT_TIMET_EQUALS(achievement->created, 1367266583);
+  ASSERT_TIMET_EQUALS(achievement->updated, 1376929305);
 
   rc_api_destroy_fetch_game_sets_response(&fetch_game_sets_response);
 }
@@ -1255,8 +1270,8 @@ static void test_process_fetch_game_sets_response_specialty_subset() {
   ASSERT_STR_EQUALS(achievement->author, "User1");
   ASSERT_STR_EQUALS(achievement->badge_name, "00234");
   ASSERT_NUM_EQUALS(achievement->type, RC_ACHIEVEMENT_TYPE_STANDARD); /* no type specified */
-  ASSERT_NUM_EQUALS(achievement->created, 1367266583);
-  ASSERT_NUM_EQUALS(achievement->updated, 1376929305);
+  ASSERT_TIMET_EQUALS(achievement->created, 1367266583);
+  ASSERT_TIMET_EQUALS(achievement->updated, 1376929305);
 
   set = &fetch_game_sets_response.sets[1];
   ASSERT_NUM_EQUALS(set->id, 192);
@@ -1281,8 +1296,8 @@ static void test_process_fetch_game_sets_response_specialty_subset() {
   ASSERT_NUM_EQUALS(achievement->type, RC_ACHIEVEMENT_TYPE_PROGRESSION);
   ASSERT_FLOAT_EQUALS(achievement->rarity, 100.0f);
   ASSERT_FLOAT_EQUALS(achievement->rarity_hardcore, 66.67f);
-  ASSERT_NUM_EQUALS(achievement->created, 1367266583);
-  ASSERT_NUM_EQUALS(achievement->updated, 1376929305);
+  ASSERT_TIMET_EQUALS(achievement->created, 1367266583);
+  ASSERT_TIMET_EQUALS(achievement->updated, 1376929305);
 
   ++achievement;
   ASSERT_NUM_EQUALS(achievement->id, 5502);
@@ -1296,8 +1311,8 @@ static void test_process_fetch_game_sets_response_specialty_subset() {
   ASSERT_NUM_EQUALS(achievement->type, RC_ACHIEVEMENT_TYPE_MISSABLE);
   ASSERT_FLOAT_EQUALS(achievement->rarity, 57.43f);
   ASSERT_FLOAT_EQUALS(achievement->rarity_hardcore, 57.43f);
-  ASSERT_NUM_EQUALS(achievement->created, 1376970283);
-  ASSERT_NUM_EQUALS(achievement->updated, 1376970283);
+  ASSERT_TIMET_EQUALS(achievement->created, 1376970283);
+  ASSERT_TIMET_EQUALS(achievement->updated, 1376970283);
 
   ++achievement;
   ASSERT_NUM_EQUALS(achievement->id, 5503);
@@ -1311,8 +1326,8 @@ static void test_process_fetch_game_sets_response_specialty_subset() {
   ASSERT_NUM_EQUALS(achievement->type, RC_ACHIEVEMENT_TYPE_WIN);
   ASSERT_FLOAT_EQUALS(achievement->rarity, 6.8f);
   ASSERT_FLOAT_EQUALS(achievement->rarity_hardcore, 0.0f);
-  ASSERT_NUM_EQUALS(achievement->created, 1376969412);
-  ASSERT_NUM_EQUALS(achievement->updated, 1376969412);
+  ASSERT_TIMET_EQUALS(achievement->created, 1376969412);
+  ASSERT_TIMET_EQUALS(achievement->updated, 1376969412);
 
   ASSERT_PTR_NOT_NULL(set->leaderboards);
   leaderboard = set->leaderboards;
@@ -1348,8 +1363,8 @@ static void test_process_fetch_game_sets_response_specialty_subset() {
   ASSERT_NUM_EQUALS(achievement->type, RC_ACHIEVEMENT_TYPE_STANDARD);
   ASSERT_FLOAT_EQUALS(achievement->rarity, 100.0f);
   ASSERT_FLOAT_EQUALS(achievement->rarity_hardcore, 100.0f);
-  ASSERT_NUM_EQUALS(achievement->created, 1504474554);
-  ASSERT_NUM_EQUALS(achievement->updated, 1504474554);
+  ASSERT_TIMET_EQUALS(achievement->created, 1504474554);
+  ASSERT_TIMET_EQUALS(achievement->updated, 1504474554);
 
   ++achievement;
   ASSERT_NUM_EQUALS(achievement->id, 5505);
@@ -1363,8 +1378,8 @@ static void test_process_fetch_game_sets_response_specialty_subset() {
   ASSERT_NUM_EQUALS(achievement->type, RC_ACHIEVEMENT_TYPE_MISSABLE);
   ASSERT_FLOAT_EQUALS(achievement->rarity, 100.0f);
   ASSERT_FLOAT_EQUALS(achievement->rarity_hardcore, 100.0f);
-  ASSERT_NUM_EQUALS(achievement->created, 1504474554);
-  ASSERT_NUM_EQUALS(achievement->updated, 1504474554);
+  ASSERT_TIMET_EQUALS(achievement->created, 1504474554);
+  ASSERT_TIMET_EQUALS(achievement->updated, 1504474554);
 
   ++achievement;
   ASSERT_NUM_EQUALS(achievement->id, 5506);
@@ -1378,8 +1393,8 @@ static void test_process_fetch_game_sets_response_specialty_subset() {
   ASSERT_NUM_EQUALS(achievement->type, RC_ACHIEVEMENT_TYPE_MISSABLE);
   ASSERT_FLOAT_EQUALS(achievement->rarity, 100.0f);
   ASSERT_FLOAT_EQUALS(achievement->rarity_hardcore, 100.0f);
-  ASSERT_NUM_EQUALS(achievement->created, 1504474554);
-  ASSERT_NUM_EQUALS(achievement->updated, 1504474554);
+  ASSERT_TIMET_EQUALS(achievement->created, 1504474554);
+  ASSERT_TIMET_EQUALS(achievement->updated, 1504474554);
 
   ASSERT_PTR_NOT_NULL(set->leaderboards);
   leaderboard = set->leaderboards;
@@ -1450,8 +1465,8 @@ static void test_process_fetch_game_sets_response_exclusive_subset() {
   ASSERT_STR_EQUALS(achievement->author, "User1");
   ASSERT_STR_EQUALS(achievement->badge_name, "00234");
   ASSERT_NUM_EQUALS(achievement->type, RC_ACHIEVEMENT_TYPE_STANDARD); /* no type specified */
-  ASSERT_NUM_EQUALS(achievement->created, 1367266583);
-  ASSERT_NUM_EQUALS(achievement->updated, 1376929305);
+  ASSERT_TIMET_EQUALS(achievement->created, 1367266583);
+  ASSERT_TIMET_EQUALS(achievement->updated, 1376929305);
 
   rc_api_destroy_fetch_game_sets_response(&fetch_game_sets_response);
 }
@@ -2145,6 +2160,7 @@ void test_rapi_runtime(void) {
   TEST(test_process_fetch_game_data_response_achievement_types);
   TEST(test_process_fetch_game_data_response_achievement_rarity);
   TEST(test_process_fetch_game_data_response_achievement_null_author);
+  TEST(test_process_fetch_game_data_response_achievement_null_title);
   TEST(test_process_fetch_game_data_response_leaderboards);
   TEST(test_process_fetch_game_data_response_rich_presence);
   TEST(test_process_fetch_game_data_response_rich_presence_null);

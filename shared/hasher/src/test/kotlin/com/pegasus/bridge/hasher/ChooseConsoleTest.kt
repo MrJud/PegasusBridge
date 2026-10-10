@@ -74,6 +74,10 @@ class ChooseConsoleTest {
             Case("segacd", "x.bin", hash(9)),
             Case("mastersystem", "x.sms", hash(11)),
             Case("gamegear", "x.gg", hash(15)),
+            // rcheevos has a console for .sms since 12.5.0, so the extension
+            // says which of a family the file is, and what a stray is.
+            Case("gamegear", "x.sms", hash(11)),
+            Case("gba", "x.sms", hash(11, foreign = true)),
             // PC Engine: the CD game is its descriptor and nothing else.
             Case("pcengine", "x.pce", hash(8)),
             Case("pcengine", "x.sgx", hash(8)),
@@ -131,6 +135,12 @@ class ChooseConsoleTest {
             Case("arcade", "disk.chd", UNSUPPORTED_FORMAT),
             Case("arcade", "list.m3u", UNSUPPORTED_FORMAT),
             Case("arcade", "set.zip", UNSUPPORTED_FORMAT, insideArchive = true),
+            // But for a Neo Geo cartridge in one file, which rcheevos hashes
+            // by its bytes, as the console the sets are of.
+            Case("arcade", "x.neo", hash(27)),
+            Case("neogeo", "x.neo", hash(27)),
+            Case("arcade", "X.NEO", hash(27)),
+            Case("snes", "x.neo", hash(27, foreign = true)),
             // Archives are opened, once.
             Case("nes", "x.zip", Plan.OpenArchive),
             Case("psx", "x.7z", Plan.OpenArchive),
@@ -172,6 +182,11 @@ class ChooseConsoleTest {
         assertEquals((RcConsoles.row("switch") as RcConsoles.NotOnRa).reason, switch.reason)
         val n3ds = ConsoleChoice.choose(RcConsoles.row("n3ds"), "cci", 1, false) as Plan.Unsupported
         assertEquals((RcConsoles.row("3ds") as RcConsoles.NoAlgorithm).reason, n3ds.reason)
+        // rcheevos would hash this one, and any file beside it, as a
+        // PlayStation 3 game. The collection is turned away whole.
+        val ps3 = ConsoleChoice.choose(RcConsoles.row("ps3"), "bin", 1, false) as Plan.Unsupported
+        assertEquals("rcheevos' algorithm for RC_CONSOLE_PLAYSTATION_3 (id 82) is held back: " +
+                     "RetroAchievements has no hashes of PlayStation 3 games", ps3.reason)
 
         fun words(collection: String, extension: String, insideArchive: Boolean = false) =
             (ConsoleChoice.choose(RcConsoles.row(collection), extension, 1, insideArchive) as Plan.UnsupportedFormat).reason
@@ -216,7 +231,8 @@ class ChooseConsoleTest {
                     if (plan.alternates.any { !RcConsoles.canHash(it) || it == plan.console }) wrong += "$what: $plan"
                     val family = (row as RcConsoles.Hashable).family
                     if (plan.foreign == (plan.console in family)) wrong += "$what: $plan, and the family is $family"
-                    if (row.arcade) wrong += "$what is in an arcade collection and is hashed as a file"
+                    if (row.arcade && extension != "neo")
+                        wrong += "$what is in an arcade collection and is hashed as a file"
                 }
                 if (plan is Plan.ArcadeSet && !(row is RcConsoles.Hashable && row.arcade)) wrong += "$what is an arcade set"
             }
@@ -231,6 +247,28 @@ class ChooseConsoleTest {
         assertEquals(Plan.Hash(19, listOf(16)), ConsoleChoice.choose(both, "iso", 1, false))
         assertEquals(Plan.Hash(16, listOf(19)), ConsoleChoice.choose(both, "gcm", 1, false))
         assertTrue(RomScanner.ROM_EXTENSIONS.containsAll(listOf("zip", "7z", "m3u", "chd", "cso", "wbfs", "rvz", "cdi")))
+    }
+
+    /**
+     * Where nothing is known of a collection rcheevos picks the console, from
+     * a list of its own for the extension, and that list has consoles this
+     * build is not to hash for: an .iso is tried as a PlayStation 3 disc.
+     * Such an answer is no hash to keep or to ask about.
+     */
+    @Test fun `a guess that lands on a console held back is a failure, kept`() {
+        val ps2 = HashOutcome.Ok(HashResult("0123456789abcdef0123456789abcdef", 21))
+        val unread = HashOutcome.Failed("Could not open file")
+        assertTrue(ConsoleChoice.guessed(ps2) === ps2, "a console that is hashed for")
+        assertTrue(ConsoleChoice.guessed(unread) === unread, "a failure is rcheevos' to word")
+
+        for (console in RcConsoles.HELD_BACK) {
+            val name = RcConsoles.console(console)!!.constant
+            assertEquals(HashOutcome.Failed("rcheevos takes it for a file of $name (id $console), which is held back",
+                                            retryable = false),
+                         ConsoleChoice.guessed(HashOutcome.Ok(HashResult("0123456789abcdef0123456789abcdef", console))),
+                         "console $console")
+        }
+        assertTrue(82 in RcConsoles.HELD_BACK, "the PlayStation 3, which the guess for an .iso and a .chd tries")
     }
 
     @Test fun `the three lists of extensions that are never hashed`() {

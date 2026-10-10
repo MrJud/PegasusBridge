@@ -280,11 +280,20 @@ class ArchiveAwareHasher internal constructor(
             is ConsoleChoice.Plan.Hash -> named(file.name, asConsoles(file.absolutePath, plan), digests)
             // Nothing is known of the collection: rcheevos takes the console
             // from the extension, as it did for every file before a
-            // collection could say. What it answers is kept as it is, a
-            // failure as one to try again.
-            ConsoleChoice.Plan.Guess -> named(file.name, delegate.hashForConsole(file.absolutePath, 0), digests)
+            // collection could say. What it answers is kept, a failure as
+            // one to try again, unless the console it settled on is one
+            // that is held back (guessed, below).
+            ConsoleChoice.Plan.Guess -> named(file.name, guessed(file.absolutePath), digests)
         }
     }
+
+    /**
+     * [path] left to rcheevos, which takes the console from the extension.
+     * Its answer is kept unless the console it settled on is one that is
+     * held back ([ConsoleChoice.guessed]).
+     */
+    private fun guessed(path: String): HashOutcome =
+        ConsoleChoice.guessed(delegate.hashForConsole(path, 0))
 
     /**
      * A playlist is hashed as the first file it names, read here and not by
@@ -599,7 +608,7 @@ class ArchiveAwareHasher internal constructor(
             }
 
             val outcome = if (plan != null) asConsoles(sheetFile.absolutePath, plan)
-                          else delegate.hashForConsole(sheetFile.absolutePath, 0)
+                          else guessed(sheetFile.absolutePath)
             val digests = RomHashIO.copyAndDigest(text.inputStream())
             return named("'${sheet.name}'", settled(outcome, made, listOf(sheetName) + tracks.map { it.name })) {
                 it.copy(fileMd5 = digests.md5, fileCrc32 = digests.crc32, archiveEntry = sheet.name)
@@ -716,7 +725,7 @@ class ArchiveAwareHasher internal constructor(
                 return couldNotExtract(archive, entry, t)
             }
             val outcome = if (plan != null) asConsoles(rom.absolutePath, plan)
-                          else delegate.hashForConsole(rom.absolutePath, 0)
+                          else guessed(rom.absolutePath)
             return named("'${entry.name}'", outcome) {
                 it.copy(fileMd5 = digests.md5, fileCrc32 = digests.crc32, archiveEntry = entry.name)
             }

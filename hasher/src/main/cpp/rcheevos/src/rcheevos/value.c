@@ -159,8 +159,14 @@ static void rc_parse_legacy_value(rc_value_t* self, const char** memaddr, rc_par
             /* if it looks like a floating point number, add the 'f' prefix */
             while (isdigit((unsigned char)*buffer_ptr))
               ++buffer_ptr;
-            if (*buffer_ptr == '.')
+            if (*buffer_ptr == '.') {
+              if (ptr == &buffer[sizeof(buffer)]) {
+                parse->offset = RC_INVALID_VALUE;
+                return;
+              }
+
               *ptr++ = 'f';
+            }
             continue;
 
           default:
@@ -435,7 +441,7 @@ rc_value_t* rc_alloc_variable(const char* memaddr, size_t memaddr_len, rc_parse_
 
   /* no match found, create a new entry */
   value = RC_ALLOC_SCRATCH(rc_value_t, parse);
-  memset(value, 0, sizeof(value->value));
+  memset(value, 0, sizeof(*value));
   value->value.size = RC_MEMSIZE_VARIABLE;
   value->next = NULL;
 

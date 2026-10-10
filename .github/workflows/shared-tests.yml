@@ -57,6 +57,19 @@ jobs:
           java-version: ${{ matrix.java }}
           cache: gradle
 
+      # The C the library is compiled from is a copy of rcheevos with patches
+      # of ours on it. Which upstream tree, and which patches, is written
+      # down beside it, and this holds the copy to what is written: a file
+      # the tree's own .gitignore kept out of git, a patch lost in an upgrade
+      # or a line changed by hand would otherwise be found by nobody.
+      - name: The check of the vendored rcheevos passes its own tests
+        working-directory: shared
+        run: ./tests/vendored_check_test.py
+
+      - name: The vendored rcheevos is upstream's tree and the local patches
+        working-directory: shared
+        run: ./tests/vendored_check.py
+
       # The golden hashes below run on a binary taken from git. If the C beside
       # it has changed since it was compiled they would pass on the old code,
       # so this comes first, after its own tests. Neither compiles anything.

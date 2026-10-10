@@ -122,7 +122,10 @@ class RomHashIOTest {
         for (name in listOf("Disc.img", "Disc.IMG", "Disc.mdf", "Disc.ecm", "Game.unknownext", "weird.ñes"))
             assertEquals(".bin", RomHashIO.tempSuffix(name), name)
         for ((name, suffix) in listOf("Disc.iso" to ".iso", "Disc.CUE" to ".cue", "Disc.chd" to ".chd",
-                                      "Game.pbp" to ".pbp", "Game.md" to ".md", "Game.z64" to ".z64"))
+                                      "Game.pbp" to ".pbp", "Game.md" to ".md", "Game.z64" to ".z64",
+                                      // The two rcheevos 12.5.0 brought a console for. Called `.bin`, a
+                                      // Neo Geo cartridge would be hashed whole, its header included.
+                                      "Game.sms" to ".sms", "Cartridge.NEO" to ".neo"))
             assertEquals(suffix, RomHashIO.tempSuffix(name), name)
     }
 

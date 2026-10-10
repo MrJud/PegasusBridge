@@ -113,7 +113,7 @@ object RomHashIO {
 
     /**
      * The extensions rcheevos has a handler for, copied entry by entry from
-     * `rc_hash_iterator_ext_handlers` in the vendored rcheevos v12.3.0
+     * `rc_hash_iterator_ext_handlers` in the vendored rcheevos v12.5.0
      * (hasher/src/main/cpp/rcheevos/src/rhash/hash.c). Moving to another
      * rcheevos means comparing this with its table again.
      *
@@ -128,9 +128,10 @@ object RomHashIO {
         "cue", "cxi", "d64", "d88", "dosz", "dsk", "elf", "fd", "fds", "fig",
         "gb", "gba", "gbc", "gdi", "gg", "hex", "iso", "jag", "k7", "lnx",
         "m3u", "m5", "m7", "md", "min", "mx1", "mx2", "n64", "ndd", "nds",
-        "nes", "ngc", "nib", "pbp", "pce", "pgm", "pzx", "ri", "rom", "sap",
-        "scl", "sfc", "sg", "sgx", "smc", "sv", "swc", "tap", "tic", "trd",
-        "tvc", "tzx", "uze", "v64", "vb", "wad", "wasm", "woz", "wsc", "z64"
+        "neo", "nes", "ngc", "nib", "pbp", "pce", "pgm", "pzx", "ri", "rom",
+        "sap", "scl", "sfc", "sg", "sgx", "smc", "sms", "sv", "swc", "tap",
+        "tic", "trd", "tvc", "tzx", "uze", "v64", "vb", "wad", "wasm", "woz",
+        "wsc", "z64"
     )
 
     /**
@@ -152,9 +153,9 @@ object RomHashIO {
         "cxi" to 62, "d64" to 30, "d88" to null, "dosz" to 26, "dsk" to null, "elf" to 62, "fd" to 66,
         "fds" to 7, "fig" to 3, "gb" to 4, "gba" to 5, "gbc" to 6, "gdi" to 40, "gg" to 15, "hex" to 71,
         "iso" to null, "jag" to 17, "k7" to 66, "lnx" to 13, "m3u" to null, "m5" to 66, "m7" to 66,
-        "md" to 1, "min" to 24, "mx1" to 29, "mx2" to 29, "n64" to 2, "ndd" to 2, "nds" to 18, "nes" to 7,
-        "ngc" to 14, "nib" to null, "pbp" to 41, "pce" to 8, "pgm" to 75, "pzx" to 59, "ri" to 29,
-        "rom" to null, "sap" to 66, "scl" to 59, "sfc" to 3, "sg" to 33, "sgx" to 8, "smc" to 3,
+        "md" to 1, "min" to 24, "mx1" to 29, "mx2" to 29, "n64" to 2, "ndd" to 2, "nds" to 18, "neo" to 27,
+        "nes" to 7, "ngc" to 14, "nib" to null, "pbp" to 41, "pce" to 8, "pgm" to 75, "pzx" to 59, "ri" to 29,
+        "rom" to null, "sap" to 66, "scl" to 59, "sfc" to 3, "sg" to 33, "sgx" to 8, "smc" to 3, "sms" to 11,
         "sv" to 63, "swc" to 3, "tap" to null, "tic" to 65, "trd" to 59, "tvc" to 75, "tzx" to 59,
         "uze" to 80, "v64" to 2, "vb" to 28, "wad" to 19, "wasm" to 72, "woz" to 38, "wsc" to 53,
         "z64" to 2

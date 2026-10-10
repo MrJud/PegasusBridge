@@ -49,7 +49,7 @@ object RcConsoles {
         val constant: String get() = "RC_CONSOLE_$name"
     }
 
-    /** Ids 1 to 81 of rcheevos 12.3.0, in the header's order. */
+    /** Ids 1 to 82 of rcheevos 12.5.0, in the header's order. */
     val CONSOLES: List<Console> = listOf(
         Console(1, "MEGA_DRIVE", Algorithm.WHOLE_M3U),
         Console(2, "NINTENDO_64", Algorithm.ROM),
@@ -133,7 +133,8 @@ object RcConsoles {
         Console(78, "NINTENDO_DSI", Algorithm.ROM),
         Console(79, "TI83", Algorithm.WHOLE),
         Console(80, "UZEBOX", Algorithm.WHOLE),
-        Console(81, "FAMICOM_DISK_SYSTEM", Algorithm.BUFFERED)
+        Console(81, "FAMICOM_DISK_SYSTEM", Algorithm.BUFFERED),
+        Console(82, "PLAYSTATION_3", Algorithm.DISC)
     )
 
     private val BY_ID: Map<Int, Console> = CONSOLES.associateBy { it.id }
@@ -149,11 +150,15 @@ object RcConsoles {
 
     /**
      * Consoles rcheevos has an algorithm for and we do not hash with: no row
-     * may send a file to one. Today it is the one console whose class is not
-     * compiled. An algorithm that is compiled and not to be trusted is held
-     * back by being listed here too.
+     * may send a file to one, and a hash rcheevos gives under one when it is
+     * left to guess is not kept. One is the console whose class is not
+     * compiled, the 3DS. The other is compiled and held back all the same:
+     * the PlayStation 3, which rcheevos hashes since 12.5.0 as a PARAM.SFO
+     * and whatever file it is handed beside one, so that any file under a
+     * game's USRDIR comes out as a hash, and of which RetroAchievements has
+     * no hashes to hold one against.
      */
-    val HELD_BACK: Set<Int> = setOf(62)
+    val HELD_BACK: Set<Int> = setOf(62, 82)
 
     /** Whether a file may be handed to rcheevos as console [id]. */
     fun canHash(id: Int): Boolean {
@@ -337,10 +342,12 @@ object RcConsoles {
         noAlgorithm("3ds", 62, "n3ds",
                     reason = "rcheevos' algorithm for RC_CONSOLE_NINTENDO_3DS (id 62) is not built in: " +
                              "it needs decryption keys"),
+        noAlgorithm("ps3", 82,
+                    reason = "rcheevos' algorithm for RC_CONSOLE_PLAYSTATION_3 (id 82) is held back: " +
+                             "RetroAchievements has no hashes of PlayStation 3 games"),
         // ── No console at RetroAchievements ──
         notOnRa("switch"),
         notOnRa("psvita", "vita"),
-        notOnRa("ps3"),
         notOnRa("bbcmicro"),
         notOnRa("chailove"),
         notOnRa("cdtv"),

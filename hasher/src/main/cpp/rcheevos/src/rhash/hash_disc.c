@@ -228,8 +228,6 @@ int rc_hash_3do(char hash[33], const rc_hash_iterator_t* iterator)
   /* the Opera filesystem stores the volume information in the first 132 bytes of sector 0
    * https://github.com/barbeque/3dodump/blob/master/OperaFS-Format.md
    */
-  /* local patch 0002: a first sector that ends before those 132 bytes is not a 3DO CD,
-   * as in upstream 12.5.0. what the read did not fill was compared and hashed all the same. */
   if (rc_cd_read_sector(iterator, track_handle, 0, buffer, 132) >= 132 &&
       memcmp(buffer, operafs_identifier, sizeof(operafs_identifier)) == 0) {
     rc_hash_iterator_verbose_formatted(iterator, "Found 3DO CD, title=%.32s", &buffer[0x28]);
@@ -1112,6 +1110,126 @@ int rc_hash_psp(char hash[33], const rc_hash_iterator_t* iterator)
   return rc_hash_finalize(iterator, &md5, hash);
 }
 
+static int rc_hash_ps3_disc(md5_state_t* md5, const rc_hash_iterator_t* iterator, void* track_handle)
+{
+  uint32_t sector;
+  uint32_t size;
+
+  /* https://www.psdevwiki.com/ps3/PARAM.SFO
+   * PS3_GAME/PARAM.SFO contains key/value pairs identifying the game for the system (i.e. serial number,
+   * name, version). PS3_GAME/USRDIR/EBOOT.BIN is the encrypted primary executable.
+   */
+  sector = rc_cd_find_file_sector(iterator, track_handle, "PS3_GAME\\PARAM.SFO", &size);
+  if (!sector)
+    return rc_hash_iterator_error(iterator, "Not a PS3 game disc");
+
+  if (!rc_hash_cd_file(md5, iterator, track_handle, sector, NULL, size, "PS3_GAME\\PARAM.SFO"))
+    return 0;
+
+  sector = rc_cd_find_file_sector(iterator, track_handle, "PS3_GAME\\USRDIR\\EBOOT.BIN", &size);
+  if (!sector)
+    return rc_hash_iterator_error(iterator, "Could not find primary executable");
+
+  if (!rc_hash_cd_file(md5, iterator, track_handle, sector, NULL, size, "PS3_GAME\\USRDIR\\EBOOT.BIN"))
+    return 0;
+
+  return 1;
+}
+
+static int rc_hash_ps3_file(md5_state_t* md5, const rc_hash_iterator_t* iterator)
+{
+  const char* path = iterator->path;
+  const char* match;
+  char* sfo_path;
+  size_t dir_len;
+  void* file_handle;
+  uint8_t buffer[4096];
+  size_t num_read;
+
+  /* Determine PARAM.SFO location based on directory layout:
+   *   Retail extracted: .../PS3_GAME/USRDIR/EBOOT.BIN -> .../PS3_GAME/PARAM.SFO
+   *   PKG installed:    .../TITLE_ID/USRDIR/EBOOT.BIN -> .../TITLE_ID/PARAM.SFO
+   *   ELF flat:         .../EBOOT.BIN                 -> .../PARAM.SFO
+   */
+  if ((match = strstr(path, "PS3_GAME/USRDIR/")) != NULL ||
+      (match = strstr(path, "PS3_GAME\\USRDIR\\")) != NULL)
+  {
+    dir_len = (size_t)(match - path) + 9; /* strlen("PS3_GAME/") == strlen("PS3_GAME\\") == 9 */
+  }
+  else if ((match = strstr(path, "USRDIR/")) != NULL ||
+           (match = strstr(path, "USRDIR\\")) != NULL)
+  {
+    dir_len = (size_t)(match - path);
+  }
+  else
+  {
+    dir_len = (size_t)(rc_path_get_filename(path) - path);
+  }
+
+  sfo_path = (char*)malloc(dir_len + 10); /* strlen("PARAM.SFO") + 1 */
+  if (!sfo_path)
+    return rc_hash_iterator_error(iterator, "Could not allocate PARAM.SFO path");
+
+  memcpy(sfo_path, path, dir_len);
+  memcpy(&sfo_path[dir_len], "PARAM.SFO", 10);
+
+  file_handle = rc_file_open(iterator, sfo_path);
+  free(sfo_path);
+
+  if (!file_handle)
+    return rc_hash_iterator_error(iterator, "Not a PS3 game folder");
+
+  do {
+    num_read = rc_file_read(iterator, file_handle, buffer, sizeof(buffer));
+    if (num_read)
+      md5_append(md5, buffer, (int)num_read);
+  } while (num_read == sizeof(buffer));
+
+  rc_file_close(iterator, file_handle);
+
+  file_handle = rc_file_open(iterator, path);
+  if (!file_handle)
+    return rc_hash_iterator_error(iterator, "Could not open primary executable");
+
+  do {
+    num_read = rc_file_read(iterator, file_handle, buffer, sizeof(buffer));
+    if (num_read)
+      md5_append(md5, buffer, (int)num_read);
+  } while (num_read == sizeof(buffer));
+
+  rc_file_close(iterator, file_handle);
+  return 1;
+}
+
+int rc_hash_ps3(char hash[33], const rc_hash_iterator_t* iterator)
+{
+  md5_state_t md5;
+  void* track_handle;
+  int result;
+
+  md5_init(&md5);
+
+  if (rc_path_compare_extension(iterator->path, "iso") ||
+      rc_path_compare_extension(iterator->path, "chd"))
+  {
+    track_handle = rc_cd_open_track(iterator, 1);
+    if (!track_handle)
+      return rc_hash_iterator_error(iterator, "Could not open track");
+
+    result = rc_hash_ps3_disc(&md5, iterator, track_handle);
+    rc_cd_close_track(iterator, track_handle);
+  }
+  else
+  {
+    result = rc_hash_ps3_file(&md5, iterator);
+  }
+
+  if (result)
+    return rc_hash_finalize(iterator, &md5, hash);
+
+  return result;
+}
+
 int rc_hash_sega_cd(char hash[33], const rc_hash_iterator_t* iterator)
 {
   uint8_t buffer[512];
@@ -1172,13 +1290,9 @@ static int rc_hash_wii_disc(md5_state_t* md5, const rc_hash_iterator_t* iterator
 
   /* Hash main headers */
   buffer = (uint8_t*)malloc(CLUSTER_SIZE);
-  /* local patch 0001: the file is closed by rc_hash_wii, which opened it, and not here
-   * as well. upstream 12.5.0 has taken this close out too. */
   if (!buffer)
     return rc_hash_iterator_error(iterator, "Could not allocate temporary buffer");
 
-  rc_hash_iterator_verbose_formatted(iterator, "Hashing %u byte main header for [%c%c%c%c%c%c]",
-    MAIN_HEADER_SIZE, buffer[0], buffer[1], buffer[2], buffer[3], buffer[4], buffer[5]);
   rc_file_seek(iterator, file_handle, 0, SEEK_SET);
   /* local patch 0001: every read of this function has to bring back all it asked for.
    * what a read did not fill was hashed as it stood, or taken for an offset and a
@@ -1189,6 +1303,8 @@ static int rc_hash_wii_disc(md5_state_t* md5, const rc_hash_iterator_t* iterator
     free(buffer);
     return rc_hash_iterator_error(iterator, "Disc header runs past the end of the file");
   }
+  rc_hash_iterator_verbose_formatted(iterator, "Hashing %u byte main header for [%c%c%c%c%c%c]",
+    MAIN_HEADER_SIZE, buffer[0], buffer[1], buffer[2], buffer[3], buffer[4], buffer[5]);
   md5_append(md5, buffer, MAIN_HEADER_SIZE);
 
   /* Hash region code */
@@ -1227,7 +1343,6 @@ static int rc_hash_wii_disc(md5_state_t* md5, const rc_hash_iterator_t* iterator
   }
 
   if (total_partition_count == 0) {
-    /* local patch 0001: not closed here, as above */
     free(buffer);
     return rc_hash_iterator_error(iterator, "No partitions found");
   }
@@ -1376,6 +1491,9 @@ static int rc_hash_wiiware(md5_state_t* md5, const rc_hash_iterator_t* iterator,
 
   /* Hash TMD */
   buffer = (uint8_t*)malloc(tmd_size);
+  if (!buffer)
+    return rc_hash_iterator_error(iterator, "Could not allocate TMD buffer");
+
   rc_file_seek(iterator, file_handle, tmd_start_addr, SEEK_SET);
   rc_file_read(iterator, file_handle, buffer, tmd_size);
   rc_hash_iterator_verbose_formatted(iterator, "Hashing %u byte TMD", tmd_size);
@@ -1408,6 +1526,9 @@ static int rc_hash_wiiware(md5_state_t* md5, const rc_hash_iterator_t* iterator,
 
     /* Hash content */
     buffer = (uint8_t*)malloc(buffer_size);
+    if (!buffer)
+      return rc_hash_iterator_error(iterator, "Could not allocate content buffer");
+
     rc_file_seek(iterator, file_handle, content_addr, SEEK_SET);
     rc_file_read(iterator, file_handle, buffer, buffer_size);
     md5_append(md5, buffer, buffer_size);

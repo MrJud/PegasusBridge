@@ -1,14 +1,14 @@
-Local patch 0004 on rcheevos 12.3.0: a GameCube disc or Wii partition whose
+Local patch 0004 on rcheevos 12.5.0: a GameCube disc or Wii partition whose
 header or main.dol the file does not hold to the end is an error. What it is
 for, and what upstream does, is in PATCHES.md.
 
     git apply --directory=hasher/src/main/cpp/rcheevos <this file>
 
 diff --git a/src/rhash/hash_disc.c b/src/rhash/hash_disc.c
-index 83c9354..4aa8c1e 100644
+index 087668d..a66c744 100644
 --- a/src/rhash/hash_disc.c
 +++ b/src/rhash/hash_disc.c
-@@ -435,23 +435,39 @@ static int rc_hash_nintendo_disc_partition(md5_state_t* md5, const rc_hash_itera
+@@ -434,23 +434,39 @@ static int rc_hash_nintendo_disc_partition(md5_state_t* md5, const rc_hash_itera
    /* GetApploaderSize */
    rc_file_seek(iterator, file_handle, part_offset + BASE_HEADER_SIZE + 0x14, SEEK_SET);
    apploader_header_size = 0x20;
@@ -56,7 +56,7 @@ index 83c9354..4aa8c1e 100644
    rc_hash_iterator_verbose_formatted(iterator, "Hashing %u byte partition header", header_size);
    md5_append(md5, buffer, header_size);
  
-@@ -466,7 +482,8 @@ static int rc_hash_nintendo_disc_partition(md5_state_t* md5, const rc_hash_itera
+@@ -465,7 +481,8 @@ static int rc_hash_nintendo_disc_partition(md5_state_t* md5, const rc_hash_itera
  
    /* Find offsets and sizes for the 7 main.dol code segments and 11 main.dol data segments */
    rc_file_seek(iterator, file_handle, part_offset + dol_offset, SEEK_SET);
@@ -66,7 +66,7 @@ index 83c9354..4aa8c1e 100644
    for (ix = 0; ix < 18; ix++) {
      dol_offsets[ix] = (((uint64_t)addr_buffer[0x0 + ix * 4] << 24) |
        ((uint64_t)addr_buffer[0x1 + ix * 4] << 16) |
-@@ -480,10 +497,9 @@ static int rc_hash_nintendo_disc_partition(md5_state_t* md5, const rc_hash_itera
+@@ -479,10 +496,9 @@ static int rc_hash_nintendo_disc_partition(md5_state_t* md5, const rc_hash_itera
  
    /* Iterate through the 18 main.dol segments and hash each */
    buffer = (uint8_t*)malloc(MAX_CHUNK_SIZE);
@@ -79,7 +79,7 @@ index 83c9354..4aa8c1e 100644
  
    for (ix = 0; ix < 18; ix++) {
      if (dol_sizes[ix] == 0)
-@@ -495,13 +511,23 @@ static int rc_hash_nintendo_disc_partition(md5_state_t* md5, const rc_hash_itera
+@@ -494,13 +510,23 @@ static int rc_hash_nintendo_disc_partition(md5_state_t* md5, const rc_hash_itera
      else
        rc_hash_iterator_verbose_formatted(iterator, "Hashing %u byte main.dol data segment %u", dol_sizes[ix], ix - 7);
  

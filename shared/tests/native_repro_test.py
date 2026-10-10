@@ -41,13 +41,9 @@ game. Two kinds of row:
               allocator's and the kernel's business. The day a row here ends
               with exit 1 and a reason the gap is closed, the row fails, and
               whoever closed it moves it to the rows that must pass. There is
-              one at present, and it is about a path and not a file: one that
-              ends in a separator, hashed as an arcade set. The library's JNI
-              file turns such a path away before rcheevos is asked, which
-              this program, being rcheevos with nothing in front of it, does
-              not. The kind is also for the next defect that is found before
-              its patch is written, and for an upgrade of rcheevos that
-              brings one.
+              none at present. The kind is kept for the next defect that is
+              found before its patch is written, and for an upgrade of
+              rcheevos that brings one.
 
 Before any row, the sanitized build is given two faults of its own making
 (rahash_cli --fault) and has to report each. "No report" from a program built
@@ -499,6 +495,38 @@ def gamecube_disc(header_size=GAMECUBE_HEADER_SIZE, sizes=None):
     return bytes(image)
 
 
+PS3_EBOOT_SECTOR = 22
+
+
+def ps3_disc(sfo, eboot):
+    """An ISO 9660 volume with the two files rcheevos hashes of a PlayStation 3
+    disc and nothing else: the volume descriptor in sector 16, the root
+    directory in 18, PS3_GAME in 19, PS3_GAME/USRDIR in 20, PARAM.SFO in 21 and
+    EBOOT.BIN from 22 on. A whole number of sectors of 2048 bytes, which is
+    what makes an .iso a disc to the consoles that read one."""
+    def record(name, sector, size):
+        length = 33 + len(name) + (33 + len(name)) % 2
+        entry = bytearray(length)
+        entry[0] = length
+        put(entry, 2, sector.to_bytes(3, "little"))
+        put(entry, 10, size.to_bytes(4, "little"))
+        entry[32] = len(name)
+        put(entry, 33, name)
+        return bytes(entry)
+
+    image = bytearray((PS3_EBOOT_SECTOR + -(-len(eboot) // 2048)) * 2048)
+    volume = 16 * 2048
+    put(image, volume, b"\x01CD001\x01")
+    put(image, volume + 128, (2048).to_bytes(2, "little"))      # block size
+    put(image, volume + 156, record(b"\x00", 18, 2048))         # the root directory
+    put(image, 18 * 2048, record(b"PS3_GAME", 19, 2048))
+    put(image, 19 * 2048, record(b"PARAM.SFO", 21, len(sfo)) + record(b"USRDIR", 20, 2048))
+    put(image, 20 * 2048, record(b"EBOOT.BIN", PS3_EBOOT_SECTOR, len(eboot)))
+    put(image, 21 * 2048, sfo)
+    put(image, PS3_EBOOT_SECTOR * 2048, eboot)
+    return bytes(image)
+
+
 def cue(track, mode):
     """A cue sheet of one data track."""
     return (b'FILE "%s" BINARY\r\n' % track
@@ -665,6 +693,27 @@ def write_fixtures(directory):
         ("the same with 10 digits", 0, "digits-10.gdi", REFUSED),
     ]
 
+    # A sheet longer than one read, whose line for the track lies across the
+    # point three quarters of the way through the 1024 bytes read at a time.
+    # Upstream ends a name there, though the text goes on to the NUL: a name
+    # in quotes is refused as one whose quote never closes, and a plain one is
+    # cut off and then not found. The patch ends a name at the NUL. Two audio
+    # tracks with long names bring the third line to where it has to be, and
+    # spaces after it make the sheet longer than the read.
+    before = (b"3\n"
+              b"1 0 0 2352 " + b"a" * 360 + b".raw 0\n"
+              b"2 600 0 2352 " + b"b" * 345 + b".raw 0\n")
+    for name, written in (("valid-long.gdi", b"repro-gd-03.bin"),
+                          ("valid-long-quoted.gdi", b'"Repro GD (Track 3).bin"')):
+        sheet = before + line % written
+        assert len(before) < 768 < len(before) + sheet[len(before):].index(written) + len(written), name
+        write(name, sheet + b" " * (1100 - len(sheet)))
+    must_pass += [
+        ("a .gdi of 1100 bytes whose track's name lies across byte 768",
+         0, "valid-long.gdi", f"{dreamcast}|40"),
+        ("the same with the name in quotes", 0, "valid-long-quoted.gdi", f"{dreamcast}|40"),
+    ]
+
     # A sheet that ends in the middle of its line, after the first, second,
     # third or fourth number. The parser used to step over the character after
     # a number without looking, and here that is the NUL that closes what was
@@ -781,7 +830,7 @@ def write_fixtures(directory):
     must_pass += [
         ("a Wii disc, encrypted, with one update partition and one game",
          19, "wii-encrypted.iso", f"{wii_md5(encrypted)}|19"),
-        ("the same disc with no console given, refused by five consoles and taken by the sixth",
+        ("the same disc with no console given, refused by six consoles and taken by the seventh",
          0, "wii-encrypted.iso", f"{wii_md5(encrypted)}|19"),
         ("the same disc, not encrypted, hashed by its main.dol",
          19, "wii-decrypted.iso", f"{wii_md5(plain_data)}|19"),
@@ -1064,22 +1113,86 @@ def write_fixtures(directory):
     must_pass.append(("8 KiB of nothing with the GameCube magic word",
                       16, "gamecube-magic-only.iso", REFUSED))
 
-    # (what the row shows, console, path from the folder of fixtures). The six
-    # files there were are rows above since local patches 0001 to 0004.
+    # ---- what rcheevos 12.5.0 brought, with no patch of ours on it.
     #
-    # What is left is not a file. An arcade set's hash is the MD5 of its
-    # file's name without the extension, and rcheevos finds the length of that
-    # by taking one off for the dot. A path that ends in a separator has a
-    # name of no letters and no dot, the length is one below zero, which is
-    # the most a size can hold, and rcheevos hashes the 64 MiB it cuts that
-    # down to, starting where the name would be: a signal as soon as the
-    # memory there is runs out. Not patched: rahasher_jni.c refuses a path
-    # that ends in either separator before rcheevos sees it, which is held by
-    # NativeCrashReproTest, and upstream has since rewritten these lines.
-    known_gaps = [
-        ("a path that ends in a separator, under console 27",
-         27, "mslug.zip/"),
+    # An arcade set's hash is the MD5 of its file's name without the
+    # extension, and up to 12.3.0 rcheevos found the length of that by taking
+    # one off for the dot, whether there was a dot or not. A path that ends in
+    # a separator has a name of no letters: the length was one below zero,
+    # which is the most a size can hold, and the 64 MiB that was cut down to
+    # were hashed from where the name would be, until a signal. That was the
+    # one known gap. Now a name with no dot in it is hashed whole, so the
+    # empty one is the MD5 of nothing, and a set kept as a folder is hashed by
+    # the folder's name with its last letter on. rahasher_jni.c still turns
+    # away a path that ends in a separator, and the MD5 of nothing is no hash
+    # to the Kotlin above it.
+    must_pass += [
+        ("a path that ends in a separator, under console 27, is the MD5 of no name",
+         27, "mslug.zip/", f"{md5(b'')}|27"),
+        ("a name with no extension under console 27 is hashed whole",
+         27, "mslug", f"{md5(b'mslug')}|27"),
     ]
+
+    # A Neo Geo cartridge in one file: 4096 bytes of header that open with
+    # NEO and a 1, then the ROMs, and the hash is of the ROMs alone. It is
+    # an arcade game to RetroAchievements, and the one file of that console
+    # that is opened and read.
+    roms = noise(70000, seed="neo")        # more than one of the 64 KiB it is read by
+    cartridge = bytearray(4096)
+    put(cartridge, 0, b"NEO\x01")
+    put(cartridge, 0x2C, b"Repro Cartridge")
+    write("Repro.neo", bytes(cartridge) + roms)
+    write("header-and-one.neo", bytes(cartridge) + b"Z")
+    write("header-only.neo", bytes(cartridge))
+    write("tiny.neo", b"NEO\x01")
+    write("three.neo", b"NEO")
+    write("empty.neo", b"")
+    write("other.neo", noise(8192, seed="not a neo"))
+    must_pass += [
+        ("a .neo cartridge is hashed without its 4096 bytes of header, as an arcade game",
+         0, "Repro.neo", f"{md5(roms)}|27"),
+        ("the same under console 27", 27, "Repro.neo", f"{md5(roms)}|27"),
+        ("a .neo that is its header and one byte", 0, "header-and-one.neo", f"{md5(b'Z')}|27"),
+        ("a .neo that is its header and nothing else", 0, "header-only.neo", refused("Not a valid .neo file")),
+        ("a .neo that ends after its magic word", 0, "tiny.neo", refused("Not a valid .neo file")),
+        ("the same under console 27", 27, "tiny.neo", refused("Not a valid .neo file")),
+        ("a .neo of three bytes", 0, "three.neo", refused("Not a valid .neo file")),
+        ("an empty .neo", 0, "empty.neo", refused("Not a valid .neo file")),
+        ("8 KiB named .neo that do not open with the magic word", 0, "other.neo",
+         refused("Not a valid .neo file")),
+    ]
+
+    # A PlayStation 3 disc, which rcheevos hashes since this release: the
+    # PARAM.SFO of the game and its EBOOT.BIN, found through the directories
+    # of an ISO 9660 volume. With no console given an .iso is now tried as
+    # one, third in its list, so this is what the library answers for such a
+    # disc in a collection nobody knows. The console is held back in the
+    # Kotlin above (RcConsoles.HELD_BACK), and the row is here so that what
+    # is held back is known to be there.
+    sfo = noise(700, seed="ps3-sfo")
+    eboot = noise(5000, seed="ps3-eboot")   # three sectors, the last in part
+    ps3 = ps3_disc(sfo, eboot)
+    write("ps3.iso", ps3)
+    # Without the last of the sectors its program is in.
+    write("ps3-cut.iso", ps3[:PS3_EBOOT_SECTOR * 2048 + 4096])
+    # Without the program's first sector, and so with nothing of it.
+    write("ps3-no-program.iso", ps3[:PS3_EBOOT_SECTOR * 2048])
+    must_pass += [
+        ("a PlayStation 3 disc with no console given is taken for console 82",
+         0, "ps3.iso", f"{md5(sfo + eboot)}|82"),
+        ("the same disc under console 82", 82, "ps3.iso", f"{md5(sfo + eboot)}|82"),
+        ("the same disc as a PlayStation 2 one", 21, "ps3.iso", REFUSED),
+        # rcheevos hashes a file of a disc as far as the image goes, for every
+        # console that has such files: no patch of ours is on those lines.
+        ("the same disc without the last sector of its program is hashed as far as it goes",
+         82, "ps3-cut.iso", f"{md5(sfo + eboot[:4096])}|82"),
+        ("the same disc without any of its program", 82, "ps3-no-program.iso", REFUSED),
+    ]
+
+    # (what the row shows, console, path from the folder of fixtures). The six
+    # files there were are rows above since local patches 0001 to 0004, and
+    # the path that was the seventh since rcheevos 12.5.0.
+    known_gaps = []
     return must_pass, known_gaps
 
 
@@ -1260,7 +1373,8 @@ def main(argv):
         for binary, label, env in builds:
             print(f"must pass, {label} build:")
             for what, console, name, answer in must_pass:
-                outcome = run(binary, console, files / name, env, MUST_PASS_SECONDS)
+                # Joined as text: a Path would drop the separator a row may end with.
+                outcome = run(binary, console, f"{files}{os.sep}{name}", env, MUST_PASS_SECONDS)
                 wrong = check_must_pass(outcome, answer, sanitized=env is not None)
                 if wrong:
                     failures += 1
@@ -1273,7 +1387,6 @@ def main(argv):
         else:
             print("known gaps: none")
         for what, console, name in known_gaps:
-            # Joined as text: a Path would drop the separator a row may end with.
             outcome = run(plain, console, f"{files}{os.sep}{name}")
             wrong = check_known_gap(outcome)
             if wrong:

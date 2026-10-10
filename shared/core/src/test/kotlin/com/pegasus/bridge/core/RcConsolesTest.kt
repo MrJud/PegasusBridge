@@ -44,11 +44,11 @@ class RcConsolesTest {
             .map { it.groupValues[1] to it.groupValues[2].toInt() }
             .filter { it.second in 1..99 }
             .toList()
-        assertEquals(81, inHeader.size, "ids found in the header: $inHeader")
+        assertEquals(82, inHeader.size, "ids found in the header: $inHeader")
         assertEquals(inHeader, RcConsoles.CONSOLES.map { it.name to it.id })
         assertEquals("RC_CONSOLE_MEGA_DRIVE", RcConsoles.console(1)?.constant)
         assertNull(RcConsoles.console(0))
-        assertNull(RcConsoles.console(82))
+        assertNull(RcConsoles.console(83))
     }
 
     /**
@@ -144,7 +144,7 @@ class RcConsolesTest {
         }
 
         val notCompiled = RcConsoles.CONSOLES.filter { it.algorithm in RcConsoles.NOT_COMPILED }.map { it.id }.toSet()
-        assertEquals(setOf(62), RcConsoles.HELD_BACK, "held back")
+        assertEquals(setOf(62, 82), RcConsoles.HELD_BACK, "held back")
         assertTrue(RcConsoles.HELD_BACK.containsAll(notCompiled), "not compiled and not held back: $notCompiled")
 
         val wrong = mutableListOf<String>()
@@ -163,7 +163,10 @@ class RcConsolesTest {
         report("rows that cannot be", wrong)
 
         assertTrue(RcConsoles.canHash(7))
+        // 82 is the one of these whose algorithm is there and compiled: only
+        // the list of what is held back says no to it.
         for (id in listOf(0, 20, 35, 62, 64, 66, 82)) assertTrue(!RcConsoles.canHash(id), "console $id")
+        assertEquals(RcConsoles.Algorithm.DISC, RcConsoles.console(82)?.algorithm)
     }
 
     // ── The rows ────────────────────────────────────────────────────────────
@@ -242,16 +245,17 @@ class RcConsolesTest {
         }
         report("hashable rows", wrong)
 
-        val refused = mapOf("amiga" to 35, "cdimono1" to 42, "cdi" to 42, "wiiu" to 20, "3ds" to 62, "n3ds" to 62)
+        val refused = mapOf("amiga" to 35, "cdimono1" to 42, "cdi" to 42, "wiiu" to 20, "3ds" to 62, "n3ds" to 62,
+                            "ps3" to 82)
         for ((name, id) in refused) {
             val row = RcConsoles.row(name)
             assertTrue(row is RcConsoles.NoAlgorithm && row.id == id, "$name should be refused under id $id: $row")
         }
-        for (name in listOf("switch", "psvita", "vita", "ps3", "bbcmicro", "chailove", "cdtv", "pc", "windows",
+        for (name in listOf("switch", "psvita", "vita", "bbcmicro", "chailove", "cdtv", "pc", "windows",
                             "android", "ios")) {
             assertTrue(RcConsoles.row(name) is RcConsoles.NotOnRa, "$name: ${RcConsoles.row(name)}")
         }
-        assertEquals(expected.size + refused.size + 11,
+        assertEquals(expected.size + refused.size + 10,
                      RcConsoles.ROWS.sumOf { 1 + it.spellings.size }, "names in the table and in this test")
     }
 
@@ -393,5 +397,9 @@ class RcConsolesTest {
         assertEquals("rcheevos has no hashing algorithm for RC_CONSOLE_AMIGA (id 35)", amiga.reason)
         assertEquals("RetroAchievements has no console for switch", (RcConsoles.row("switch") as RcConsoles.NotOnRa).reason)
         assertTrue("decryption keys" in (RcConsoles.row("3ds") as RcConsoles.NoAlgorithm).reason)
+        assertEquals("rcheevos' algorithm for RC_CONSOLE_PLAYSTATION_3 (id 82) is held back: " +
+                     "RetroAchievements has no hashes of PlayStation 3 games",
+                     (RcConsoles.row("ps3") as RcConsoles.NoAlgorithm).reason)
+        assertEquals("ps3=82 no algorithm", RcConsoles.describe(RcConsoles.row("ps3")))
     }
 }

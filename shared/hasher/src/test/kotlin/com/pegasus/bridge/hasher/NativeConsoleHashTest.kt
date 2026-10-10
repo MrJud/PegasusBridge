@@ -3,6 +3,7 @@ package com.pegasus.bridge.hasher
 import com.pegasus.bridge.core.BridgeLog
 import com.pegasus.bridge.core.BridgePaths
 import com.pegasus.bridge.core.NoopLog
+import com.pegasus.bridge.core.RcConsoles
 import kotlinx.coroutines.runBlocking
 import org.json.JSONObject
 import org.junit.jupiter.api.Assumptions.assumeTrue
@@ -151,7 +152,8 @@ class NativeConsoleHashTest {
             // these has a file's name; let through, the folder that is there
             // came back with a hash and a console, as if it were a game. As
             // an arcade set, whose hash is of the name, any of them ended the
-            // process: those are NativeCrashReproTest's, in a JVM of their own.
+            // process up to rcheevos 12.3.0: those are NativeCrashReproTest's,
+            // in a JVM of their own.
             Triple(dir.path + "/", 0, "The path names no file"),
             Triple(dir.path + "/", 7, "The path names no file"),
             Triple(File(dir, "nowhere").path + "/", 0, "The path names no file"),
@@ -434,9 +436,10 @@ class NativeConsoleHashTest {
         val cartridge = noise(8 * 1024, seed = 40)
         val hasher = ArchiveAwareHasher(native, File(dir, "tmp"))
 
-        // What the extension alone comes to: three that rcheevos has no
-        // console for, and one it takes for a Mega Drive cartridge.
-        for ((name, console) in listOf("x.gen" to 4, "x.sms" to 4, "x.j64" to 4, "x.bin" to 1))
+        // What the extension alone comes to: two that rcheevos has no
+        // console for, one it has had one for since 12.5.0, and one it
+        // takes for a Mega Drive cartridge.
+        for ((name, console) in listOf("x.gen" to 4, "x.sms" to 11, "x.j64" to 4, "x.bin" to 1))
             assertEquals(HashOutcome.Ok(HashResult(md5(cartridge), console)),
                          native.hashForConsole(file(name, cartridge).path, 0), "$name left to its extension")
 
@@ -455,9 +458,8 @@ class NativeConsoleHashTest {
             // what its extension says, where the extension says one thing:
             // hashed as the NES, with the header taken off.
             Triple(inCollection("snes", "x.nes", ines + prg), "snes", "${md5(prg)}|7"),
-            // An entry out of an archive is copied to a file called .bin,
-            // since rcheevos has no handler for .sms, and a .bin left to
-            // its extension is a Mega Drive cartridge.
+            // An entry out of an archive is hashed as its collection says
+            // too, whatever its copy is called.
             Triple(zipped, "mastersystem", "${md5(cartridge)}|11"),
             // And where nothing is known of the collection, the guess.
             Triple(inCollection("somewhere", "x.gen", cartridge), "somewhere", "${md5(cartridge)}|4"))
@@ -474,6 +476,109 @@ class NativeConsoleHashTest {
             }
         }
         if (wrong.isNotEmpty()) fail(wrong.joinToString("\n"))
+    }
+
+    // A Neo Geo cartridge kept as one file, the format of one emulator: a
+    // header of 4096 bytes that opens with NEO and a 1, and the ROMs after
+    // it. RetroAchievements lists the game with the arcade sets, but a set
+    // is known by its name and this by its bytes, the header left out. It
+    // is the one file in an arcade collection that is opened.
+    @Test
+    fun `a Neo Geo cartridge in one file is hashed by its ROMs, among the arcade sets`() {
+        val hasher = ArchiveAwareHasher(native, File(dir, "tmp"))
+        val roms = noise(70_000, seed = 50)
+        val header = ByteArray(4096).also { ascii("NEO\u0001").copyInto(it); ascii("Invented Brawler").copyInto(it, 0x2C) }
+        val expected = "${md5(roms)}|27"
+
+        val cartridge = inCollection("neogeo", "brawler.neo", header + roms)
+        val rows = listOf(
+            cartridge to "neogeo",
+            inCollection("arcade", "brawler.neo", header + roms) to "arcade",
+            // The same ROMs under another name and with other words in the
+            // header are the same game.
+            inCollection("arcade", "Another Name.neo",
+                         header.copyOf().also { ascii("written by another tool").copyInto(it, 0x2C) } + roms) to "arcade",
+            // In a collection nobody knows, by what rcheevos makes of the extension.
+            inCollection("somewhere", "brawler.neo", header + roms) to "somewhere")
+        val wrong = rows.mapNotNull { (rom, collection) ->
+            val r = (hasher.hashDetailed(rom.path, collection) as? HashOutcome.Ok)?.result
+            when {
+                r == null -> "$collection/${rom.name}: ${hasher.hashDetailed(rom.path, collection)}"
+                "${r.hash}|${r.consoleId}" != expected -> "$collection/${rom.name}: ${r.hash}|${r.consoleId}"
+                r.fileMd5 != md5(rom.readBytes()) -> "$collection/${rom.name}: the file MD5 is not the file's"
+                else -> null
+            }
+        }
+        if (wrong.isNotEmpty()) fail("expected $expected:\n" + wrong.joinToString("\n"))
+        assertTrue(md5(roms) != md5(ascii("brawler")), "the hash is of the name")
+
+        // A set beside it is still its name, and a file that only has the
+        // extension is refused by the console, for good.
+        val set = inCollection("neogeo", "brawler.zip", noise(64, seed = 51))
+        assertEquals(md5(ascii("brawler")), assertIs<HashOutcome.Ok>(hasher.hashDetailed(set.path, "neogeo")).result.hash)
+        val other = inCollection("neogeo", "other.neo", noise(8192, seed = 52))
+        assertEquals(HashOutcome.Failed("the hasher could not read other.neo: Not a valid .neo file", retryable = false),
+                     hasher.hashDetailed(other.path, "neogeo"))
+    }
+
+    // Since 12.5.0 rcheevos hashes a PlayStation 3 game: the PARAM.SFO of
+    // its folder and the program beside it, or from a disc image the two
+    // found through its directories. RetroAchievements has no hashes of such
+    // games, and the rule makes one of any file kept under a game's folder,
+    // so the console is held back. A collection that is the console's is
+    // turned away unread. What is left is the guess: with no collection to
+    // go by an .iso is tried as one console after another, this one among
+    // them, and the answer comes back as a hash like any other.
+    @Test
+    fun `a disc rcheevos takes for a console held back gets no hash`() {
+        val hasher = ArchiveAwareHasher(native, File(dir, "tmp"))
+        val sfo = noise(700, seed = 53)
+        val program = noise(5000, seed = 54)
+        val disc = inCollection("somewhere", "Disc.iso", playStation3Disc(sfo, program))
+        val heldBack = "rcheevos takes it for a file of RC_CONSOLE_PLAYSTATION_3 (id 82), which is held back"
+
+        // What the library itself answers, so that the rows below are known
+        // to be about a hash that was there to keep.
+        assertEquals(HashOutcome.Ok(HashResult(md5(sfo + program), 82)), native.hashForConsole(disc.path, 0),
+                     "the disc left to its extension")
+
+        assertEquals(HashOutcome.Failed("the hasher could not read Disc.iso: $heldBack", retryable = false),
+                     hasher.hashDetailed(disc.path, "somewhere"), "in a collection nobody knows")
+        // The same out of an archive, where the copy is what is guessed for.
+        val zipped = File(dir, "somewhere/Zipped.zip").also { zip ->
+            ZipOutputStream(zip.outputStream()).use {
+                it.putNextEntry(ZipEntry("Disc.iso")); it.write(disc.readBytes()); it.closeEntry()
+            }
+        }
+        assertEquals(HashOutcome.Failed("the hasher could not read 'Disc.iso': $heldBack", retryable = false),
+                     hasher.hashDetailed(zipped.path, "somewhere"), "out of a zip, in a collection nobody knows")
+        // And a sheet taken out of one with its track, for which a hasher
+        // has to stand in: the library tries no sheet as this console.
+        val asHeldBack = object : RomHasher {
+            override fun hash(path: String): HashResult? = HashResult("0123456789abcdef0123456789abcdef", 82)
+        }
+        val sheet = ascii("FILE \"Disc.bin\" BINARY\r\n  TRACK 01 MODE1/2352\r\n    INDEX 01 00:00:00\r\n")
+        val packed = File(dir, "somewhere/Packed.zip").also { zip ->
+            ZipOutputStream(zip.outputStream()).use {
+                it.putNextEntry(ZipEntry("Disc.cue")); it.write(sheet); it.closeEntry()
+                it.putNextEntry(ZipEntry("Disc.bin")); it.write(noise(2352, seed = 55)); it.closeEntry()
+            }
+        }
+        assertEquals(HashOutcome.Failed("the hasher could not read 'Disc.cue': $heldBack", retryable = false),
+                     ArchiveAwareHasher(asHeldBack, File(dir, "tmp")).hashDetailed(packed.path, "somewhere"),
+                     "a sheet out of a zip, in a collection nobody knows")
+
+        // Where the collection says what its discs are, the disc is hashed
+        // as that and as nothing else: here refused, by a console that reads it.
+        val amongOthers = inCollection("ps2", "Disc.iso", disc.readBytes())
+        val refused = assertIs<HashOutcome.Failed>(hasher.hashDetailed(amongOthers.path, "ps2"))
+        assertEquals("the hasher could not read Disc.iso: Could not locate primary executable" to false,
+                     refused.reason to refused.retryable)
+        // And in its own collection nothing is handed to the library at all.
+        val own = inCollection("ps3", "Disc.iso", disc.readBytes())
+        assertEquals(HashOutcome.UnsupportedFormat((RcConsoles.row("ps3") as RcConsoles.NoAlgorithm).reason),
+                     hasher.hashDetailed(own.path, "ps3"))
+        assertEquals(emptyList(), File(dir, "tmp").listFiles().orEmpty().map { it.name }, "a copy was left behind")
     }
 
     // rcheevos follows a playlist for the consoles that have them, hashes
@@ -510,12 +615,17 @@ class NativeConsoleHashTest {
 
         // And the file named is hashed as the collection's console, as it
         // would be had the scan met it: rcheevos, following the playlist by
-        // itself, has no console for an .sms and answers as the Game Boy.
+        // itself, has no console for a .gen and answers as the Game Boy.
+        inCollection("megadrive", "y.gen", cartridge)
+        val sixteenBit = inCollection("megadrive", "cartridge.m3u", ascii("y.gen\n"))
+
+        assertEquals(HashOutcome.Ok(HashResult(md5(cartridge), 4)), native.hashForConsole(sixteenBit.path, 0),
+                     "the playlist left to rcheevos")
+        val ofSixteenBit = assertIs<HashOutcome.Ok>(hasher.hashDetailed(sixteenBit.path, "megadrive")).result
+        assertEquals("${md5(cartridge)}|1", "${ofSixteenBit.hash}|${ofSixteenBit.consoleId}")
+
         inCollection("mastersystem", "y.sms", cartridge)
         val eightBit = inCollection("mastersystem", "x.m3u", ascii("y.sms\n"))
-
-        assertEquals(HashOutcome.Ok(HashResult(md5(cartridge), 4)), native.hashForConsole(eightBit.path, 0),
-                     "the playlist left to rcheevos")
         val ofEightBit = assertIs<HashOutcome.Ok>(hasher.hashDetailed(eightBit.path, "mastersystem")).result
         assertEquals("${md5(cartridge)}|11", "${ofEightBit.hash}|${ofEightBit.consoleId}")
 
@@ -833,6 +943,39 @@ class NativeConsoleHashTest {
         ascii("SEGADISCSYSTEM  GOLDENTEST ").copyInto(track, 16)
         ascii("SEGA MEGA DRIVE ").copyInto(track, 16 + 0x100)
         return track
+    }
+
+    /**
+     * An ISO 9660 volume with the two files rcheevos hashes of a PlayStation
+     * 3 disc and nothing else: the volume descriptor in sector 16, the root
+     * directory in 18, PS3_GAME in 19, its USRDIR in 20, PARAM.SFO in 21 and
+     * EBOOT.BIN from 22 on. A whole number of sectors of 2048 bytes, which
+     * is what makes an .iso a disc to the consoles that read one.
+     */
+    private fun playStation3Disc(sfo: ByteArray, program: ByteArray): ByteArray {
+        val sector = 2048
+        fun le(value: Int, bytes: Int) = ByteArray(bytes) { (value ushr (8 * it)).toByte() }
+        fun record(name: String, at: Int, size: Int): ByteArray {
+            val length = 33 + name.length + (33 + name.length) % 2
+            return ByteArray(length).also {
+                it[0] = length.toByte()
+                le(at, 3).copyInto(it, 2)
+                le(size, 4).copyInto(it, 10)
+                it[32] = name.length.toByte()
+                ascii(name).copyInto(it, 33)
+            }
+        }
+        val image = ByteArray((22 + (program.size + sector - 1) / sector) * sector)
+        val volume = 16 * sector
+        (byteArrayOf(1) + ascii("CD001") + byteArrayOf(1)).copyInto(image, volume)
+        le(sector, 2).copyInto(image, volume + 128)
+        record("\u0000", 18, sector).copyInto(image, volume + 156)
+        record("PS3_GAME", 19, sector).copyInto(image, 18 * sector)
+        (record("PARAM.SFO", 21, sfo.size) + record("USRDIR", 20, sector)).copyInto(image, 19 * sector)
+        record("EBOOT.BIN", 22, program.size).copyInto(image, 20 * sector)
+        sfo.copyInto(image, 21 * sector)
+        program.copyInto(image, 22 * sector)
+        return image
     }
 
     /** GoldenHashTest's filler, a xorshift stream by seed. */

@@ -26,7 +26,7 @@ internal object RcheevosNative {
      * that answers otherwise is another build's, and what it would say of a
      * file is not what the tests of this build saw.
      */
-    const val EXPECTED_VERSION = "12.3.0+pb6"
+    const val EXPECTED_VERSION = "12.5.0+pb6"
 
     /**
      * The MD5 of no bytes at all. rcheevos answers it for an empty file, and

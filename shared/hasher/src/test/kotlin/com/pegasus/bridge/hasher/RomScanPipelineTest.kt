@@ -696,7 +696,8 @@ class RomScanPipelineTest {
         collection("psx", "PlayStation", "psx", extensions = "cue, md")
         val unsupported = mapOf(
             rom("ps3/Some Game/PS3_GAME/USRDIR", "EBOOT.BIN", "never read")
-                to "RetroAchievements has no console for ps3",
+                to "rcheevos' algorithm for RC_CONSOLE_PLAYSTATION_3 (id 82) is held back: " +
+                   "RetroAchievements has no hashes of PlayStation 3 games",
             rom("switch/Mods", "x.zip", "never read") to "RetroAchievements has no console for switch",
             rom("amiga", "x.adf", "never read") to "rcheevos has no hashing algorithm for RC_CONSOLE_AMIGA (id 35)",
             rom("cdimono1", "x.bin", "never read") to "rcheevos has no hashing algorithm for RC_CONSOLE_CDI (id 42)",

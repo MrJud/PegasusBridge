@@ -31,8 +31,10 @@ import kotlin.test.fail
  * the rule rcheevos applies to its console (hash_rom.c: what follows an iNES
  * header, a whole Mega Drive cartridge, a DS header and its code blocks), which
  * is computed here; and each value is also pinned as a literal, checked once
- * against a standalone rcheevos built from the vendored v12.3.0 sources with no
- * JNI in between. The first test fails if the rules and the literals ever part.
+ * against a standalone rcheevos built from the sources of v12.5.0 as upstream
+ * has them, with no local patch on them and no JNI in between, as they had
+ * been against v12.3.0 before it. The first test fails if the rules and the
+ * literals ever part.
  *
  * A library that will not load fails these tests rather than skipping them. A
  * golden test that quietly does nothing on the machine it is meant for is worse
@@ -60,7 +62,7 @@ class GoldenHashTest {
         val platform: String,
         val bytes: ByteArray,
         val consoleId: Int,
-        /** What a standalone rcheevos v12.3.0 answered for exactly these bytes. */
+        /** What a standalone rcheevos v12.5.0 answered for exactly these bytes. */
         val golden: String,
         /** The bytes the rule for this console digests, taken from [bytes]. */
         val hashed: (ByteArray) -> ByteArray

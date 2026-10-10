@@ -213,6 +213,17 @@ static void test_json_get_string(const char* escaped, const char* expected) {
   ASSERT_STR_EQUALS(value, expected);
 }
 
+static void test_json_get_string_truncated_surrogate_pair() {
+  rc_api_response_t response;
+  rc_json_field_t field;
+  const char* value = NULL;
+
+  /* the JSON scanner accepts the escape, but the string decoder must reject the incomplete tail */
+  assert_json_parse_response(&response, &field, "{\"Test\":\"\\ud83d\\u\"}", RC_OK);
+
+  ASSERT_FALSE(rc_json_get_string(&value, &response.buffer, &field, "Test"));
+}
+
 static void test_json_get_optional_string() {
   rc_api_response_t response;
   rc_json_field_t field;
@@ -492,7 +503,68 @@ static void test_json_get_required_bool() {
   ASSERT_NUM_EQUALS(response.succeeded, 0);
 }
 
-static void test_json_get_datetime(const char* input, int expected) {
+static void test_json_get_timet(const char* input, time_t expected, int expected_result) {
+  rc_api_response_t response;
+  rc_json_field_t field;
+  char buffer[64];
+  time_t value = 2;
+  snprintf(buffer, sizeof(buffer), "{\"Test\":%s}", input);
+
+  assert_json_parse_response(&response, &field, buffer, RC_OK);
+
+  if (expected_result) {
+    ASSERT_TRUE(rc_json_get_timet(&value, &field, "Test"));
+    ASSERT_TIMET_EQUALS(value, expected);
+  }
+  else {
+    ASSERT_FALSE(rc_json_get_timet(&value, &field, "Test"));
+    ASSERT_TIMET_EQUALS(value, 0);
+  }
+}
+
+static void test_json_get_optional_timet() {
+  rc_api_response_t response;
+  rc_json_field_t field;
+  const time_t expected_value = (time_t)2147483648LL;
+  const time_t default_value = (time_t)4294967296LL;
+  time_t value = 3;
+
+  assert_json_parse_response(&response, &field, "{\"Test\":2147483648}", RC_OK);
+
+  rc_json_get_optional_timet(&value, &field, "Test", default_value);
+  ASSERT_TIMET_EQUALS(value, expected_value);
+
+  assert_json_parse_response(&response, &field, "{\"Test2\":2147483648}", RC_OK);
+
+  rc_json_get_optional_timet(&value, &field, "Test", default_value);
+  ASSERT_TIMET_EQUALS(value, default_value);
+}
+
+static void test_json_get_required_timet() {
+  rc_api_response_t response;
+  rc_json_field_t field;
+  const time_t expected_value = (time_t)2147483648LL;
+  time_t value = 3;
+
+  assert_json_parse_response(&response, &field, "{\"Test\":2147483648}", RC_OK);
+
+  ASSERT_TRUE(rc_json_get_required_timet(&value, &response, &field, "Test"));
+  ASSERT_TIMET_EQUALS(value, expected_value);
+
+  ASSERT_PTR_NULL(response.error_message);
+  ASSERT_NUM_EQUALS(response.succeeded, 1);
+
+  assert_json_parse_response(&response, &field, "{\"Test2\":2147483648}", RC_OK);
+
+  ASSERT_FALSE(rc_json_get_required_timet(&value, &response, &field, "Test"));
+  ASSERT_TIMET_EQUALS(value, 0);
+
+  ASSERT_PTR_NOT_NULL(response.error_message);
+  ASSERT_STR_EQUALS(response.error_message, "Test not found in response");
+  ASSERT_NUM_EQUALS(response.succeeded, 0);
+}
+
+static void test_json_get_datetime(const char* input, time_t expected) {
   rc_api_response_t response;
   rc_json_field_t field;
   char buffer[64];
@@ -503,12 +575,94 @@ static void test_json_get_datetime(const char* input, int expected) {
 
   if (expected != -1) {
     ASSERT_TRUE(rc_json_get_datetime(&value, &field, "Test"));
-    ASSERT_NUM_EQUALS(value, (time_t)expected);
+    ASSERT_TIMET_EQUALS(value, (time_t)expected);
   }
   else {
     ASSERT_FALSE(rc_json_get_datetime(&value, &field, "Test"));
-    ASSERT_NUM_EQUALS(value, 0);
+    ASSERT_TIMET_EQUALS(value, 0);
   }
+}
+
+static void test_json_get_datetime_truncated() {
+  const char* datetime = "2013-10-20T22:12:21";
+  rc_json_field_t field = RC_JSON_NEW_FIELD("Test");
+  char buffer[21];
+  size_t length;
+  time_t value;
+
+  buffer[0] = '"';
+  for (length = 0; length < 19; ++length) {
+    memcpy(&buffer[1], datetime, length);
+    buffer[length + 1] = '"';
+    field.value_start = buffer;
+    field.value_end = &buffer[length + 2];
+    value = 2;
+
+    ASSERT_FALSE(rc_json_get_datetime(&value, &field, "Test"));
+    ASSERT_TIMET_EQUALS(value, 0);
+  }
+}
+
+static void test_json_get_datetime_non_digits() {
+  rc_json_field_t field = RC_JSON_NEW_FIELD("Test");
+  char datetime[] = "\"2013-10-20T22:12:21\"";
+  size_t index;
+  time_t value;
+
+  field.value_start = datetime;
+  field.value_end = datetime + sizeof(datetime) - 1;
+
+  for (index = 1; index < sizeof(datetime) - 2; ++index) {
+    char digit = datetime[index];
+    if (digit < '0' || digit > '9')
+      continue;
+
+    datetime[index] = 'x';
+    value = 2;
+    ASSERT_FALSE(rc_json_get_datetime(&value, &field, "Test"));
+    ASSERT_TIMET_EQUALS(value, 0);
+    datetime[index] = digit;
+  }
+}
+
+static void test_json_get_datetime_invalid_field() {
+  rc_json_field_t field = RC_JSON_NEW_FIELD("Test");
+  const char non_string[] = "2013-10-20T22:12:21";
+  const char missing_quote[] = "\"2013-10-20T22:12:21";
+  time_t value = 2;
+
+  ASSERT_FALSE(rc_json_get_datetime(&value, &field, "Test"));
+  ASSERT_TIMET_EQUALS(value, 0);
+
+  field.value_start = non_string;
+  field.value_end = non_string + sizeof(non_string) - 1;
+  value = 2;
+  ASSERT_FALSE(rc_json_get_datetime(&value, &field, "Test"));
+  ASSERT_TIMET_EQUALS(value, 0);
+
+  field.value_start = missing_quote;
+  field.value_end = missing_quote + sizeof(missing_quote) - 1;
+  value = 2;
+  ASSERT_FALSE(rc_json_get_datetime(&value, &field, "Test"));
+  ASSERT_TIMET_EQUALS(value, 0);
+}
+
+static void test_json_get_datetime_exact_buffer(const char* datetime) {
+  rc_json_field_t field = RC_JSON_NEW_FIELD("Test");
+  const size_t datetime_length = strlen(datetime);
+  char* buffer = (char*)malloc(datetime_length + 2);
+  time_t value = 2;
+
+  ASSERT_PTR_NOT_NULL(buffer);
+  buffer[0] = '"';
+  memcpy(&buffer[1], datetime, datetime_length);
+  buffer[datetime_length + 1] = '"';
+  field.value_start = buffer;
+  field.value_end = buffer + datetime_length + 2;
+
+  ASSERT_TRUE(rc_json_get_datetime(&value, &field, "Test"));
+  ASSERT_TIMET_EQUALS(value, (time_t)1382307141LL);
+  free(buffer);
 }
 
 static void test_json_get_unum_array(const char* input, uint32_t expected_count, int expected_result) {
@@ -838,12 +992,15 @@ void test_rapi_common(void) {
   TEST_PARAMS2(test_json_get_string, "A \\\"Quoted\\\" String", "A \"Quoted\" String");
   TEST_PARAMS2(test_json_get_string, "This\\r\\nThat", "This\r\nThat");
   TEST_PARAMS2(test_json_get_string, "This\\/That", "This/That");
+  TEST_PARAMS2(test_json_get_string, "Before\\u0000After", "Before");
   TEST_PARAMS2(test_json_get_string, "\\u0065", "e");
   TEST_PARAMS2(test_json_get_string, "\\u00a9", "\xc2\xa9");
   TEST_PARAMS2(test_json_get_string, "\\u2260", "\xe2\x89\xa0");
   TEST_PARAMS2(test_json_get_string, "\\ud83d\\udeb6", "\xf0\x9f\x9a\xb6"); /* surrogate pair */
+  TEST_PARAMS2(test_json_get_string, "\\ud83d\\udeb6After", "\xf0\x9f\x9a\xb6" "After"); /* surrogate pair followed by text */
   TEST_PARAMS2(test_json_get_string, "\\ud83d", "\xef\xbf\xbd"); /* surrogate lead with no tail */
   TEST_PARAMS2(test_json_get_string, "\\udeb6", "\xef\xbf\xbd"); /* surrogate tail with no lead */
+  TEST(test_json_get_string_truncated_surrogate_pair);
   TEST(test_json_get_optional_string);
   TEST(test_json_get_required_string);
 
@@ -889,10 +1046,49 @@ void test_rapi_common(void) {
   TEST(test_json_get_optional_bool);
   TEST(test_json_get_required_bool);
 
+  /* rc_json_get_timet */
+  TEST_PARAMS3(test_json_get_timet, "Banana", 0, 0);
+  TEST_PARAMS3(test_json_get_timet, "0", 0, 1);
+  TEST_PARAMS3(test_json_get_timet, "12345678", 12345678, 1);
+  TEST_PARAMS3(test_json_get_timet, "1780824318", (time_t)1780824318LL, 1);
+  TEST_PARAMS3(test_json_get_timet, "2147483648", (time_t)2147483648LL, 1);
+  TEST_PARAMS3(test_json_get_timet, "+55", 55, 1);
+  TEST_PARAMS3(test_json_get_timet, "-16", -16, 1);
+  TEST_PARAMS3(test_json_get_timet, "3.14159", 3, 1);
+  TEST(test_json_get_optional_timet);
+  TEST(test_json_get_required_timet);
+
   /* rc_json_get_datetime */
   TEST_PARAMS2(test_json_get_datetime, "", -1);
-  TEST_PARAMS2(test_json_get_datetime, "2015-01-01 08:15:00", 1420100100);
-  TEST_PARAMS2(test_json_get_datetime, "2016-02-29 20:01:47", 1456776107);
+  TEST_PARAMS2(test_json_get_datetime, "2013-10-20 22:12:21", (time_t)1382307141LL);
+  TEST_PARAMS2(test_json_get_datetime, "2013-10-20T22:12:21", (time_t)1382307141LL);
+  TEST_PARAMS2(test_json_get_datetime, "2013-10-20T22:12:21Z", (time_t)1382307141LL);
+  TEST_PARAMS2(test_json_get_datetime, "2013-10-20T22:12:21.000000Z", (time_t)1382307141LL);
+  TEST_PARAMS2(test_json_get_datetime, "2013-10-20T22:12:21+00:00", (time_t)1382307141LL);
+  TEST_PARAMS2(test_json_get_datetime, "2013-10-20T22:12:21-04:00", (time_t)1382307141LL);
+  TEST_PARAMS2(test_json_get_datetime, "2015-01-01 08:15:00", (time_t)1420100100LL);
+  TEST_PARAMS2(test_json_get_datetime, "2016-02-29 20:01:47", (time_t)1456776107LL);
+  TEST_PARAMS2(test_json_get_datetime, "2015-02-29 20:01:47", -1);
+  TEST_PARAMS2(test_json_get_datetime, "2015-00-01 08:15:00", -1);
+  TEST_PARAMS2(test_json_get_datetime, "2015-13-01 08:15:00", -1);
+  TEST_PARAMS2(test_json_get_datetime, "2015-01-00 08:15:00", -1);
+  TEST_PARAMS2(test_json_get_datetime, "2015-01-32 08:15:00", -1);
+  TEST_PARAMS2(test_json_get_datetime, "2015-01-01 24:15:00", -1);
+  TEST_PARAMS2(test_json_get_datetime, "2015-01-01 08:60:00", -1);
+  TEST_PARAMS2(test_json_get_datetime, "2015-01-01 08:15:60", -1);
+  TEST_PARAMS2(test_json_get_datetime, "2015/01/01 08:15:00", -1);
+  TEST_PARAMS2(test_json_get_datetime, "2015-01-01X08:15:00", -1);
+  TEST_PARAMS2(test_json_get_datetime, "2015-01-01 08-15:00", -1);
+  TEST_PARAMS2(test_json_get_datetime, "2015-01-01 08:15-00", -1);
+  TEST_PARAMS2(test_json_get_datetime, "2015-01-01 08:15:00.", -1);
+  TEST_PARAMS2(test_json_get_datetime, "2015-01-01 08:15:00Zextra", -1);
+  TEST_PARAMS2(test_json_get_datetime, "2015-01-01 08:15:00+24:00", -1);
+  TEST_PARAMS2(test_json_get_datetime, "2015-01-01 08:15:00+00:60", -1);
+  TEST(test_json_get_datetime_truncated);
+  TEST(test_json_get_datetime_non_digits);
+  TEST(test_json_get_datetime_invalid_field);
+  TEST_PARAMS1(test_json_get_datetime_exact_buffer, "2013-10-20 22:12:21");
+  TEST_PARAMS1(test_json_get_datetime_exact_buffer, "2013-10-20T22:12:21");
 
   /* rc_json_get_unum_array */
   TEST_PARAMS3(test_json_get_unum_array, "[]", 0, RC_OK);

@@ -11,7 +11,7 @@
  * com.pegasus.bridge.hasher.RcheevosNative.
  *
  *   hashForConsole(path, console, errorOut)   "<md5>|<console>", or null
- *   version()                                 "12.3.0+pb6"
+ *   version()                                 "12.5.0+pb6"
  *
  * Nothing is logged from here and nothing is kept between calls: what
  * rcheevos said of a file it gave no hash for goes back to the caller, in the
@@ -181,10 +181,13 @@ Java_com_pegasus_bridge_hasher_RcheevosNative_hashForConsole(
      * rcheevos takes '/' and '\' alike for what parts a folder from a file,
      * on every system, so a path that ends in one has no file's name to it.
      * An arcade set is hashed by that name with its extension taken off, and
-     * of a name of no letters rcheevos takes off one more than there are:
-     * what it then hashes is the 64 MiB that follow the path in memory, and
-     * the process ends where its own memory does. Nothing that walks a
-     * folder makes such a path, and no file is found under one either.
+     * up to 12.3.0 rcheevos took one more off a name of no letters than
+     * there are: what it then hashed was the 64 MiB that follow the path in
+     * memory, and the process ended where its own memory does. Since 12.5.0
+     * it answers the MD5 of no name there, and for any other console what
+     * it makes of the folder the path leads to. Neither is the hash of a
+     * game. Nothing that walks a folder makes such a path, and no file is
+     * found under one either.
      */
     if (path[length - 1] == '/' || path[length - 1] == '\\') {
         free(path);
@@ -246,7 +249,7 @@ Java_com_pegasus_bridge_hasher_RcheevosNative_hashForConsole(
  * what a scan's answers are kept under.
  *
  * Put together from the three numbers. The string rcheevos makes of them
- * itself leaves out a patch number of 0, and would read "12.3".
+ * itself leaves out a patch number of 0, and would read "12.5".
  */
 JNIEXPORT jstring JNICALL
 Java_com_pegasus_bridge_hasher_RcheevosNative_version(JNIEnv* env, jclass clazz) {

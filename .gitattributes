@@ -21,3 +21,9 @@ hasher/src/main/cpp/** -text
 # A patch file writes a context line that is empty as one space. That is the
 # format, and `git diff --check` is not to call it trailing whitespace.
 hasher/src/main/cpp/rcheevos-patches/*.patch -whitespace
+
+# The vendored folder is upstream's, byte for byte but for the patches, and
+# upstream ends lines with spaces here and there. A space taken off to quiet
+# `git diff --check` would be a change no patch names, so the check is told
+# not to look there.
+hasher/src/main/cpp/rcheevos/** -whitespace

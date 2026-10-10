@@ -50,6 +50,12 @@ object ConsoleChoice {
 
     private val ARCHIVES = setOf("zip", "7z")
 
+    /** RC_CONSOLE_ARCADE. */
+    private const val ARCADE = 27
+
+    /** The one file of an arcade collection that is hashed by its bytes. */
+    private const val NEO_GEO_CARTRIDGE = "neo"
+
     sealed interface Plan {
         /** The collection is of a console nobody can hash for. [reason] is the row's. */
         data class Unsupported(val reason: String) : Plan
@@ -109,9 +115,13 @@ object ConsoleChoice {
         // 3. An arcade set is its archive's name. Anything else in such a
         //    collection is a chip, a sample or a disk image of a set, and has
         //    no hash of its own. Neither has a set that came out of another
-        //    archive: its copy has a name made up for it.
+        //    archive: its copy has a name made up for it. But for a .neo,
+        //    which is a Neo Geo cartridge in one file, with its ROMs in it:
+        //    rcheevos hashes that by what it holds and not by what it is
+        //    called, as the same console.
         if (known != null && known.arcade) {
             return if (ext in ARCHIVES && !insideArchive) Plan.ArcadeSet
+            else if (ext == NEO_GEO_CARTRIDGE) Plan.Hash(ARCADE)
             else Plan.UnsupportedFormat(
                 if (ext in ARCHIVES) "an arcade set inside an archive has lost its name"
                 else "an arcade set is a .zip or a .7z, and this is a .$ext")
@@ -164,5 +174,25 @@ object ConsoleChoice {
             return Plan.UnsupportedFormat("a PC Engine CD game is hashed from its .cue, and this is a .$ext")
 
         return Plan.Hash(console, known.alternates[ext].orEmpty().filter { it != console }, foreign)
+    }
+
+    /**
+     * What rcheevos answered for a file it was left to guess the console of
+     * ([Plan.Guess]), as it is to be kept.
+     *
+     * The guess is rcheevos' own: for each extension a list of consoles,
+     * tried in turn up to the first that gives a hash. That list knows
+     * nothing of [RcConsoles.HELD_BACK], and for an `.iso` it has the
+     * PlayStation 3 on it. A hash under a console that is held back is one
+     * nobody is to ask about, so it is a failure. It is not one to try
+     * again: the file was read, and will be taken for the same at the next
+     * scan.
+     */
+    fun guessed(outcome: HashOutcome): HashOutcome {
+        val console = (outcome as? HashOutcome.Ok)?.result?.consoleId ?: return outcome
+        if (console !in RcConsoles.HELD_BACK) return outcome
+        val name = RcConsoles.console(console)?.constant ?: "a console"
+        return HashOutcome.Failed("rcheevos takes it for a file of $name (id $console), which is held back",
+                                  retryable = false)
     }
 }

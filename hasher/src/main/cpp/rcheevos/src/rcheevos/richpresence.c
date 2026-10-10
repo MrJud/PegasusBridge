@@ -38,6 +38,11 @@ static void rc_alloc_helper_variable_memref_value(rc_richpresence_display_part_t
   /* ensure new needed memrefs are allocated in the primary buffer */
   rc_preparse_copy_memrefs(parse, &preparse.memrefs);
 
+  if (parse->offset < 0) {
+    rc_destroy_preparse_state(&preparse);
+    return;
+  }
+
   /* parse the value into the scratch buffer so we can look at it */
   rc_reset_parse_state(&preparse.parse, rc_buffer_alloc(&preparse.parse.scratch.buffer, (size_t)size));
   preparse.parse.memrefs = parse->memrefs;
@@ -797,7 +802,7 @@ static int rc_evaluate_richpresence_display(rc_richpresence_display_part_t* part
             value.value.u32 = '?';
 
           tmp[chars++] = (char)value.value.u32;
-          if (chars == sizeof(tmp) || !part->next || part->next->display_type != RC_FORMAT_ASCIICHAR)
+          if (chars == sizeof(tmp) - 1 || !part->next || part->next->display_type != RC_FORMAT_ASCIICHAR)
             break;
 
           part = part->next;

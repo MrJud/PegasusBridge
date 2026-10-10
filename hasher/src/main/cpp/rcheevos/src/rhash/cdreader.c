@@ -668,7 +668,10 @@ static void* cdreader_open_gdi_track(const char* path, uint32_t track, const rc_
       while (isspace((unsigned char)*ptr))
         ++ptr;
 
-      /* local patch 0006: the name is measured where it lies and copied only if it fits */
+      /* local patch 0006: a name ends where the text that was read ends, at its NUL, and
+       * not at `end`. of a sheet longer than one read `end` is three quarters of the
+       * buffer, and a name that lay across it was refused or cut short though every byte
+       * of it had been read. */
       if (*ptr == '\"')
       {
         ptr2 = ++ptr; /* ignore leading quote */

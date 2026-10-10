@@ -1,0 +1,143 @@
+# Which rcheevos the folder rcheevos/ beside this file is a copy of: the
+# release, the commit it is in upstream's repository, and every file of that
+# commit's tree with the id git gives its content there. Any checkout of
+# upstream prints the same list with `git ls-tree -r <commit>`, so the copy
+# can be held against it without a file being fetched.
+#
+# The copy is that tree with the patches below applied, each a diff of one
+# upstream file kept in rcheevos-patches/, and nothing else: no file added and
+# none changed in any other way. One file of the tree is not in the copy, on
+# purpose and not by an oversight, and its line says `left-out` where the
+# others say `file`. A comment of upstream's in it has two words that a check
+# run over everything committed to this repository takes for something they
+# are not, and the file could be spared: it belongs to the part of rcheevos
+# that talks to the website, none of which is compiled here. That much is
+# true of its neighbours in src/rapi as well, which are kept. Upstream's own
+# test Makefile and Visual Studio project in the copy still name the file,
+# and nothing here builds either. shared/tests/vendored_check.py holds the
+# folder to all of this, and rcheevos-patches/PATCHES.md says what each patch
+# is for and how this file is written again when rcheevos is upgraded.
+upstream v12.5.0 1433173220a7eaede6a9ed7a18e94117be1821e0
+patch 0001-wii-partition-table.patch
+patch 0002-3do-directory.patch
+patch 0003-playlist-in-playlist.patch
+patch 0004-dol-short-reads.patch
+patch 0005-short-headers.patch
+patch 0006-gdi-bounds.patch
+file f5cca0c00e528827efb8d8ba077b477922e0d8e8 .editorconfig
+file 997b9ac2b1db2a9528e5d042e1cf3139212569e7 .github/workflows/c-cpp.yml
+file 7cfbf47b5c5702a033eec5c5bd1930bec10cf070 .gitignore
+file db443c3300b6a2a708e453789a86f6584412b83b CHANGELOG.md
+file 5f1faf3dc4e00f66418bd1f67fb5b55f8d932faa LICENSE
+file e2da720af99e11ad1496e648bde936302075d9d0 Package.swift
+file a838e5c19535ebdf9d609989ee840861a91fcffa README.md
+file 2a53853df34964d76c5f6583e335b08c9a23cf30 include/module.modulemap
+file a0806932effbdb3ec2d053df31798d697618d007 include/rc_api_editor.h
+file 1894cce1231b723185130fbb6cad311d0492014c include/rc_api_info.h
+file ddccc7bc28194600405008979eb8ad6ea49ced86 include/rc_api_request.h
+file 8a0de01b7f2a3016a49c3f6a9641527fedfe4419 include/rc_api_runtime.h
+file f604188aa85568814fb5b39c4bb1bdb04352a19d include/rc_api_user.h
+file dd1538c0774826c50083c15d006ae0f21297f557 include/rc_client.h
+file 847c8ad2253348f0acb18731861d57b5eebcc90d include/rc_client_raintegration.h
+file 1625cf2174b4eed75bf46403a958aac4d45dd780 include/rc_consoles.h
+file 197bcea7023dfada97ae83eaa984830b7b43b797 include/rc_error.h
+file 9471acd480b2fa61a5f97ee1d93741e5fce45603 include/rc_export.h
+file be1d37812394d8ae9449cf135d531e5807a04139 include/rc_hash.h
+file 88b12dea27d77c46e39931f7b0843c2c57ec5c61 include/rc_runtime.h
+file e17797063c0de25515c072c74b2d18b21ddad146 include/rc_runtime_types.h
+file 18d27e0fc789f19a19920061502e397151e87449 include/rc_util.h
+file 0d96002148b69653ba6d49c1b66c503a985a2f43 include/rcheevos.h
+file 3b3528605b225e3d1dc14515b2dbc4190d4507f5 src/rapi/rc_api_common.c
+file 06a7485da35a1121c703d9f460564cd8391c6db6 src/rapi/rc_api_common.h
+left-out bb80586c2cc73d923bfd09c3a562e4a1bb20cf0b src/rapi/rc_api_editor.c
+file 327a6dff3fc8f775f0bf369205c11482e43f9638 src/rapi/rc_api_info.c
+file 261741d55aeebf4323b126f993dbf53483529c83 src/rapi/rc_api_runtime.c
+file 6943c98c443d647070e637758184fc4c09bec499 src/rapi/rc_api_user.c
+file 7a7399580ebe48fd92b84d3a198f51b6675a23fd src/rc_client.c
+file 88abcc9f01de0bbcaa3bd2982bd531ef191de1e0 src/rc_client_external.c
+file b3c0e5eba9bfa12f32cc54bf6150bf67d67b6da9 src/rc_client_external.h
+file 90f6f689604498d8d9ec61f6126c6c13f7f7328d src/rc_client_external_versions.h
+file fad288d62aee1717d4062bb2661ef5b5c9075a5a src/rc_client_internal.h
+file e89d3de168674f662b6796d252cc30d0a4261337 src/rc_client_raintegration.c
+file ce3a99dda58829666eb4d5e4c184fb4f3f669d72 src/rc_client_raintegration_internal.h
+file 397d400c351606466da53b7e1c7f77d4ef6c4962 src/rc_client_types.natvis
+file 4658c18d08e0f2fc8542074d81070bfae1a9939e src/rc_compat.c
+file 3b788e2e771763f20fc4dbdc3f2786bd80fd1687 src/rc_compat.h
+file bb681d928b8939aee74463ee5655bbea4ec78bd4 src/rc_libretro.c
+file fe96a40d41f064204125aab81c19373ccf8da223 src/rc_libretro.h
+file 3efdf04da480707da81c0a5c34f6045bbbd5a350 src/rc_util.c
+file a29d0a5f522f6b474063056cfd926a04dd49aef8 src/rc_version.c
+file a2c0544d929e060daf2410a36efab82c653ffb0e src/rc_version.h
+file 96fb8e382511670b8bcccb3197caf9260927ce49 src/rcheevos/alloc.c
+file eb57a1cba3ea6add393b6b557775f0786b6a235d src/rcheevos/condition.c
+file c9f984bfffd8d6bb4d248c819689165c25b020a5 src/rcheevos/condset.c
+file 2acedfdec644c855c99f763f129e2649ac745ce3 src/rcheevos/consoleinfo.c
+file bfeadf44cf5415044bc4d018cd19d20a0679ff10 src/rcheevos/format.c
+file 84ff5460af5a72888b0f16150b33b69969a214f0 src/rcheevos/lboard.c
+file 577c7e483336a32a367a6b03db75edfe87e14967 src/rcheevos/memref.c
+file 5d9c81a5cfd76ba151939bc83d0e798b84b5bb6a src/rcheevos/operand.c
+file 51e2e234c9095fe49be755a0243050592f24f0b0 src/rcheevos/rc_internal.h
+file bd517344d4116e1bf830278f68a0b059e193d86d src/rcheevos/rc_runtime_types.natvis
+file 843c2ad30cf77f4aecbc7651eb74ddaf2a19e007 src/rcheevos/rc_validate.c
+file cfda94075d36295b3a6cb78e4ad9f239eb507774 src/rcheevos/rc_validate.h
+file c6a3393e2a22f29c9119e27c5725e7eafdf4dc60 src/rcheevos/richpresence.c
+file c1100b9af9a9c33a50ba75420b51704d36d6336d src/rcheevos/runtime.c
+file c87721eb4fc04df5a110400a923bf7dec567681c src/rcheevos/runtime_progress.c
+file 063a14f5c92c8e924c34a6325adf5d69a5340737 src/rcheevos/trigger.c
+file 9a451c63c88d74cb6e540bc286712394f31fe41f src/rcheevos/value.c
+file 54ed10bce90d28684c7cec486a4ac056439f9c7a src/rhash/aes.c
+file 13e679ee147d68458e4df599da84988b81c758b6 src/rhash/aes.h
+file cf4647b29598c1d2a8b075074875e25d22fe4d8c src/rhash/cdreader.c
+file 2df5d00b8834d260371a8ab8b2c750eaf1f2f69a src/rhash/hash.c
+file 087668d5d1790f278cb56b71bd76d235336f3323 src/rhash/hash_disc.c
+file e90e310757d575ed56baba5f6bb46f50230c2982 src/rhash/hash_encrypted.c
+file 3f4e2609c758edffc43220ca9444db0c88701f21 src/rhash/hash_rom.c
+file 03a4dfa3bc626fa5a9b82af955200cd6399f1b41 src/rhash/hash_zip.c
+file f3a52056695d3b582c3738f5e839a38db0547cbd src/rhash/md5.c
+file 698c995d8f4e9d98766d568fe88863381f94d16f src/rhash/md5.h
+file 76c62b6df83a687dd6f554cd9ea8a3d347c757d6 src/rhash/rc_hash_internal.h
+file 2abac55f3d543e02311160f207ec0b0f686bf005 test/Makefile
+file 30009f50569a6a5f0de8ce152d47987f041a32ac test/libretro.h
+file 4e042b83b65000eb78d71c1e1207d09c91e9909c test/rapi/test_rc_api_common.c
+file 8ff481df35b7429ac1ce431c1a778e78b0f2e4d1 test/rapi/test_rc_api_editor.c
+file 3ef76e8628648a399533a8f97133c776079fb654 test/rapi/test_rc_api_info.c
+file 0298f2ab9834b3e47ef2b54d633b2f8ef929f6ad test/rapi/test_rc_api_runtime.c
+file 7d6457367ac141faea836f7cf53dc0623f2b4187 test/rapi/test_rc_api_user.c
+file 5335edb284c490fbc60b16d936777c49fb25a962 test/rcheevos-test.sln
+file 232635308dcd5c56fdf12b24b26c2cbc94f0a882 test/rcheevos-test.vcxproj
+file 5a8d4ec7b64aa1a95b36dc382261fded096b4432 test/rcheevos-test.vcxproj.filters
+file 4810035122fad07a9fcd4d30a6c96a7e17ad8ae7 test/rcheevos/mock_memory.h
+file 412cc111235ced90ce1f853a8577c6bd235a4219 test/rcheevos/test_condition.c
+file 07ca8a0ce5d8170789c04e21d72eded84d7e3c96 test/rcheevos/test_condset.c
+file 0cab5fa3dfdc9727f024732b1b858627865ee9e5 test/rcheevos/test_consoleinfo.c
+file adf27efe7257a06d1e74690ceba0344adad50d11 test/rcheevos/test_format.c
+file 18a4c2b4e681ed2e6a6fad1c69068cb4d28c27cf test/rcheevos/test_lboard.c
+file 3749ab3bf9859878e5c78d841eeccfe4aa08e58f test/rcheevos/test_memref.c
+file d09eec4db1f49538bac35255cf2302ae42219b05 test/rcheevos/test_operand.c
+file 29f417714bcf883494c4d3d7a4ddbae0739e7945 test/rcheevos/test_rc_validate.c
+file 2d7db99bd29e8710104ed0e4af75a8fee863c6ac test/rcheevos/test_richpresence.c
+file 93f23a958aef7223733fb6ae2809c3c77c5afdbc test/rcheevos/test_runtime.c
+file 8303aa291ce07fcb3884e17a3d8b1f7fe3ef7879 test/rcheevos/test_runtime_progress.c
+file 00973db6377c4a889c214030c9c42d5d680183bb test/rcheevos/test_timing.c
+file 049e12c18676c7dcf098862e16c66a599f40aea5 test/rcheevos/test_trigger.c
+file cb2d4e6d3571b07a1f9b105e60f6a2aeb18b84cd test/rcheevos/test_value.c
+file 0161ec5b4e4bc44d51705240e5ff5e59715197d9 test/rhash/data.c
+file 509d6cea6841035105b8965b4356b2acd1e5b1e0 test/rhash/data.h
+file 2c48654368745dc8633d287500d0d95c1ca50781 test/rhash/mock_filereader.c
+file 552c71c645532d612ab27a5c8ef966bca0e31cfc test/rhash/mock_filereader.h
+file e3c475ae09cb175541600e5618b36532e431f5f0 test/rhash/test_cdreader.c
+file a16402630b5a403c72faff6f4a92b3cdd69b1f71 test/rhash/test_hash.c
+file 1820114f4d67ea731b756c883d7464c0ad691460 test/rhash/test_hash_disc.c
+file 526de2d6d0e7fe8a92fd07d21b7362626bb08202 test/rhash/test_hash_rom.c
+file 10cc2040d57ce9341d100d2dfe7a4ba282b18e20 test/rhash/test_hash_zip.c
+file 25c88fd2f1c31fb0c7df258a11f0ea958a92d22c test/test.c
+file d5ff746f2b0da0db91694e70ec4311aa7fb94e7a test/test_framework.h
+file 2975c7f6d1506f486dc55e88fb7eac9eec92d012 test/test_rc_client.c
+file 6c043b8e3d41335ef383c458aa91e8e718dc583c test/test_rc_client_external.c
+file 8308c32a366ed723a9700303547e8b34ce2a115b test/test_rc_client_raintegration.c
+file b69129ad2369216951d137659d4941dd0cbfd4aa test/test_rc_libretro.c
+file 2721f39985450d47042c92cbbf4ff37ce70fcfe8 test/test_types.natvis
+file 22d6e064615f257f709cd43e6a85129bcf8f4bfa validator/Makefile
+file c984533595b60d1501fe1e030abd53eafd27b1d5 validator/validator.c
+file c108bea51ae84307488616d7af0acf7e987bc271 validator/validator.vcxproj
+file 52206787d6b5781dfb94018dbf2c6dc6932dfb39 validator/validator.vcxproj.filters

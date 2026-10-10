@@ -161,9 +161,11 @@ class NativeCrashReproTest {
     // a folder's name does. An arcade set is hashed by its file's name with
     // the extension taken off, and of a name of no letters rcheevos takes off
     // one more than there are, so the length it hashed was the largest there
-    // is and the process ended reading memory that was not its own. The
-    // library turns such a path away before rcheevos hears of it; rcheevos
-    // itself is as it was, which tests/native_repro_test.py keeps on record.
+    // is and the process ended reading memory that was not its own. That
+    // was rcheevos up to 12.3.0. The library turns such a path away before
+    // rcheevos hears of it, and goes on doing so now that rcheevos answers
+    // the MD5 of no name for one, which tests/native_repro_test.py keeps on
+    // record: a path that names no file has no game's hash either.
     @Test
     fun `a path that ends in a separator is turned away before it can end the process`() {
         // That console 27 in a child is the arcade hash, and so the rows

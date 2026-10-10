@@ -127,7 +127,8 @@ void test_consoleinfo(void) {
   TEST_PARAMS2(test_name, 79, "TI-83");
   TEST_PARAMS2(test_name, 80, "Uzebox");
   TEST_PARAMS2(test_name, 81, "Famicom Disk System");
-  TEST_PARAMS2(test_name, 82, "Unknown");
+  TEST_PARAMS2(test_name, 82, "PlayStation 3");
+  TEST_PARAMS2(test_name, 83, "Unknown");
 
   TEST_PARAMS2(test_name, 100, "Hubs");
   TEST_PARAMS2(test_name, 101, "Events");
@@ -179,7 +180,8 @@ void test_consoleinfo(void) {
   TEST_PARAMS3(test_memory, RC_CONSOLE_PCFX, 0x210000, 0x210000);
   TEST_PARAMS3(test_memory, RC_CONSOLE_PLAYSTATION, 0x200400, 0x200400);
   TEST_PARAMS3(test_memory, RC_CONSOLE_PLAYSTATION_2, 0x02004000, 0x02004000);
-  TEST_PARAMS3(test_memory, RC_CONSOLE_PSP, 0x02000000, 0x02000000);
+  TEST_PARAMS3(test_memory, RC_CONSOLE_PLAYSTATION_3, 0x50000000, 0x50000000);
+  TEST_PARAMS3(test_memory, RC_CONSOLE_PSP, 0x04000000, 0x04000000);
   TEST_PARAMS3(test_memory, RC_CONSOLE_POKEMON_MINI, 0x002000, 0x002000);
   TEST_PARAMS3(test_memory, RC_CONSOLE_SATURN, 0x200000, 0x200000);
   TEST_PARAMS3(test_memory, RC_CONSOLE_SEGA_32X, 0x060000, 0x060000);
@@ -195,6 +197,7 @@ void test_consoleinfo(void) {
   TEST_PARAMS3(test_memory, RC_CONSOLE_WASM4, 0x010000, 0x010000);
   TEST_PARAMS3(test_memory, RC_CONSOLE_WII, 0x14000000, 0x05800000);
   TEST_PARAMS3(test_memory, RC_CONSOLE_WONDERSWAN, 0x090000, 0x090000);
+  TEST_PARAMS3(test_memory, RC_CONSOLE_XBOX, 0x04000000, 0x04000000);
   TEST_PARAMS3(test_memory, RC_CONSOLE_VECTREX, 0x000400, 0x000400);
   TEST_PARAMS3(test_memory, RC_CONSOLE_VIRTUAL_BOY, 0x020000, 0x020000);
   TEST_PARAMS3(test_memory, RC_CONSOLE_ZX_SPECTRUM, 0x020000, 0x020000);

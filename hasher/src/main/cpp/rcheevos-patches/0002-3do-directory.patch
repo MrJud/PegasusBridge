@@ -1,11 +1,11 @@
-Local patch 0002 on rcheevos 12.3.0: the search of an OperaFS directory for
+Local patch 0002 on rcheevos 12.5.0: the search of an OperaFS directory for
 LaunchMe ends when a sector of it is not there, and after 256 sectors. What it
 is for, and what upstream does, is in PATCHES.md.
 
     git apply --directory=hasher/src/main/cpp/rcheevos <this file>
 
 diff --git a/src/rhash/hash_disc.c b/src/rhash/hash_disc.c
-index 83c9354..a816fb6 100644
+index 087668d..e2067ee 100644
 --- a/src/rhash/hash_disc.c
 +++ b/src/rhash/hash_disc.c
 @@ -219,6 +219,7 @@ int rc_hash_3do(char hash[33], const rc_hash_iterator_t* iterator)
@@ -16,21 +16,7 @@ index 83c9354..a816fb6 100644
  
    track_handle = rc_cd_open_track(iterator, 1);
    if (!track_handle)
-@@ -227,9 +228,10 @@ int rc_hash_3do(char hash[33], const rc_hash_iterator_t* iterator)
-   /* the Opera filesystem stores the volume information in the first 132 bytes of sector 0
-    * https://github.com/barbeque/3dodump/blob/master/OperaFS-Format.md
-    */
--  rc_cd_read_sector(iterator, track_handle, 0, buffer, 132);
--
--  if (memcmp(buffer, operafs_identifier, sizeof(operafs_identifier)) == 0) {
-+  /* local patch 0002: a first sector that ends before those 132 bytes is not a 3DO CD,
-+   * as in upstream 12.5.0. what the read did not fill was compared and hashed all the same. */
-+  if (rc_cd_read_sector(iterator, track_handle, 0, buffer, 132) >= 132 &&
-+      memcmp(buffer, operafs_identifier, sizeof(operafs_identifier)) == 0) {
-     rc_hash_iterator_verbose_formatted(iterator, "Found 3DO CD, title=%.32s", &buffer[0x28]);
- 
-     /* include the volume header in the hash */
-@@ -250,7 +252,11 @@ int rc_hash_3do(char hash[33], const rc_hash_iterator_t* iterator)
+@@ -249,7 +250,11 @@ int rc_hash_3do(char hash[33], const rc_hash_iterator_t* iterator)
      sector = block_location / 2048;
  
      do {
@@ -43,7 +29,7 @@ index 83c9354..a816fb6 100644
  
        /* offset to start of entries is at offset 0x10 (assume 0x10 and 0x11 are always 0) */
        offset = buffer[0x12] * 256 + buffer[0x13];
-@@ -258,7 +264,12 @@ int rc_hash_3do(char hash[33], const rc_hash_iterator_t* iterator)
+@@ -257,7 +262,12 @@ int rc_hash_3do(char hash[33], const rc_hash_iterator_t* iterator)
        /* offset to end of entries is at offset 0x0C (assume 0x0C is always 0) */
        stop = buffer[0x0D] * 65536 + buffer[0x0E] * 256 + buffer[0x0F];
  
@@ -57,7 +43,7 @@ index 83c9354..a816fb6 100644
          if (buffer[offset + 0x03] == 0x02) { /* file */
            if (strcasecmp((const char*)&buffer[offset + 0x20], "LaunchMe") == 0) {
              /* the block size is at offset 0x0C (assume 0x0C is always 0) */
-@@ -293,7 +304,13 @@ int rc_hash_3do(char hash[33], const rc_hash_iterator_t* iterator)
+@@ -292,7 +302,13 @@ int rc_hash_3do(char hash[33], const rc_hash_iterator_t* iterator)
  
        /* get next sector */
        offset *= block_size;

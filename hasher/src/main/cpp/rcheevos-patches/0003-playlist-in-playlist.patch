@@ -1,13 +1,13 @@
-Local patch 0003 on rcheevos 12.3.0: a playlist whose first item is a playlist
+Local patch 0003 on rcheevos 12.5.0: a playlist whose first item is a playlist
 is an error. What it is for, and what upstream does, is in PATCHES.md.
 
     git apply --directory=hasher/src/main/cpp/rcheevos <this file>
 
 diff --git a/src/rhash/hash.c b/src/rhash/hash.c
-index fe6f3ca..68e4b70 100644
+index 2df5d00..6ee412d 100644
 --- a/src/rhash/hash.c
 +++ b/src/rhash/hash.c
-@@ -745,6 +745,17 @@ static const char* rc_hash_get_first_item_from_playlist(const rc_hash_iterator_t
+@@ -763,6 +763,17 @@ static const char* rc_hash_get_first_item_from_playlist(const rc_hash_iterator_t
  
    rc_hash_iterator_verbose_formatted(iterator, "Extracted %.*s from playlist", (int)file_len, start);
  

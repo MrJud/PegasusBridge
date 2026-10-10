@@ -1,6 +1,6 @@
 # Local patches on the vendored rcheevos
 
-`../rcheevos` is upstream rcheevos 12.3.0 with the patches listed here applied
+`../rcheevos` is upstream rcheevos 12.5.0 with the patches listed here applied
 to it. Each is also a file in this folder, a diff against the upstream file with
 paths from the top of the rcheevos tree:
 
@@ -28,8 +28,34 @@ and rows that only want a refusal would all still pass. And where a file would
 be refused a few lines further on if the patched line were not there, the row
 says what the reason has to say, since nothing else tells the two apart.
 
-When rcheevos is upgraded: apply each patch to the new tree, drop what upstream
-has taken, write the diffs again, and keep this file and the patch level true.
+`../rcheevos.version` says which upstream tree the folder is: the release, the
+commit, and every file of it with the id git gives its content.
+`shared/tests/vendored_check.py` holds the folder to that list and to the
+patches here: every file of upstream's tree in git and no other, each as
+upstream has it or as upstream has it once the patches are taken off again,
+and a section below for every patch file, as many as the patch level says.
+
+When rcheevos is upgraded: put the new tree in the folder's place with
+`git add -f`, since the tree's own `.gitignore` hides files of it from a plain
+add; apply each patch to it, drop what upstream has taken, and write the diffs
+again; write the manifest again from the upstream tree as it was unpacked, its
+`upstream` and `patch` lines by hand and a `file` line for every file,
+
+    find . -type f | sed 's|^\./||' | LC_ALL=C sort | while IFS= read -r f; do
+        echo "file $(git hash-object --no-filters "$f") $f"; done
+
+with `left-out` in place of `file` for one that is kept out of the copy on
+purpose, which the check then wants absent; and keep this file and the patch
+level true. Then build the Android library from nothing (remove `hasher/.cxx`
+first). A tree copied out of an archive with its dates carries upstream's,
+which are older than the objects of the last build, and a build that goes by
+dates takes a file the release changed and no patch touched for one it has
+compiled already: after the upgrade to 12.5.0 the app's library was linked
+with 12.3.0's `hash_zip.c` under the new version's name until that was done.
+`shared/native/build.sh` compiles every file every time and is not caught by
+this. What the upgrade from 12.3.0 to
+12.5.0 took off these patches is said under each, where it says what upstream
+does.
 
 ## 0001-wii-partition-table.patch
 
@@ -46,18 +72,14 @@ to:
 - every word is put together as an unsigned number;
 - a group that names more than 64 partitions is an error;
 - the size of the table to allocate is worked out as a `size_t`, and an
-  allocation that fails is an error;
-- the file is not closed where the function gives up for want of memory or of
-  partitions.
+  allocation that fails is an error.
 
 **Why.** The table is four groups, for each a count of partitions and where
 their entries are. The function added the four counts in 32 bits, allocated
 eight bytes for each partition of the sum, and then filled the table group by
 group, by the counts. Counts of 0xFFFFFFFF and 2 add up to 1: eight bytes
 allocated, and entries written for as long as the process lasted. A count of
-0x20000000 times eight is nothing in 32 bits, with the same end. And an image
-with no partitions was closed here and again by `rc_hash_wii`, which had
-opened it, at which the C library ends the process.
+0x20000000 times eight is nothing in 32 bits, with the same end.
 
 No read was looked at, before the table, in it or after it. What a read did
 not fill was used as it stood: hashed, or taken for a count, an offset or a
@@ -84,11 +106,15 @@ measured with such an image, 9.5 seconds for 256 partitions that are all the
 same one, and 2.4 for 64. A limit on the sum beside the one on each group
 would be one line more.
 
-**Upstream.** 12.5.0 has taken out the two closes and nothing more: the sum,
-the allocation and the reads are as in 12.3.0. The patch does not apply there
-as it is, because its lines sit beside the ones upstream removed.
+**Upstream.** Up to 12.3.0 an image with no partitions was closed here and
+again by `rc_hash_wii`, which had opened it, at which the C library ends the
+process, and this patch took that close out, with the one where the first
+buffer cannot be had. 12.5.0 has taken both out itself, and they are no longer
+part of the patch. It has nothing else of it: the sum, the allocation and the
+reads are as they were.
 
-**Rows.** For the table: `wii-no-partitions.iso` (the second close),
+**Rows.** For the table: `wii-no-partitions.iso` (the second close, which is
+upstream's to keep out now and a row still),
 `wii-partition-count.iso` (0x20000000) and `wii-count-wraps.iso` (0xFFFFFFFF
 and 2, which is also what needs the table's words unsigned), each with no
 console given and as a Wii disc; the two with a count ask for the reason,
@@ -129,9 +155,8 @@ on the sum would refuse.
 
 What no row holds, and is there by reading:
 
-- the size as a `size_t`, the test of the allocation, and the close taken out
-  where the first buffer cannot be had: memory does not run out to order. With
-  64 to a group the size cannot overflow any more;
+- the size as a `size_t` and the test of the allocation: memory does not run
+  out to order. With 64 to a group the size cannot overflow any more;
 - the test of the table's eight words. The region code is read before the
   table and lies behind it in the file, so a file that has the one has the
   other, and one that ends inside the table is refused for its region code.
@@ -147,17 +172,14 @@ What no row holds, and is there by reading:
 **Left as upstream has it.** `rc_hash_wii`, which calls this function, reads
 the four bytes of the magic word without a look, so a file shorter than 28
 bytes is compared with what the stack held; and `rc_hash_wiiware`, for a
-`.wad`, tests neither its reads nor its allocations. Before the header is
-read, six bytes of the buffer it will be read into are handed to the verbose
-message.
+`.wad`, tests none of its reads, though since 12.5.0 it tests its two
+allocations.
 
 ## 0002-3do-directory.patch
 
 **What.** In `rc_hash_3do` in `src/rhash/hash_disc.c`, which looks through the
 root directory of an OperaFS volume for the file `LaunchMe`:
 
-- the first read has to bring the 132 bytes of volume information, or the
-  disc is not a 3DO disc;
 - a directory sector that cannot be read whole ends the search;
 - the entries of a sector end where the sector does, whatever it says, and an
   entry is looked at only if its 0x48 bytes are all inside;
@@ -179,8 +201,10 @@ for ever.
 A sector holds 28 entries, so 257 of them are a directory of some seven
 thousand files, in the root alone.
 
-**Upstream.** 12.5.0 has the test of the first read, written as it is here,
-and nothing else of this patch.
+**Upstream.** The first read, of the 132 bytes of volume information, was not
+looked at either, and this patch tested it as 12.5.0 now does itself, in the
+same words: that test is upstream's and no longer part of the patch. 12.5.0
+has nothing else of it.
 
 **Rows.** `opera-short.iso` (the root directory is past the end; it was a
 known gap, killed after ten seconds), `opera-self.iso` and `opera-ring.iso`
@@ -197,9 +221,10 @@ so that entries let run up to 0x47 bytes past it are seen as well),
 which is the other side of "all 0x48 bytes inside"), `opera-partial.cue` (the
 file holds 16 bytes of the directory's sector: a test that asked only
 whether anything was read would let the search go on in the rest of the
-buffer, where the sector before still is), `opera-131.cue` and `opera-132.cue` (the first sector cut one byte
-short of the 132, and at them: both are refused with or without the patch,
-so the rows ask for the reason).
+buffer, where the sector before still is), `opera-131.cue` and `opera-132.cue`
+(the first sector cut one byte short of the 132, and at them: the first is
+upstream's test now, and both are refused with or without the patch, so the
+rows ask for the reason).
 
 Volumes that are right: `opera.iso`, whose directory is two sectors, with an
 entry longer than 0x48 bytes in the first and `LaunchMe` as the last entry of
@@ -234,7 +259,7 @@ test is in the function both get the item from.
 A playlist of a playlist that does end is refused with them. A set of discs
 is not listed that way.
 
-**Upstream.** 12.5.0 is as 12.3.0 here.
+**Upstream.** 12.5.0 has nothing of it, and the patch went onto it as it was.
 
 **Rows.** `self.m3u`, `a.m3u` with `b.m3u`, `LOUD.M3U` (capitals) and `.m3u`
 (the name that is all extension, and the shortest the test has to see), each
@@ -278,8 +303,9 @@ hashed them. And the three sizes are added in 32 bits, so two of them can
 bring the header's length round to less than the 0x424 bytes that hold the
 word read out of it next, down to none.
 
-**Upstream.** 12.5.0 is as 12.3.0 here, the two closes included; this patch
-applies to it as it is.
+**Upstream.** 12.5.0 has nothing of it, the two closes included, which it took
+out of the Wii's function and left in this one; the patch went onto it as it
+was.
 
 **Rows.** `dol-one-gigabyte.iso` and `dol-eighteen.iso`, the files of 1496
 bytes, with no console given and as a GameCube disc. They end before the
@@ -307,9 +333,9 @@ longer than a mebibyte, so read in two pieces, and ends with the file;
 `gamecube-header-424.iso`, the least header there can be; and
 `wii-decrypted.iso` under patch 0001.
 
-What no row holds: the two closes taken out, for the reason given under 0001;
-and the first of the two tests on the apploader's sizes, since a file that
-ends before the first ends before the second.
+What no row holds: the two closes taken out, since memory does not run out to
+order; and the first of the two tests on the apploader's sizes, since a file
+that ends before the first ends before the second.
 
 ## 0005-short-headers.patch
 
@@ -331,8 +357,9 @@ its own end.
 file is not longer than the header and hashes the short file whole. That stops
 the crash and gives a hash for six bytes of header, which is looked up like any
 other and found nowhere. Here such a file is an error, so that it is recorded
-as a file that could not be hashed. On 12.5.0 this patch goes above upstream's
-guards and is still needed for that reason.
+as a file that could not be hashed. The patch stands above upstream's guards,
+each of which it makes always true, and is still needed for that reason:
+without it the rows below hash.
 
 **Rows.** `tiny.nes`, `tiny.fds`, `tiny.lnx`, `tiny.a78` and `tiny.cart` (a
 header cut after its magic word), each with no console given and with its own;
@@ -345,51 +372,62 @@ sizes from both sides; `three.nes` and `empty.nes`.
 a `.gdi` track sheet:
 
 - a sector size of more than 9 digits is an error;
-- a file name is measured before it is copied, and one that does not fit the
-  256 bytes kept for it is an error;
-- a quoted file name whose closing quote never comes is an error, and a name
-  without quotes ends at the end of the text if no space comes first;
+- a file name ends where the text that was read ends, and not sooner: a
+  quoted one whose closing quote has not come by then is an error, and one
+  without quotes ends there if no space comes first;
 - the character after each numeric field is stepped over only when there is
   one;
 - the sector size starts out empty.
 
 Unlike the tests of patch 0005, which stand in front of what was there, these
 are on the way of every line of every sheet: the digits, the step after each
-number and the copy of the name are the parser itself, rewritten.
+number and the end of the name are the parser itself.
 
 **Why.** A line of the sheet is `track lba type sectorsize filename offset`,
-and the parser copied the sector size and the file name into buffers of 16 and
-256 bytes for as long as it met digits, or met no space or quote. The digits
-are then copied once more, behind `MODE1/` in another 16 bytes, where 9 fit;
-that is where the limit of 9 comes from, a real one being 4. After each number
-the parser moved one character on without looking, so a line that ended early
-took it past the NUL that closes the text and into whatever the buffer held
-before, which it went on to read as the rest of the line. And when the track
-asked for has no line at all, the sector size was copied to `MODE1/` without
-ever having been set.
+and the parser copies the sector size into a buffer of 16 bytes for as long as
+it meets digits. The digits are then copied once more, behind `MODE1/` in
+another 16 bytes, where 9 fit; that is where the limit of 9 comes from, a real
+one being 4. After each number the parser moves one character on without
+looking, so a line that ends early takes it past the NUL that closes the text
+and into whatever the buffer held before, which it goes on to read as the rest
+of the line. And when the track asked for has no line at all, the sector size
+is copied to `MODE1/` without ever having been set.
 
-**Upstream.** 12.5.0 has the bound on the file name and the error for an
-unclosed quote, with these two messages, and nothing else of this patch. Its
-loops stop at `end`, which for a sheet longer than one read is three quarters
-of the way through the buffer, so there a name that crosses that point is cut
-or refused though all of it was read; here they stop at the NUL, which no
-valid line reaches. The digits, the steps past the end and the unset sector
-size are as they were in 12.3.0.
+The name is measured where it lies and copied if it fits, which is upstream's
+doing. But upstream ends its measuring at `end`, and `end` is the end of the
+text only for a sheet that one read holds: for a longer one it is three
+quarters of the way through the buffer, the point after which no new line is
+begun. A name that lies across that point is all there, since the read went on
+to the buffer's end, and is refused all the same when it is quoted, as a quote
+that never closes, and cut off when it is not, and then not found. A disc of
+many tracks with long names has a sheet as long as that. Here a name ends at
+the NUL, which no line that is whole reaches.
+
+**Upstream.** Up to 12.3.0 the name was copied as the digits are, for as long
+as no space or quote came, into 256 bytes, and this patch measured it first.
+12.5.0 does that itself, with the two errors the patch had taken from it,
+"Quoted string without closing quote" and "Cannot copy %u byte filename into
+%u byte buffer": the bound on the name is upstream's and no longer part of
+the patch, which now only moves where its measuring stops. The digits, the
+steps past the end and the unset sector size are as they were.
 
 **Rows.** `digits.gdi` (64 digits) and `digits-12.gdi` (fits the first buffer,
-not the second), `long.gdi` and `long-256.gdi` (a name of 300 characters, and
-of one more than fits), `quote.gdi`, and `cut-1.gdi` to `cut-4.gdi` (the sheet
-ends after the first to the fourth number of its line, and is as long as one
-read). On the unpatched code only the sanitized build shows these: the plain
-one writes over its own stack, finds no such file and ends as if it had
-refused.
+not the second), and `cut-1.gdi` to `cut-4.gdi` (the sheet ends after the
+first to the fourth number of its line, and is as long as one read). On the
+unpatched code only the sanitized build shows these: the plain one writes
+over its own stack, finds no such file and ends as if it had refused.
+`long.gdi` and `long-256.gdi` (a name of 300 characters, and of one more than
+fits) and `quote.gdi` are rows of upstream's bound now, kept for the day it
+moves.
 
 Sheets that are right, with a track made for them, and the hash as the answer:
 `valid.gdi` (three tracks, the third's name plain) and `valid-quoted.gdi` (the
 name in quotes, with a space in it); `valid-first-data.gdi`, whose data track
 is its second and follows a longer name, which is what holds the NUL written
-after a copied name; and `digits-9.gdi`, nine digits where the track is there
-to say its own sector size. `digits-10.gdi` beside it is refused. Those two are
+after a copied name; `valid-long.gdi` and `valid-long-quoted.gdi`, sheets of
+1100 bytes whose track's name lies across byte 768, which is what holds the
+name ending at the NUL: upstream as it is refuses both; and `digits-9.gdi`,
+nine digits where the track is there to say its own sector size. `digits-10.gdi` beside it is refused. Those two are
 the limit of nine from both sides, and since the track is there, a build that
 let ten digits through would hash the sheet: the row fails on the plain build
 too, where the one byte written past the buffer is seen by nobody. The unpatched
@@ -400,11 +438,10 @@ What no row holds, and is there by reading:
 - the sector size starting out empty. What is read there otherwise is whatever
   the stack held, which differs from build to build and which neither
   sanitizer reports;
-- the sheet being closed before each of the three new errors is returned. A
-  file left open is not memory, and the leak sanitizer says nothing of it.
-  Counted by hand through `/proc/self/fd`: hashing `digits.gdi`, `long.gdi` or
-  `quote.gdi` leaves no descriptor open, and two with that error's close
-  taken out.
+- the sheet being closed before the error for the digits is returned. A file
+  left open is not memory, and the leak sanitizer says nothing of it. Counted
+  by hand through `/proc/self/fd` when the patch was written: hashing
+  `digits.gdi` leaves no descriptor open, and two with the close taken out.
 
 **Left as upstream has it.** When the track a sheet names opens but neither
 its content nor the sheet says what its sectors are, the function reports
@@ -416,27 +453,50 @@ since the name is then empty and what is opened is the sheet's own folder:
 `cut-1.gdi` to `cut-3.gdi` do, and so does the first of the two tries at
 `valid-first-data.gdi`, which then hashes.
 
-## Not patched: an arcade set's name of no letters
+## Never patched: an arcade set's name of no letters
 
 `rc_hash_arcade` in `src/rhash/hash_rom.c` hashes the name of the file without
-its extension, and works out how long that is as `ext - filename - 1`, the one
-being for the dot. A path that ends in `/` or `\` has an empty name and no
-dot, so the length is one below zero, which in a `size_t` is the largest there
-is; `rc_hash_buffer` cuts it down to 64 MiB and hashes that much memory from
-where the name would be, and the process ends with a signal when it reaches
-memory that is not its own.
+its extension. Up to 12.3.0 it worked out how long that is as
+`ext - filename - 1`, the one being for the dot, whether the name had a dot or
+not. A path that ends in `/` or `\` has an empty name and no dot, so the
+length was one below zero, which in a `size_t` is the largest there is;
+`rc_hash_buffer` cut it down to 64 MiB and hashed that much memory from where
+the name would be, and the process ended with a signal when it reached memory
+that was not its own.
 
-No file does this, only a path, and only under console 27, which a caller has
-to name: left to the extension, rcheevos tries a file as an arcade set when
-the name ends in `.zip` or `.7z`, and then the name has letters before the
-dot or none, never one fewer. So it is stopped where paths come in:
+No file did this, only a path, and only under console 27, which a caller has
+to name. So it was stopped where paths come in, and still is:
 `../rahasher_jni.c` refuses a path that ends in either separator, for every
-console, before rcheevos is asked. `NativeCrashReproTest` holds that, in a
-JVM of its own. rcheevos is as upstream has it, and the one known gap of
-`shared/tests/native_repro_test.py` is this, on the program that has no JNI
-file in front of it.
+console, before rcheevos is asked, since to rcheevos such a path names no
+file whatever the console. `NativeCrashReproTest` holds that, in a JVM of its
+own.
 
 **Upstream.** 12.5.0 hashes the whole name when it has no extension, so the
-subtraction is no longer reached with an empty name: the same path gives the
-MD5 of no bytes there, and a name with no dot in it is hashed whole where
-12.3.0 leaves off its last letter.
+subtraction is no longer reached with an empty name. The same path gives the
+MD5 of no bytes, and a name with no dot in it is hashed whole where 12.3.0
+left off its last letter. Both are rows of
+`shared/tests/native_repro_test.py`, where the path was the one known gap
+until then; it has none now.
+
+## Not patched: what 12.5.0 added
+
+Two consoles' worth of code that no patch here touches, and that files from
+outside now reach:
+
+- `rc_hash_neogeo_cart` in `src/rhash/hash_rom.c`, for a `.neo` file: 4096
+  bytes of header, then the ROMs, which are what is hashed. It tests the magic
+  word and that there is something after the header, and reads the rest by the
+  size the file system gave. The rows are a cartridge that is right, with no
+  console given and as an arcade game, and files that end in the header, at it
+  and one byte after it.
+- `rc_hash_ps3` in `src/rhash/hash_disc.c`: of a disc image the `PARAM.SFO`
+  and the `EBOOT.BIN` found through its directories, of any other file that
+  file and a `PARAM.SFO` looked for beside or above it. With no console given,
+  an `.iso` and a `.chd` are now tried as this console among the others. It is
+  compiled in and not used: `RcConsoles.HELD_BACK` has console 82, no
+  collection is hashed as it, and a hash rcheevos gives under it when it is
+  left to guess is turned into a failure. The rows are a disc that is right,
+  with no console given and as console 82, which is what shows the guess does
+  land there, and the same disc cut short. A file of a disc is hashed as far
+  as the image goes, for this console as for the PlayStation 2 and the PSP
+  before it, by the same lines.

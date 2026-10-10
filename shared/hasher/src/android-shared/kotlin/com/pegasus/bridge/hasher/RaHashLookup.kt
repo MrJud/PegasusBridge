@@ -11,7 +11,6 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import okhttp3.Call
 import okhttp3.Callback
-import okhttp3.HttpUrl
 import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -20,7 +19,6 @@ import org.json.JSONException
 import org.json.JSONObject
 import java.io.File
 import java.io.IOException
-import java.net.URLEncoder
 import java.util.Locale
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
@@ -508,29 +506,67 @@ class RaApiHashLookup(
     private fun saysNo(obj: JSONObject?): Boolean =
         obj != null && obj.has("Success") && obj.opt("Success") != true
 
-    // The key as it travels in a URL, where it differs from the key as
-    // typed: once as the request carries it and once as a form would write
-    // it, with a `+` for a space.
-    private val keyForms: List<String> = if (raApiKey.isBlank()) emptyList() else listOfNotNull(
-        raApiKey,
-        try {
-            HttpUrl.Builder().scheme("http").host("localhost").addQueryParameter("y", raApiKey)
-                .build().encodedQuery?.removePrefix("y=")
-        } catch (e: Exception) { null },
-        try { URLEncoder.encode(raApiKey, "UTF-8") } catch (e: Exception) { null }
-    ).filter { it.isNotEmpty() }.distinct().sortedByDescending { it.length }
+    // The key, in whatever hand it is written back. A request carries it
+    // percent-encoded where it has a character a URL gives a meaning to, and
+    // a page that echoes it need not write it as this program's own encoders
+    // do: it may escape more of it or less, write an escape's digits in small
+    // letters, encode it a second time inside another address, put a `+` for
+    // a space, a backslash before a `/` as PHP's JSON does, an entity for an
+    // `&`. Looked for as the three strings those encoders make, a key with a
+    // `+` in it was shown whole by a page that wrote `%2b`.
+    //
+    // So it is looked for a character at a time, each in any of those forms.
+    // A letter or a digit is only ever itself, so a key of nothing else,
+    // which is every key RetroAchievements gives out, is looked for as it is.
+    // Spaces in the key are any run of them, since [excerpt] makes one space
+    // of each, and the ones around it are left out: a key pasted with a line
+    // break after it is still the key.
+    private val keyShown: Regex? = try {
+        raApiKey.trim().replace(WHITESPACE, " ").takeIf { it.isNotEmpty() }?.let { key ->
+            val pattern = StringBuilder()
+            var at = 0
+            while (at < key.length) {
+                val point = key.codePointAt(at)
+                val char = key.substring(at, at + Character.charCount(point))
+                at += char.length
+                pattern.append(when {
+                    Character.isLetterOrDigit(point) && point < 0x80 -> char
+                    // A space, a `+` for one and that `+` escaped in its turn,
+                    // a tab or a line break as JSON writes them, and the
+                    // escapes of all four.
+                    char == " " -> "(?:\\s|\\+|\\\\[tnr]|%(?:25)*(?:20|2[bB]|0[9aAdD]))+"
+                    else -> "(?:\\\\*" + Regex.escape(char) + "|" + escaped(char.toByteArray()) + "|" +
+                            char.map { "\\\\u" + hex(it.code, 4) }.joinToString("") +
+                            ENTITIES[char]?.let { "|$it" }.orEmpty() + ")"
+                })
+            }
+            Regex(pattern.toString())
+        }
+    } catch (e: Exception) {
+        // No pattern could be made of it: the key as typed is still taken out.
+        Regex(Regex.escape(raApiKey))
+    }
+
+    /** Bytes as a URL escapes them, each `%` perhaps escaped again, the digits in either case. */
+    private fun escaped(bytes: ByteArray): String =
+        bytes.joinToString("") { "%(?:25)*" + hex(it.toInt() and 0xff, 2) }
+
+    /** [number] in [digits] hex digits, each letter among them in either case. */
+    private fun hex(number: Int, digits: Int): String =
+        number.toString(16).padStart(digits, '0')
+            .map { if (it.isLetter()) "[$it${it.uppercaseChar()}]" else it.toString() }.joinToString("")
 
     /**
      * Text from outside made fit for a log: one line, short, and without the API
      * key. An error page can echo the query it was sent, and every query
-     * carries `y=<key>`, as typed or as a URL writes it; exception messages
-     * go through here too, because nothing promises what a library puts in
-     * one.
+     * carries `y=<key>`, in a form that is the page's to choose; exception
+     * messages go through here too, because nothing promises what a library
+     * puts in one.
      */
     private fun excerpt(text: String?): String {
         val line = text.orEmpty().replace(WHITESPACE, " ").trim()
         if (line.isEmpty()) return "(empty)"
-        val safe = keyForms.fold(line) { kept, key -> kept.replace(key, "***") }
+        val safe = keyShown?.replace(line, "***") ?: line
         return if (safe.length <= EXCERPT_CHARS) safe else safe.take(EXCERPT_CHARS) + "…"
     }
 
@@ -704,5 +740,8 @@ class RaApiHashLookup(
         const val EXCERPT_CHARS = 160
         const val DAY_SECONDS = 24L * 60 * 60
         val WHITESPACE = Regex("\\s+")
+        // The five characters a page of HTML writes as something else.
+        val ENTITIES = mapOf("&" to "&amp;", "<" to "&lt;", ">" to "&gt;", "\"" to "&quot;|&#34;",
+                             "'" to "&#0?39;|&apos;")
     }
 }

@@ -594,6 +594,47 @@ class RaHashLookupTest {
             assertTrue(logs.none { it.contains(form) }, "the API key reached the log as $form:\n$logs")
     }
 
+    // A page writes the key back in its own hand, which need not be that of
+    // the encoders this program has. Taken out as the three strings those
+    // make, each of these was quoted whole: the escapes in small letters, the
+    // key encoded twice inside another address, half of it escaped in a page
+    // of HTML, and a string of JSON as PHP writes one.
+    @Test fun `a body that echoes the key in a hand of its own is quoted without it`() = runTest {
+        val key = "k/ey+1 &x"
+        val shown = listOf("k%2fey%2b1%20%26x", "k%252Fey%252B1%2520%2526x", "k%252Fey%252B1%2B%2526x",
+                           "k/ey%2B1+&amp;x", "k\\/ey+1 &x")
+        for (form in shown) {
+            logs.clear()
+            replies += Reply("<html>Bad request: $LIST_PATH?y=$form&i=7</html>")
+
+            assertNull(asking(key = key).lookup(HASH, listOf(7)).asLegacy(), form)
+
+            assertTrue(logs.any { it.contains("Bad request: $LIST_PATH?y=***&i=7") }, "$form:\n$logs")
+            assertTrue(logs.none { it.contains(form) }, "the API key reached the log as $form:\n$logs")
+        }
+
+        // A key pasted with a line break after it, or with two spaces in it,
+        // is not what the log's one line shows of it: the key is looked for
+        // as the line has it.
+        for ((typed, echoed) in listOf("pastedKey0123\n" to "pastedKey0123\n", "two  words" to "two  words",
+                                       "two  words" to "two\twords")) {
+            logs.clear()
+            replies += Reply("<html>Bad request: $LIST_PATH?y=$echoed</html>")
+
+            assertNull(asking(key = typed).lookup(HASH, listOf(7)).asLegacy(), typed)
+
+            assertTrue(logs.any { it.contains("Bad request: $LIST_PATH?y=***") }, "$typed:\n$logs")
+            assertTrue(logs.none { it.contains(typed.trim().replace(Regex("\\s+"), " ")) },
+                       "the API key reached the log:\n$logs")
+        }
+
+        // And nothing but the key is taken out.
+        logs.clear()
+        replies += Reply("<html>Bad request for console 7, y=$API_KEY, try again</html>")
+        assertNull(lookup.lookup(HASH, listOf(7)).asLegacy())
+        assertTrue(logs.any { it.contains("<html>Bad request for console 7, y=***, try again</html>") }, "$logs")
+    }
+
     // Back-offs of 1, 2 and 4 seconds between four attempts, and nothing after
     // the last: there is no attempt left to wait for. The old loop slept 8 more
     // seconds before giving up, which would be 15 here.

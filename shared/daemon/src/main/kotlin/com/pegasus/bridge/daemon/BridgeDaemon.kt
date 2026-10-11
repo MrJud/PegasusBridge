@@ -13,6 +13,7 @@ import com.pegasus.bridge.hasher.RaGameList
 import com.pegasus.bridge.hasher.RaHashLookup
 import com.pegasus.bridge.hasher.RomHasher
 import com.pegasus.bridge.hasher.RomScanPipeline
+import com.pegasus.bridge.ra.RaSync
 import org.json.JSONObject
 import java.io.File
 import kotlin.system.exitProcess
@@ -112,7 +113,7 @@ class BridgeDaemon(
             }
         }
 
-        val router = BridgeRouter(paths, config, jobs, scanPipeline)
+        val router = BridgeRouter(paths, config, jobs, scanPipeline, raSync = RaSync(paths, config, raBaseUrl))
         server = MicroHttpServer(requestedPort = port, handler = router::handle)
         server.start()
 

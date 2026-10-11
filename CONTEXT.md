@@ -599,19 +599,57 @@ path of the game's first file as Pegasus gives it. One class, `RaGameFinder`
    held, for a match with no game id, and when no path is sent. A file the
    scan has seen and did not match is never answered from it: two dumps of one
    name share a key, and the game under it is the other file's.
-3. **The name**, against the games of the platform's own console, with
-   `onDevice: false` and a `method` that is not `hash_index`.
+3. **The name**, against the games of the platform's own console and of no
+   other, with `onDevice: false` and a `method` that is not `hash_index`
+   (`rom_filename`, `pegasus_title` or `rom_filename_loose`). The games are
+   those of the list a scan keeps, `cache/ra-lists/<console>.tsv`: read from
+   disk while it is at most seven days old, asked for with one request when it
+   is not, and kept. A list holds only the games that have a hash, so a game
+   RetroAchievements lists with none cannot be guessed by name; no file could
+   be verified as one. Before any list is looked for:
 
-The three answers:
+   - a platform with no console at RetroAchievements is `no_match`,
+     `reason: "no_console"`;
+   - a console RetroAchievements has and nobody can hash for (`3ds`, `wiiu`)
+     is `no_match`, `reason: "unsupported"`, as the ledger's `UNSUPPORTED` is
+     by file;
+   - no key set is the error `NO_KEY`, said before the disk is read.
+
+   A list that was read and holds no title close enough is `no_match`,
+   `reason: "no_name_match"`.
+
+The three answers, each with HTTP 200:
 
 ```json
 {"status":"ok","gameId":7236,"title":"...","consoleName":"SNES/Super Famicom",
  "score":1.0,"method":"hash_index","onDevice":true,"schemaVersion":1}
 {"status":"no_match","gameId":0,"reason":"not_in_database","schemaVersion":1}
+{"status":"error","gameId":0,"code":"SOURCE_DOWN",
+ "error":"RetroAchievements did not answer: HTTP 503","schemaVersion":1}
 ```
 
-A match has those eight keys and no others. A theme that reads only `status`
-and `gameId` is answered as before.
+A match has those eight keys and no others, a no always has its `reason`, and
+an error its `code` and a sentence in `error`. A theme that reads only
+`status` and `gameId` takes an error for no match, as every failure was
+answered before.
+
+| `code` | when | `error` |
+| --- | --- | --- |
+| `NO_KEY` | the user or the key is blank | `No RetroAchievements API key is set` |
+| `KEY_REFUSED` | RetroAchievements answered the key with a 401 | `RetroAchievements refused the API key` |
+| `SOURCE_DOWN` | the list could not be had: no answer, another status, a body that is no list, a list past its seven days whose refresh failed | `RetroAchievements did not answer`, and `: <detail>` when there is one (`HTTP 403`, `no answer within 12 s`) |
+
+An error arises only when a name has to be looked up: an answer from the
+ledger or the index needs no key and no network. A match tells `NO_KEY` from
+`KEY_REFUSED`; a scan's job record says `KEY_REFUSED` for both (above). The
+sentence never holds the key or the address asked.
+
+One question waits at most 12 seconds for a list and is then answered
+`SOURCE_DOWN`, so a source that is slow or asks for a long wait cannot hold
+the daemon's workers. A list that could not be had is remembered for 60
+seconds, per user, key and console: a source that is down costs one attempt a
+minute, and every question in between is answered at once with the same
+error. Questions for one console that arrive together make one request.
 
 What the answer does not cover:
 
@@ -685,7 +723,11 @@ and the console table live only in the Bridge, reached through
 
 What the theme keeps is memoisation, under its own key format (`_memoKey`),
 which no longer has to agree with anything the Bridge writes:
-- `_gameIdCache` — the answer to a past `/ra/match`, plus manual links
+- `_gameIdCache` — the answer to a past `/ra/match`, plus manual links. A
+  remembered id whose ROM verdict is "verified" is asked about again once per
+  session and follows the Bridge's answer for the file; a guess by name is
+  kept for the session only; anything else remembered, a link made by hand
+  among it, is left as it is
 - `_hashVerifyCache` — the ROM verdict, which a match already carries
 - `_consoleTable` — the fetched table, mirrored into `api.memory` so labels are
   right on the first frame of the next launch
@@ -695,10 +737,11 @@ than logic: `_loadDiscoveredGames` (`index.games[]`) and the on-device
 annotation.
 
 `RaGameFinder` and `RaMatcher` (`shared/ra/src/android-shared/`) are the one
-implementation both shells run. `RaMatcher` takes the JSON its caller has
-already read, so it needs no filesystem or network of its own; `RaGameFinder`
-reads the ledger and the index and decides which of them answers (§3, *Which
-game a file is*). `shared/*/src/android-shared/` exists for
+implementation both shells run. `RaMatcher` takes what its caller has already
+read, so it needs no filesystem or network of its own; `RaGameFinder` reads
+the ledger, the index and the console's list, decides which of them answers
+(§3, *Which game a file is*), and is what `RaSync.matchGame` on the desktop
+and `RaService` on Android both call. `shared/*/src/android-shared/` exists for
 exactly this: files the Android modules compile via `srcDir`, kept apart from
 the rest of `shared/` because those names clash with Android's own.
 

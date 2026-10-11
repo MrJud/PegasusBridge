@@ -5,6 +5,7 @@ import com.pegasus.bridge.core.BridgePaths
 import com.pegasus.bridge.core.Config
 import com.pegasus.bridge.core.FuzzyMatch
 import com.pegasus.bridge.core.SchemaVersion
+import com.pegasus.bridge.hasher.RETROACHIEVEMENTS_URL
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
@@ -18,7 +19,9 @@ import org.json.JSONObject
  */
 class RaSync(
     private val paths: BridgePaths,
-    private val config: Config
+    private val config: Config,
+    /** Where the lists of consoles are asked for. A test names a server of its own. */
+    raBaseUrl: String = RETROACHIEVEMENTS_URL
 ) {
 
     sealed class Result {
@@ -128,7 +131,9 @@ class RaSync(
     }
 
 
-    private val finder = RaGameFinder(paths)
+    // One for the life of the daemon: it remembers which lists could not be
+    // had in the last minute.
+    private val finder = RaGameFinder(paths, raBaseUrl)
 
     /**
      * Answers "which RetroAchievements game is this Pegasus game?".
@@ -138,25 +143,15 @@ class RaSync(
      * step with their Kotlin twins by hand; exposing the whole question instead
      * of the pieces is what lets a theme drop that duplicated logic.
      *
-     * Order of preference:
-     *  1. what the scan settled about the file, and the scan index where it
-     *     settled nothing ([RaGameFinder.withoutName]): no guessing at all;
-     *  2. fuzzy match against the console catalogue, ROM filename first.
+     * The order, and every answer, are [RaGameFinder.find]'s. What is added
+     * here is the key to ask with, which is blank when none is set: the
+     * finder says so only where a key is needed.
      */
-    fun matchGame(title: String, platformShortName: String, romPath: String? = null,
-                  minScore: Double = 0.60): RaMatcher.Answer {
-        finder.withoutName(title, platformShortName, romPath)?.let { return it }
-
-        // 2. Otherwise guess from the console catalogue.
-        val consoleId = RaConsoleMap.consoleId(platformShortName)
-        if (consoleId <= 0) return RaMatcher.Answer.None()
-        val creds = config.load().ra ?: return RaMatcher.Answer.None()
-        if (creds.user.isEmpty() || creds.apiKey.isEmpty()) return RaMatcher.Answer.None()
-
-        val catalogue = RaApiClient.fetchGameList(consoleId, creds.user, creds.apiKey,
-                                                 onlyWithAchievements = false)
-        return RaMatcher.fromCatalogue(catalogue, title, platformShortName, romPath, minScore)
-            ?.let { RaMatcher.Answer.Found(it) } ?: RaMatcher.Answer.None()
+    suspend fun matchGame(title: String, platformShortName: String, romPath: String? = null,
+                          minScore: Double = 0.60): RaMatcher.Answer {
+        val creds = config.load().ra
+        return finder.find(title, platformShortName, romPath, creds?.user.orEmpty(), creds?.apiKey.orEmpty(),
+                           minScore)
     }
 
     /**

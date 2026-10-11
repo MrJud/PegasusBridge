@@ -12,10 +12,12 @@ import com.pegasus.bridge.core.Paths
 import com.pegasus.bridge.core.SchemaVersion
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import org.json.JSONObject
 
 class RaService : Service() {
@@ -214,25 +216,32 @@ class RaService : Service() {
      * the same answer on both platforms and needs no matcher of its own. The reply goes to the
      * search-ra slot the theme already polls.
      */
-    private fun handleMatch(intent: Intent, jobId: String) {
+    private suspend fun handleMatch(intent: Intent, jobId: String) {
         val title    = intent.getStringExtra(EXTRA_TERM).orEmpty()
         val platform = intent.getStringExtra(EXTRA_PLATFORM).orEmpty()
         val romPath  = intent.getStringExtra(EXTRA_FILE)
 
-        // The order is RaGameFinder's, the one the desktop daemon answers in.
-        val answer = RaGameFinder(Paths.bridge).withoutName(title, platform, romPath) ?: run {
-            val consoleId = RaConsoleMap.consoleId(platform)
-            val creds = Config.load().ra
-            if (consoleId > 0 && creds != null && creds.user.isNotEmpty() && creds.apiKey.isNotEmpty()) {
-                val catalogue = RaApiClient.fetchGameList(consoleId, creds.user, creds.apiKey)
-                RaMatcher.fromCatalogue(catalogue, title, platform, romPath)?.let { RaMatcher.Answer.Found(it) }
-            } else null
-        } ?: RaMatcher.Answer.None()
+        // The order and every answer are RaGameFinder's, the one the desktop
+        // daemon runs. A blank key is said only where a key is needed.
+        //
+        // Not cancelled with the service. stopSelf(startId) ends the service
+        // when its latest start is done, whatever an earlier one is still
+        // doing, and a question that was waiting for a list was dropped
+        // there with its job marked done and no answer written. While this
+        // was plain blocking code it ran to its end all the same, and it
+        // does again: the wait is the finder's own budget and no longer.
+        val creds = Config.load().ra
+        val answer = withContext(NonCancellable) {
+            finder.find(title, platform, romPath, creds?.user.orEmpty(), creds?.apiKey.orEmpty())
+        }
 
         Paths.searchRa(jobId).writeText(
             RaMatcher.toJson(answer).put("schemaVersion", SchemaVersion.CURRENT).toString())
-        Log.d(TAG, "Match job done for '$title' ($platform) -> " +
-                   ((answer as? RaMatcher.Answer.Found)?.match?.gameId ?: 0))
+        Log.d(TAG, "Match job done for '$title' ($platform) -> " + when (answer) {
+            is RaMatcher.Answer.Found  -> answer.match.gameId.toString()
+            is RaMatcher.Answer.None   -> "none (${answer.reason})"
+            is RaMatcher.Answer.Failed -> "error ${answer.code}"
+        })
     }
 
     /** The console table, so a theme can label a platform without its own copy. */
@@ -292,6 +301,11 @@ class RaService : Service() {
         private const val TAG           = "RaService"
         private const val CHANNEL_ID    = "ra_sync"
         private const val NOTIFICATION_ID = 3
+
+        // In the companion and not in the service, which is made anew for
+        // most questions: the finder remembers for a minute which lists
+        // could not be had, and that has to outlive one start.
+        private val finder by lazy { RaGameFinder(Paths.bridge) }
 
         const val EXTRA_VERB       = "verb"
         const val EXTRA_JOB_ID     = "jobId"

@@ -1,7 +1,7 @@
 package com.pegasus.bridge.ra
 
 import com.pegasus.bridge.core.FuzzyMatch
-import org.json.JSONArray
+import com.pegasus.bridge.hasher.RaGameList
 import org.json.JSONObject
 
 /**
@@ -32,8 +32,8 @@ object RaMatcher {
     sealed interface Answer {
         data class Found(val match: Match) : Answer
 
-        /** No game. [reason] is one of the constants below, and empty when none is known. */
-        data class None(val reason: String = "") : Answer
+        /** No game. [reason] is one of the constants below. */
+        data class None(val reason: String) : Answer
 
         /** The question could not be answered. [code] is for a program, [message] for a person. */
         data class Failed(val code: String, val message: String) : Answer
@@ -49,6 +49,13 @@ object RaMatcher {
     const val NO_CONSOLE = "no_console"
     /** The console's list was read and no title in it is close enough. */
     const val NO_NAME_MATCH = "no_name_match"
+
+    /** There is no key to ask RetroAchievements with. */
+    const val NO_KEY = "NO_KEY"
+    /** RetroAchievements answered the key with a 401. */
+    const val KEY_REFUSED = "KEY_REFUSED"
+    /** The console's list could not be had: no answer, a refusal, a body that is no list. */
+    const val SOURCE_DOWN = "SOURCE_DOWN"
 
     /**
      * An exact answer from the ROM scan index, or null if the scan has not seen
@@ -93,21 +100,22 @@ object RaMatcher {
     }
 
     /**
-     * A best guess from the console catalogue, for a game the scan has not seen
-     * — the ROM filename is preferred over the library title, because a user can
-     * rename a library entry but rarely renames the file.
+     * A best guess by name among [games], the list of the platform's own
+     * console, for a file the scan cannot speak for. The ROM filename is
+     * preferred over the library title, because a user can rename a library
+     * entry but rarely renames the file.
+     *
+     * A game the list gives no title for cannot be guessed and is left out.
      */
-    fun fromCatalogue(catalogue: JSONArray, title: String, platformShortName: String,
-                      romPath: String?, minScore: Double = 0.60): Match? {
-        if (catalogue.length() == 0) return null
-        val candidates = (0 until catalogue.length()).mapNotNull { catalogue.optJSONObject(it) }
-        val m = FuzzyMatch.multiMatchSearch(title, romPath, candidates, minScore) {
-            it.optString("Title")
+    fun fromList(games: List<RaGameList.Game>, title: String, platformShortName: String,
+                 romPath: String?, minScore: Double = 0.60): Match? {
+        val m = FuzzyMatch.multiMatchSearch(title, romPath, games.filter { it.title.isNotBlank() }, minScore) {
+            it.title
         } ?: return null
 
         return Match(
-            gameId = m.value.optInt("ID").takeIf { it > 0 } ?: m.value.optInt("GameID"),
-            title = m.value.optString("Title"),
+            gameId = m.value.gameId,
+            title = m.value.title,
             consoleName = RaConsoleMap.consoleName(platformShortName),
             score = m.score,
             method = m.method,
@@ -131,8 +139,7 @@ object RaMatcher {
             .put("score", a.match.score)
             .put("method", a.match.method)
             .put("onDevice", a.match.onDevice)
-        is Answer.None -> JSONObject().put("status", "no_match").put("gameId", 0)
-            .also { if (a.reason.isNotEmpty()) it.put("reason", a.reason) }
+        is Answer.None -> JSONObject().put("status", "no_match").put("gameId", 0).put("reason", a.reason)
         is Answer.Failed -> JSONObject().put("status", "error").put("gameId", 0)
             .put("code", a.code).put("error", a.message)
     }

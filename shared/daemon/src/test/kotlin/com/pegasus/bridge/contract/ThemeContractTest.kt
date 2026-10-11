@@ -15,6 +15,7 @@ import com.pegasus.bridge.hasher.GameMetadata
 import com.pegasus.bridge.hasher.HashRecipe
 import com.pegasus.bridge.hasher.HashResult
 import com.pegasus.bridge.hasher.LookupOutcome
+import com.pegasus.bridge.hasher.RaGameList
 import com.pegasus.bridge.hasher.RaHashLookup
 import com.pegasus.bridge.hasher.RomHasher
 import com.pegasus.bridge.hasher.RomScanPipeline
@@ -22,6 +23,7 @@ import com.pegasus.bridge.hasher.ScanJobRecord
 import com.pegasus.bridge.hasher.ScanLedger
 import com.pegasus.bridge.ra.RaConsoleMap
 import com.pegasus.bridge.ra.RaMatcher
+import com.pegasus.bridge.ra.RaSync
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
@@ -127,9 +129,13 @@ class ThemeContractTest {
         paths = BridgePaths(dataRoot); paths.ensureAll()
         BridgeLog.current = NoopLog
 
+        // A match asks RetroAchievements for a console's list when it has
+        // none on disk. No test here means it to, and one that did by
+        // mistake asks a port of this machine where nothing listens.
         val router = BridgeRouter(
             paths, Config(paths), JobRegistry(paths),
-            scanPipeline = { RomScanPipeline(paths, hasher, lookup, throttleMs = { 0L }) }
+            scanPipeline = { RomScanPipeline(paths, hasher, lookup, throttleMs = { 0L }) },
+            raSync = RaSync(paths, Config(paths), raBaseUrl = "http://127.0.0.1:1")
         )
         server = MicroHttpServer(handler = router::handle)
         server.start()
@@ -1272,6 +1278,81 @@ class ThemeContractTest {
 
         assertEquals("ok", answer.getString("status"), answer.toString())
         assertEquals(2001, answer.getInt("gameId"))
+    }
+
+    private val errorKeys = setOf("status", "gameId", "code", "error", "schemaVersion")
+
+    /** One game of [console] as a scan keeps it in the console's list, asked for just now. */
+    private fun keepList(console: Int, gameId: Int, title: String) {
+        val body = """[{"ID":$gameId,"Title":"$title","ConsoleID":$console,"ConsoleName":"Invented System",""" +
+                   """"ImageIcon":"/Images/$gameId.png","NumAchievements":12,"Hashes":["${"%032x".format(gameId)}"]}]"""
+        (RaGameList.parse(console, body, BridgePaths.epochSeconds()) as RaGameList.Parsed.Listed)
+            .list.write(File(paths.cache, RaGameList.DIR))
+    }
+
+    private fun setKey() = Config(paths).writeCredentials(raUser = "harness", raApiKey = "a-key-of-the-test")
+
+    // With no key every game the scan had not matched was answered as having
+    // no achievements. The body is the whole of what a theme is given.
+    @Test fun `a match that cannot be made for want of a key is an error with a code`() {
+        val expected = JSONObject().put("status", "error").put("gameId", 0).put("code", "NO_KEY")
+            .put("error", "No RetroAchievements API key is set").put("schemaVersion", 1)
+
+        val answer = match("Moss Kingdom", "nes")
+
+        assertTrue(expected.similar(answer), answer.toString())
+    }
+
+    @Test fun `no match always says why`() {
+        assertTrue(noMatch("no_console").similar(match("Moss Kingdom", "switch")),
+                   match("Moss Kingdom", "switch").toString())
+    }
+
+    @Test fun `a name is matched against the list on disk`() {
+        setKey()
+        keepList(7, 4101, "Moss Kingdom")
+
+        val answer = match("Moss Kingdom", "nes")
+
+        assertEquals(matchKeys, answer.keySet())
+        assertEquals("ok", answer.getString("status"))
+        assertEquals(4101, answer.getInt("gameId"))
+        assertEquals("Moss Kingdom", answer.getString("title"))
+        assertEquals(RaConsoleMap.consoleName("nes"), answer.getString("consoleName"))
+        assertEquals(false, answer.getBoolean("onDevice"))
+        assertNotEquals("hash_index", answer.getString("method"))
+    }
+
+    // The question a theme asks when it has no game object to take a path
+    // from. The index holds the title under snes, and that is no answer
+    // for gba: the name is looked up in gba's own list, which has no such game.
+    @Test fun `without a path the same title on another platform is not that game`(): Unit = runBlocking {
+        rom("snes", "Alpha (USA).sfc", "hash-alpha")
+        assertEquals(1, scan(ContentHasher(), MapLookup(catalogue)).newEntries)
+        setKey()
+        keepList(RaConsoleMap.consoleId("gba"), 4102, "Paper Rally")
+
+        assertEquals(2001, match("Alpha (USA)", "snes").getInt("gameId"))
+        assertTrue(noMatch("no_name_match").similar(match("Alpha (USA)", "gba")),
+                   match("Alpha (USA)", "gba").toString())
+    }
+
+    @Test fun `the answers of a match have these keys and no others`(): Unit = runBlocking {
+        val file = rom("snes", "Alpha (USA).sfc", "hash-alpha")
+        val unknown = rom("snes", "Homebrew Thing.sfc", "hash-nobody-knows")
+        scan(ContentHasher(), MapLookup(catalogue))
+
+        assertEquals(matchKeys, match("Whatever", "snes", file).keySet())
+        assertEquals(setOf("status", "gameId", "reason", "schemaVersion"), match("Whatever", "snes", unknown).keySet())
+        assertEquals(errorKeys, match("Moss Kingdom", "nes").keySet())
+
+        // And the list that cannot be had: the address asked is this
+        // machine's, where nothing listens.
+        setKey()
+        val down = match("Moss Kingdom", "nes")
+        assertEquals(errorKeys, down.keySet())
+        assertEquals(listOf("error", "SOURCE_DOWN"), listOf(down.getString("status"), down.getString("code")))
+        assertFalse("a-key-of-the-test" in down.toString() || "127.0.0.1" in down.toString(), down.toString())
     }
 
     // A disc game in a folder of its own, under a collection Pegasus reads

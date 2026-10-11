@@ -456,8 +456,9 @@ not an error to retry.
 `/ra/match` is the one worth knowing about. Ask it *which RetroAchievements game
 this is*, with the path of the game's file, and it answers with what the scan
 found for that very file: its game, or that it has none and why. A file the
-scan cannot speak for gets a fuzzy match by name against the catalogue of its
-own console — so a theme needs no matcher, no
+scan cannot speak for gets a fuzzy match by name against the list of its own
+console, the one a scan keeps on disk; and when that list cannot be had the
+answer is an error with a code, not a no — so a theme needs no matcher, no
 filename parser and no console table of its own. ReStory deleted 400 lines of
 QML when it moved to it.
 

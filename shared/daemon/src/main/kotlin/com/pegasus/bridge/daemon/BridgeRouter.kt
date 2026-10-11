@@ -200,7 +200,7 @@ class BridgeRouter(
      */
     private fun raMatch(req: Request): Response {
         val title = req.param("title") ?: return Response.badRequest("missing title")
-        val answer = raSync.matchGame(title, req.param("platform").orEmpty(), req.param("file"))
+        val answer = runBlocking { raSync.matchGame(title, req.param("platform").orEmpty(), req.param("file")) }
         return Response.json(RaMatcher.toJson(answer)
             .put("schemaVersion", SchemaVersion.CURRENT).toString())
     }

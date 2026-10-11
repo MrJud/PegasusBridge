@@ -725,7 +725,8 @@ What the theme keeps is memoisation, under its own key format (`_memoKey`),
 which no longer has to agree with anything the Bridge writes:
 - `_gameIdCache` — the answer to a past `/ra/match`, plus manual links. A
   remembered id is asked about again once per session, whatever its ROM
-  verdict, and follows what the scan settled for the file: the file's game
+  verdict, when Pegasus gives the game a file to ask with, and follows what
+  the scan settled for that file: the file's game
   replaces it and is "verified", the same game makes it "verified" and leaves
   what is on screen alone (`romVerdictChanged`, where a change of game is
   `matchRevised`), and `not_in_database`, `unsupported` or `placeholder`
@@ -736,7 +737,15 @@ which no longer has to agree with anything the Bridge writes:
   `api.memory("ra_hand_links")`. Such a link is never asked about and nothing
   automatic replaces or removes it, "verified" or not; it loses the verdict
   of the id it replaces and gets its own from `verifyRomHash`, for the badge
-  only. Clearing the link clears the mark. Memory written before the map
+  only: asked for when the link is made, not again once it is stored, and
+  dropped when it comes back after the link was replaced or cleared. So the
+  badge of a link made by hand says what the scan knew of the file when the
+  link was made, or nothing if the Bridge did not answer then, until the
+  game is linked again. Clearing the link clears the mark, and clearing the
+  cache or signing out clears every link with its mark. A mark found with no
+  id under it, which the theme before the marks leaves when it clears a
+  link, goes when an answer of the Bridge's is stored there; stored marks
+  that are not a map of keys are read as none. Memory written before the map
   existed has no marks, so a link made by hand back then counts as an answer
   of the Bridge's and may be replaced or removed once
 - `_hashVerifyCache` — the ROM verdict, which a match already carries

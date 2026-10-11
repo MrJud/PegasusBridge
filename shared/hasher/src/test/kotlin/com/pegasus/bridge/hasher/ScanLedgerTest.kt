@@ -589,4 +589,43 @@ class ScanLedgerTest {
         assertFalse(ledger.dirty)
         assertEquals(1, JSONObject(file.readText()).getJSONObject("entries").length())
     }
+
+    @Test fun `the entry of a path is given as it was recorded and none for a path never recorded`() {
+        val ledger = ScanLedger(File(paths.cache, ScanLedger.FILE_NAME))
+        ledger.record("/roms/nes/a.nes", CollectionRef.inferred("nes"), ScanLedger.State.MATCHED, 10, 20, now = 1000,
+                      gameId = 11, detail = "as found")
+
+        val entry = ledger.entry("/roms/nes/a.nes")
+        assertEquals(ScanLedger.State.MATCHED, entry?.state)
+        assertEquals(listOf(1000L, 10L, 20L), listOf(entry?.checkedAt, entry?.fileSize, entry?.lastModified))
+        assertEquals(11, entry?.gameId)
+        assertEquals("as found", entry?.detail)
+        assertNull(ledger.entry("/roms/nes/b.nes"))
+    }
+
+    // What the index is filtered by: the games a file of which is there. A
+    // match written before matches carried their game says nothing of which
+    // game it is, and is named apart so that the reader can tell.
+    @Test fun `the games of the matches whose files are there are given and a match with no game is named apart`() {
+        fun rom(name: String) = File(romRoot, name).apply { parentFile.mkdirs(); writeText(romText(name)) }
+        val nes = CollectionRef.inferred("nes")
+        val ledger = ScanLedger(File(paths.cache, ScanLedger.FILE_NAME))
+        fun record(file: File, state: ScanLedger.State, gameId: Int = 0) =
+            ledger.record(file.path, nes, state, file.length(), file.lastModified(), now = 1000, gameId = gameId)
+
+        record(rom("nes/Moss Kingdom (USA).nes"), ScanLedger.State.MATCHED, 11)
+        record(rom("nes/Moss Kingdom (Europe).nes"), ScanLedger.State.MATCHED, 11)
+        record(rom("nes/Paper Rally.nes"), ScanLedger.State.MATCHED, 12)
+        val nameless = rom("nes/Tin Harbour.nes").also { record(it, ScanLedger.State.MATCHED) }
+        record(rom("nes/Low Tide.nes"), ScanLedger.State.NOT_FOUND)
+        val gone = rom("nes/Glass Orchard.nes").also { record(it, ScanLedger.State.MATCHED, 13) }
+        assertTrue(gone.delete())
+
+        assertEquals(setOf(11, 12), ledger.gamesOnDisk())
+        assertEquals(listOf(nameless.path), ledger.matchesWithoutGame())
+
+        // And a match with no game whose file is gone holds nothing up.
+        assertTrue(nameless.delete())
+        assertEquals(emptyList(), ledger.matchesWithoutGame())
+    }
 }

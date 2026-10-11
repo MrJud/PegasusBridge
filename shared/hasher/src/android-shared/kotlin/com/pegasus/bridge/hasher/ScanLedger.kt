@@ -295,6 +295,38 @@ class ScanLedger(private val file: File, private val recipe: HashRecipe = HashRe
     }
 
     /**
+     * What is held for [path] as it was recorded, or null. For a reader that
+     * is not a scan and has no collection to hold the verdict to: whether the
+     * entry still stands is for it to say ([ScanVerdicts]).
+     */
+    fun entry(path: String): Entry? = synchronized(entries) { entries[path] }
+
+    /**
+     * The games of the matches whose files are there now. A match whose file
+     * is gone is kept until a scan forgets it, and is no game on disk.
+     */
+    fun gamesOnDisk(): Set<Int> = matches()
+        .filter { (path, e) -> e.gameId > 0 && File(path).exists() }
+        .mapTo(HashSet()) { it.second.gameId }
+
+    /**
+     * The files that are there and matched with no game named, by path and
+     * in order. Ledgers written before a match carried its game hold them,
+     * until a scan has been over the file again. Nothing can be said of the
+     * games on disk while there is one: any game may be its.
+     */
+    fun matchesWithoutGame(): List<String> = matches()
+        .filter { (path, e) -> e.gameId <= 0 && File(path).exists() }
+        .map { it.first }
+        .sorted()
+
+    // Copied under the lock and looked for on disk outside it: a folder on a
+    // card that answers slowly would hold up every worker of a running scan.
+    private fun matches(): List<Pair<String, Entry>> = synchronized(entries) {
+        entries.filter { it.value.state == State.MATCHED }.map { it.key to it.value }
+    }
+
+    /**
      * Keeps [state] for [path], under the number [recipe] gives a file of
      * [collection]: the collection the scan took the file to be in when it
      * reached the verdict.

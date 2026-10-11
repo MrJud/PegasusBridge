@@ -46,6 +46,12 @@ class RaGameList private constructor(
     val hashes: Int get() = byHash.size
 
     /**
+     * Every game that holds a hash, once, in the order of the file: for a
+     * reader that looks a game up by its title and not by a hash.
+     */
+    val all: List<Game> get() = byHash.values.distinctBy { it.gameId }
+
+    /**
      * The game a hash belongs to. [md5] in lowercase: the keys are, whatever
      * the answer wrote them in.
      */

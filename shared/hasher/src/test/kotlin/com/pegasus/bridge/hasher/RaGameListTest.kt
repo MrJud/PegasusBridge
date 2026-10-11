@@ -284,4 +284,20 @@ class RaGameListTest {
         assertEquals(listOf("7.tsv"), lists.list()?.toList())
         assertEquals(RaGameList.file(lists, 7), File(lists, "7.tsv"))
     }
+
+    // For a reader that looks a game up by its title. A game has as many
+    // hashes as it has dumps, and is one game.
+    @Test fun `every game of a list is given once in the order of the file`() {
+        val body = "[" + game(103, "Tin Harbour", d) + "," + game(101, "Moss Kingdom", a, b) + "," +
+                   game(104, "Low Tide") + "," + game(102, "Paper Rally", c, achievements = 0) + "]"
+        val list = listed(body)
+        val titles = listOf("Tin Harbour", "Moss Kingdom", "Paper Rally")
+
+        assertEquals(titles, list.all.map { it.title }, "a game with no hash is not in the list on disk either")
+        assertEquals(listOf(103, 101, 102), list.all.map { it.gameId })
+
+        list.write(dir)
+        val back = assertNotNull(RaGameList.read(dir, 7))
+        assertEquals(list.all, back.all)
+    }
 }

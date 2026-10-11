@@ -384,6 +384,26 @@ class RaApiHashLookup(
         return Answer(LookupOutcome.NotFound)
     }
 
+    /** What [gamesOf] answers: the list, or why there is none. */
+    sealed interface Listing {
+        class Had(val list: RaGameList) : Listing
+        class Failed(val why: LookupOutcome.Failed) : Listing
+    }
+
+    /**
+     * The list of [console] itself, for a caller that looks in it by
+     * something other than a hash: from disk when fresh, by one request when
+     * not, as for a lookup. A list that could not be had is said to be so
+     * and is never an empty one, which would read as a console with no
+     * games.
+     *
+     * No lookup was made, so [consecutiveFailures] is left as it was.
+     */
+    suspend fun gamesOf(console: Int): Listing = when (val had = listFor(console)) {
+        is Loaded.Ok -> Listing.Had(had.list)
+        is Loaded.Failed -> Listing.Failed(had.why)
+    }
+
     private suspend fun listFor(console: Int): Loaded =
         loaded[console] ?: loadLock.withLock {
             // A failure is kept as a list is. What is thrown, a cancelled

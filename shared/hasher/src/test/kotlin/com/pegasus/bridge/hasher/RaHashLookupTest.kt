@@ -1316,6 +1316,54 @@ class RaHashLookupTest {
         }
     }
 
+    /** A list of console 7 as an earlier scan left it on disk, dated now. */
+    private fun keptFresh() {
+        assertIs<RaGameList.Parsed.Listed>(RaGameList.parse(7, listed().body, now.get())).list.write(lists)
+    }
+
+    @Test fun `the games of a console come from a fresh list on disk with no request`() = runTest {
+        keptFresh()
+
+        val had = assertIs<RaApiHashLookup.Listing.Had>(lookup.gamesOf(7))
+
+        assertEquals(listOf("Moss Kingdom"), had.list.all.map { it.title })
+        assertEquals(0, requests.size)
+        assertEquals(0, lookup.consecutiveFailures)
+    }
+
+    @Test fun `the games of a console are asked for once when no list is on disk`() = runTest {
+        replies += listed()
+
+        val had = assertIs<RaApiHashLookup.Listing.Had>(lookup.gamesOf(7))
+        assertIs<RaApiHashLookup.Listing.Had>(lookup.gamesOf(7))
+
+        assertEquals(listOf(4101), had.list.all.map { it.gameId })
+        assertEquals(1, requests.size)
+        assertEquals(listOf("7.tsv"), kept())
+    }
+
+    // An empty list would say the console has no game of that name. A list
+    // that could not be had says nothing about any name.
+    @Test fun `a console whose list is refused is a failure and not an empty list`() = runTest {
+        replies += Reply("Forbidden", 403)
+
+        val failed = assertIs<RaApiHashLookup.Listing.Failed>(lookup.gamesOf(7))
+
+        assertEquals(LookupOutcome.Failed(LookupOutcome.Cause.REFUSED, "HTTP 403"), failed.why)
+        assertEquals(1, requests.size)
+        assertEquals(0, lookup.consecutiveFailures, "no lookup was made, and one was counted as failed")
+        assertEquals(emptyList(), kept())
+    }
+
+    @Test fun `with no key the games of a console are a failure before the disk is read`() = runTest {
+        keptFresh()
+
+        val failed = assertIs<RaApiHashLookup.Listing.Failed>(asking(key = " ").gamesOf(7))
+
+        assertEquals(LookupOutcome.Cause.AUTH, failed.why.cause)
+        assertEquals(0, requests.size)
+    }
+
     private companion object {
         const val HASH = "0123456789abcdef0123456789abcdef"
         const val OTHER = "11111111111111111111111111111111"

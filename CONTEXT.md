@@ -726,8 +726,10 @@ which no longer has to agree with anything the Bridge writes:
 - `_gameIdCache` — the answer to a past `/ra/match`, plus manual links. A
   remembered id whose ROM verdict is "verified" is asked about again once per
   session and follows the Bridge's answer for the file; a guess by name is
-  kept for the session only; anything else remembered, a link made by hand
-  among it, is left as it is
+  kept for the session only; anything else remembered is left as it is. A
+  link made by hand loses the verdict of the id it replaces and is verified
+  afresh, so it is among what is left alone unless the file's own hash
+  confirmed it: that one is "verified" like any other, and follows the file
 - `_hashVerifyCache` — the ROM verdict, which a match already carries
 - `_consoleTable` — the fetched table, mirrored into `api.memory` so labels are
   right on the first frame of the next launch

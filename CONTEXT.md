@@ -724,12 +724,21 @@ and the console table live only in the Bridge, reached through
 What the theme keeps is memoisation, under its own key format (`_memoKey`),
 which no longer has to agree with anything the Bridge writes:
 - `_gameIdCache` — the answer to a past `/ra/match`, plus manual links. A
-  remembered id whose ROM verdict is "verified" is asked about again once per
-  session and follows the Bridge's answer for the file; a guess by name is
-  kept for the session only; anything else remembered is left as it is. A
-  link made by hand loses the verdict of the id it replaces and is verified
-  afresh, so it is among what is left alone unless the file's own hash
-  confirmed it: that one is "verified" like any other, and follows the file
+  remembered id is asked about again once per session, whatever its ROM
+  verdict, and follows what the scan settled for the file: the file's game
+  replaces it and is "verified", the same game makes it "verified" and leaves
+  what is on screen alone (`romVerdictChanged`, where a change of game is
+  `matchRevised`), and `not_in_database`, `unsupported` or `placeholder`
+  take it away. A guess by name, a no for any other reason and an error
+  change nothing. A guess by name the theme was given itself is kept for the
+  session only
+- `_handLinks` — which of those ids the user linked by hand, in
+  `api.memory("ra_hand_links")`. Such a link is never asked about and nothing
+  automatic replaces or removes it, "verified" or not; it loses the verdict
+  of the id it replaces and gets its own from `verifyRomHash`, for the badge
+  only. Clearing the link clears the mark. Memory written before the map
+  existed has no marks, so a link made by hand back then counts as an answer
+  of the Bridge's and may be replaced or removed once
 - `_hashVerifyCache` — the ROM verdict, which a match already carries
 - `_consoleTable` — the fetched table, mirrored into `api.memory` so labels are
   right on the first frame of the next launch

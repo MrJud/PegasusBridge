@@ -20,6 +20,8 @@ android {
 
 dependencies {
     implementation(project(":core"))
+    // RaGameFinder, compiled from shared/, asks the scan's ledger about a file.
+    implementation(project(":hasher"))
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1")
 }

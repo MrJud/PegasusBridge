@@ -39,7 +39,7 @@ The theme fires Android Intents with `pegasus-data://<verb>?…` URIs. `DataLaye
 | `refresh-ra-profile`   | RaService         | RA user summary                                  |
 | `refresh-ra`           | RaService         | RA played games + completion                    |
 | `search-ra-games`      | RaService         | RA full-text search across console              |
-| `match-ra`             | RaService         | Which RA game a Pegasus game is (scan index, then catalogue) |
+| `match-ra`             | RaService         | Which RA game a Pegasus game is (the scan's verdict on the file, then the index, then the name; §3) |
 | `ra-consoles`          | RaService         | The console mapping table, so a theme carries none |
 | `credentials-status`   | RaService         | Which credentials are set + RA username, never values |
 | `clear-credentials`    | RaService         | Forgets one block — what "log out" means            |
@@ -549,7 +549,9 @@ holds a match for whose file is there:
   in `RaMatcher` (`/ra/match`, `match-ra`); the theme does not. A key is
   `FuzzyMatch.makeCacheKey` of the ROM's file name without its extension and
   of its collection's short name (the name of the folder it sits in, where no
-  metafile declares a collection).
+  metafile declares a collection). It is read by exact key only: the file's
+  name with the platform asked, then the title with it. A key of another
+  platform never answers.
 
 The index says what is on the device, and the metadata files do not: none is
 ever deleted. A game is listed while the ledger holds a `MATCHED` entry of it
@@ -566,6 +568,68 @@ whose file exists, any one of them for a game of several files.
   writes the id into its entry; a file in a folder no scan is given any more
   keeps its entry, and the log is what says so.
 - The keys and their shapes are unchanged.
+
+### Which game a file is
+
+`GET /ra/match?title=&platform=&file=` on the desktop, `match-ra` with the same
+three values and a `jobId` on Android, answered in `search-ra/{jobId}.json`.
+`title` is required, `platform` is the collection's short name and `file` the
+path of the game's first file as Pegasus gives it. One class, `RaGameFinder`
+(`shared/ra/src/android-shared/`), holds the order for both shells:
+
+1. **The file.** The path is made real, every link in it followed, and looked
+   up in the scan's ledger. An entry answers while the file still has the size
+   and date the scan saw, or is gone:
+
+   | ledger state | answer |
+   | --- | --- |
+   | `MATCHED` with a game id | that game, `method: "hash_index"`, `score: 1.0`, `onDevice: true` |
+   | `NOT_FOUND`, `KNOWN_UNSUPPORTED` | `no_match`, `reason: "not_in_database"` |
+   | `UNSUPPORTED` | `no_match`, `reason: "unsupported"` |
+   | `PLACEHOLDER` | `no_match`, `reason: "placeholder"` |
+   | `MATCHED` with no game id (a ledger from before a match carried it) | step 2 |
+   | `UNSUPPORTED_FORMAT`, `UNHASHABLE`, `NO_PLAYABLE_ENTRY`, `AMBIGUOUS_ARCHIVE` | step 3 |
+   | `API_RETRY`, `HASH_FAILED`, or a file whose size or date has changed | step 3 |
+   | no entry, no ledger, or no `file` sent | step 2 |
+
+   For a match the `title` is the one in `metadata/<id>.json` and `consoleName`
+   that of its `platform`; the title and platform asked stand in for what that
+   file does not give.
+2. **The index**, by exact key (above). Only for a file the ledger has never
+   held, for a match with no game id, and when no path is sent. A file the
+   scan has seen and did not match is never answered from it: two dumps of one
+   name share a key, and the game under it is the other file's.
+3. **The name**, against the games of the platform's own console, with
+   `onDevice: false` and a `method` that is not `hash_index`.
+
+The three answers:
+
+```json
+{"status":"ok","gameId":7236,"title":"...","consoleName":"SNES/Super Famicom",
+ "score":1.0,"method":"hash_index","onDevice":true,"schemaVersion":1}
+{"status":"no_match","gameId":0,"reason":"not_in_database","schemaVersion":1}
+```
+
+A match has those eight keys and no others. A theme that reads only `status`
+and `gameId` is answered as before.
+
+What the answer does not cover:
+
+- It is about the one file sent, the first Pegasus lists for the game. A no
+  for that file is a no for the game, even when another file of it matched.
+- A path written in another letter case than the name on disk, on a file
+  system that ignores case, is not found in the ledger: the real path does not
+  fold case there. Such a file is answered as one the scan has not seen, by
+  the index and then the name.
+- A verdict's age and the recipe it was reached under are not looked at. A
+  `NOT_FOUND` past its fourteen days is answered `not_in_database` until a
+  scan has asked again: it is the scan's last word, and nothing better is
+  known without hashing the file.
+- A key whose platform half differs from the platform asked no longer answers
+  (a game in two collections, a folder named unlike its collection). With a
+  path the ledger answers whatever the platform is called. Without one, or
+  until one scan has rewritten the matches of a ledger that carry no game id,
+  such a game gets a guess by name. One scan after installing settles it.
 
 The legacy `ra_hashes_cache.json` (single mega-file with `external_hashes` and `verify_map`) is gone. `verify_map` was user-stored state and now lives only in `api.memory("ra_hash_verify_map")`.
 
@@ -630,9 +694,11 @@ It still reads `metadata/_index.json` for the two things that are data rather
 than logic: `_loadDiscoveredGames` (`index.games[]`) and the on-device
 annotation.
 
-`RaMatcher` (`shared/ra/src/android-shared/`) is the one implementation both
-shells run — it takes the JSON its caller has already read, so it needs no
-filesystem or network of its own. `shared/*/src/android-shared/` exists for
+`RaGameFinder` and `RaMatcher` (`shared/ra/src/android-shared/`) are the one
+implementation both shells run. `RaMatcher` takes the JSON its caller has
+already read, so it needs no filesystem or network of its own; `RaGameFinder`
+reads the ledger and the index and decides which of them answers (§3, *Which
+game a file is*). `shared/*/src/android-shared/` exists for
 exactly this: files the Android modules compile via `srcDir`, kept apart from
 the rest of `shared/` because those names clash with Android's own.
 

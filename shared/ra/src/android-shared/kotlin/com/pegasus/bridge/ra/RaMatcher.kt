@@ -25,8 +25,41 @@ object RaMatcher {
     )
 
     /**
+     * What a theme is told. Three things and not two: "this game has no
+     * achievements" and "nobody could say" were one answer, and a theme
+     * showed a game as having none whenever RetroAchievements was down.
+     */
+    sealed interface Answer {
+        data class Found(val match: Match) : Answer
+
+        /** No game. [reason] is one of the constants below, and empty when none is known. */
+        data class None(val reason: String = "") : Answer
+
+        /** The question could not be answered. [code] is for a program, [message] for a person. */
+        data class Failed(val code: String, val message: String) : Answer
+    }
+
+    /** The scan asked RetroAchievements about this file and it knows no such dump. */
+    const val NOT_IN_DATABASE = "not_in_database"
+    /** A console RetroAchievements does not have, or one nobody can hash for. */
+    const val UNSUPPORTED = "unsupported"
+    /** The file stands for a game the library does not hold. */
+    const val PLACEHOLDER = "placeholder"
+    /** The platform has no console at RetroAchievements. */
+    const val NO_CONSOLE = "no_console"
+    /** The console's list was read and no title in it is close enough. */
+    const val NO_NAME_MATCH = "no_name_match"
+
+    /**
      * An exact answer from the ROM scan index, or null if the scan has not seen
      * this game. [index] is the parsed `metadata/_index.json`.
+     *
+     * By the two keys of [platformShortName] and no other. A key with the
+     * same title half under another platform used to answer as well, for a
+     * folder named unlike its collection, and what it answered with was any
+     * game of that name on any console: a Game Boy Advance file was given
+     * the achievements of the Super Nintendo game it is a port of. A file is
+     * found by its path now ([RaGameFinder]), whatever its folder is called.
      */
     fun fromIndex(index: JSONObject?, title: String, platformShortName: String,
                   romPath: String?): Match? {
@@ -41,18 +74,6 @@ object RaMatcher {
         )
 
         for (k in keys) entry(byKey.optJSONObject(k))?.let { return it }
-
-        // The platform half of a key comes from the folder the ROM sits in, and
-        // users do not always name that folder the way the library does — a
-        // title-only hit still identifies the game.
-        for (k in keys) {
-            val titlePart = k.substringBefore('|')
-            if (titlePart.isEmpty()) continue
-            for (other in byKey.keys()) {
-                if (other.substringBefore('|') != titlePart) continue
-                entry(byKey.optJSONObject(other))?.let { return it }
-            }
-        }
         return null
     }
 
@@ -94,17 +115,25 @@ object RaMatcher {
         )
     }
 
-    /** The response body both shells return for `/ra/match`. */
-    fun toJson(m: Match?): JSONObject = if (m == null) {
-        JSONObject().put("status", "no_match").put("gameId", 0)
-    } else {
-        JSONObject()
+    /**
+     * The response body both shells return for `/ra/match`.
+     *
+     * A match has the keys it always had and no others. A theme written
+     * before the other two answers said why reads `status` and `gameId`
+     * alone, and takes both for no match, as it took every failure.
+     */
+    fun toJson(a: Answer): JSONObject = when (a) {
+        is Answer.Found -> JSONObject()
             .put("status", "ok")
-            .put("gameId", m.gameId)
-            .put("title", m.title)
-            .put("consoleName", m.consoleName)
-            .put("score", m.score)
-            .put("method", m.method)
-            .put("onDevice", m.onDevice)
+            .put("gameId", a.match.gameId)
+            .put("title", a.match.title)
+            .put("consoleName", a.match.consoleName)
+            .put("score", a.match.score)
+            .put("method", a.match.method)
+            .put("onDevice", a.match.onDevice)
+        is Answer.None -> JSONObject().put("status", "no_match").put("gameId", 0)
+            .also { if (a.reason.isNotEmpty()) it.put("reason", a.reason) }
+        is Answer.Failed -> JSONObject().put("status", "error").put("gameId", 0)
+            .put("code", a.code).put("error", a.message)
     }
 }

@@ -20,6 +20,7 @@ import com.pegasus.bridge.hasher.RomHasher
 import com.pegasus.bridge.hasher.RomScanPipeline
 import com.pegasus.bridge.hasher.ScanJobRecord
 import com.pegasus.bridge.hasher.ScanLedger
+import com.pegasus.bridge.ra.RaConsoleMap
 import com.pegasus.bridge.ra.RaMatcher
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.runBlocking
@@ -28,8 +29,10 @@ import okhttp3.OkHttpClient
 import okhttp3.Request
 import org.json.JSONArray
 import org.json.JSONObject
+import org.junit.jupiter.api.Assumptions.assumeTrue
 import java.io.File
 import java.io.IOException
+import java.net.URLEncoder
 import java.nio.file.Files
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
@@ -40,6 +43,8 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertNotEquals
+import kotlin.test.assertNotNull
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 private const val NUL = "\u0000"
@@ -1159,6 +1164,114 @@ class ThemeContractTest {
         assertEquals(entry, kinds(one.getJSONArray("games").getJSONObject(0)))
         assertEquals(setOf("alpha|snes"), one.getJSONObject("byKey").keySet())
         assertEquals(entry, kinds(one.getJSONObject("byKey").getJSONObject("alpha|snes")))
+    }
+
+    // ── Which game a file is ────────────────────────────────────────────────
+
+    /** `/ra/match` as BridgeApi.js asks it: each value through encodeURIComponent. */
+    private fun match(title: String, platform: String, file: File? = null): JSONObject {
+        fun enc(v: String) = URLEncoder.encode(v, "UTF-8").replace("+", "%20")
+        val query = "title=${enc(title)}&platform=${enc(platform)}" +
+                    (file?.let { "&file=${enc(it.path)}" } ?: "")
+        return JSONObject(assertNotNull(httpGet("/ra/match?$query"), "nobody answered"))
+    }
+
+    private val matchKeys = setOf("status", "gameId", "title", "consoleName", "score", "method", "onDevice",
+                                  "schemaVersion")
+
+    private fun noMatch(reason: String) = JSONObject()
+        .put("status", "no_match").put("gameId", 0).put("reason", reason).put("schemaVersion", 1)
+
+    // The theme sends the path of the game's first file with every question.
+    // The scan knows that file by its hash, so the title, which a person can
+    // change in the library, has no say.
+    @Test fun `a file the scan matched is answered by its path whatever the library calls it`(): Unit = runBlocking {
+        val file = rom("snes", "Alpha (USA).sfc", "hash-alpha")
+        assertEquals(1, scan(ContentHasher(), MapLookup(catalogue)).newEntries)
+
+        val answer = match("Whatever", "snes", file)
+
+        assertEquals(matchKeys, answer.keySet())
+        assertEquals("ok", answer.getString("status"))
+        assertEquals(2001, answer.getInt("gameId"))
+        assertEquals("Alpha", answer.getString("title"))
+        assertEquals(RaConsoleMap.consoleName("snes"), answer.getString("consoleName"))
+        assertEquals(1.0, answer.getDouble("score"))
+        // What a theme from before this answer checks a scanned ROM for.
+        assertEquals("hash_index", answer.getString("method"))
+        assertEquals(true, answer.getBoolean("onDevice"))
+        assertEquals(1, answer.getInt("schemaVersion"))
+    }
+
+    // A port under the name of the original. The scan asked about the
+    // port's own hash and was told no, and that is the answer: it used to be
+    // the original's game, found by the title half of its key.
+    @Test fun `a file named like a game of another platform is not given that game`(): Unit = runBlocking {
+        rom("snes", "Alpha (USA).sfc", "hash-alpha")
+        val port = rom("gba", "Alpha (USA).gba", "hash-nobody-knows")
+        assertEquals(1, scan(ContentHasher(), MapLookup(catalogue)).newEntries)
+
+        assertTrue(noMatch("not_in_database").similar(match("Alpha (USA)", "gba", port)),
+                   match("Alpha (USA)", "gba", port).toString())
+    }
+
+    @Test fun `the same title on another platform is no key of this one`(): Unit = runBlocking {
+        rom("snes", "Alpha (USA).sfc", "hash-alpha")
+        scan(ContentHasher(), MapLookup(catalogue))
+        val index = JSONObject(paths.discoveryIndex.readText())
+
+        assertEquals(2001, RaMatcher.fromIndex(index, "Alpha (USA)", "snes", null)?.gameId)
+        assertNull(RaMatcher.fromIndex(index, "Alpha (USA)", "gba", null))
+        assertNull(RaMatcher.fromIndex(index, "Whatever", "gba", "/roms/gba/Alpha (USA).gba"))
+    }
+
+    // Written here and not through rom(), which ends a file with a NUL so
+    // that it is no placeholder.
+    @Test fun `a placeholder is no match and says so`(): Unit = runBlocking {
+        rom("snes", "Alpha (USA).sfc", "hash-alpha")
+        val later = File(romRoot, "snes/Later.sfc").apply { writeText("to buy later") }
+        assertEquals(12L, later.length())
+        scan(ContentHasher(), MapLookup(catalogue))
+
+        assertTrue(noMatch("placeholder").similar(match("Later", "snes", later)),
+                   match("Later", "snes", later).toString())
+    }
+
+    @Test fun `a file of a platform nobody can hash for is no match and says so`(): Unit = runBlocking {
+        val game = rom("switch", "Game.iso", "hash-alpha")
+        scan(ContentHasher(), MapLookup(catalogue))
+
+        assertTrue(noMatch("unsupported").similar(match("Game", "switch", game)),
+                   match("Game", "switch", game).toString())
+    }
+
+    // Pegasus gives the path as the library wrote it, links not followed,
+    // and the scan knows a file by where it lies.
+    @Test fun `a path through a link is the file it leads to`(): Unit = runBlocking {
+        val file = rom("lying/snes", "Alpha (USA).sfc", "hash-alpha")
+        val link = File(romRoot, "snes")
+        try {
+            Files.createSymbolicLink(link.toPath(), file.parentFile.toPath())
+        } catch (e: Exception) {
+            assumeTrue(false, "Symbolic links are unavailable: ${e.message}")
+        }
+        scan(ContentHasher(), MapLookup(catalogue))
+
+        val answer = match("Whatever", "snes", File(link, "Alpha (USA).sfc"))
+
+        assertEquals("ok", answer.getString("status"))
+        assertEquals(2001, answer.getInt("gameId"))
+        assertEquals("hash_index", answer.getString("method"))
+    }
+
+    @Test fun `a name with characters a query escapes still finds its file`(): Unit = runBlocking {
+        val file = rom("snes", "Alpha & Beta + Friends #1 \u00e9.sfc", "hash-alpha")
+        scan(ContentHasher(), MapLookup(catalogue))
+
+        val answer = match("Whatever", "snes", file)
+
+        assertEquals("ok", answer.getString("status"), answer.toString())
+        assertEquals(2001, answer.getInt("gameId"))
     }
 
     // A disc game in a folder of its own, under a collection Pegasus reads

@@ -1,5 +1,8 @@
 dependencies {
     api(project(":core"))
+    // A match is answered from what the scan settled about the file, and
+    // the ledger and the lists of consoles are the hasher's.
+    api(project(":hasher"))
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.8.1")
 
     testImplementation("com.squareup.okhttp3:mockwebserver:4.12.0")

@@ -280,7 +280,7 @@ Point the installer at a theme it did not detect with
 | what you want | desktop | Android |
 | --- | --- | --- |
 | is it alive, which credentials are set | `GET /health` | — |
-| which RA game is this? | `GET /ra/match?title=&platform=&file=` | `match-ra` |
+| which RA game is this file? | `GET /ra/match?title=&platform=&file=` | `match-ra` |
 | games on a platform | `GET /ra/search?platform=&term=` | `search-ra-games` |
 | the console table | `GET /ra/consoles` | `ra-consoles` |
 | RA profile / one game | `GET /ra/profile`, `GET /ra/game?gameId=` | `refresh-ra-profile`, `refresh-ra` |
@@ -454,8 +454,10 @@ and can be refused because their profile is private — which is a state to show
 not an error to retry.
 
 `/ra/match` is the one worth knowing about. Ask it *which RetroAchievements game
-this is* and it answers from the ROM hash index when it can and a fuzzy match
-against the console catalogue when it cannot — so a theme needs no matcher, no
+this is*, with the path of the game's file, and it answers with what the scan
+found for that very file: its game, or that it has none and why. A file the
+scan cannot speak for gets a fuzzy match by name against the catalogue of its
+own console — so a theme needs no matcher, no
 filename parser and no console table of its own. ReStory deleted 400 lines of
 QML when it moved to it.
 

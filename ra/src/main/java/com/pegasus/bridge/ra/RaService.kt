@@ -210,8 +210,8 @@ class RaService : Service() {
     /**
      * Which RetroAchievements game a Pegasus game is.
      *
-     * Shares RaMatcher with the desktop daemon, so a theme gets the same answer
-     * on both platforms and needs no matcher of its own. The reply goes to the
+     * Shares RaGameFinder and RaMatcher with the desktop daemon, so a theme gets
+     * the same answer on both platforms and needs no matcher of its own. The reply goes to the
      * search-ra slot the theme already polls.
      */
     private fun handleMatch(intent: Intent, jobId: String) {
@@ -219,23 +219,20 @@ class RaService : Service() {
         val platform = intent.getStringExtra(EXTRA_PLATFORM).orEmpty()
         val romPath  = intent.getStringExtra(EXTRA_FILE)
 
-        val index = try {
-            Paths.discoveryIndex.takeIf { it.isFile }?.let { JSONObject(it.readText()) }
-        } catch (e: Exception) { null }
-
-        var match = RaMatcher.fromIndex(index, title, platform, romPath)
-        if (match == null) {
+        // The order is RaGameFinder's, the one the desktop daemon answers in.
+        val answer = RaGameFinder(Paths.bridge).withoutName(title, platform, romPath) ?: run {
             val consoleId = RaConsoleMap.consoleId(platform)
             val creds = Config.load().ra
             if (consoleId > 0 && creds != null && creds.user.isNotEmpty() && creds.apiKey.isNotEmpty()) {
                 val catalogue = RaApiClient.fetchGameList(consoleId, creds.user, creds.apiKey)
-                match = RaMatcher.fromCatalogue(catalogue, title, platform, romPath)
-            }
-        }
+                RaMatcher.fromCatalogue(catalogue, title, platform, romPath)?.let { RaMatcher.Answer.Found(it) }
+            } else null
+        } ?: RaMatcher.Answer.None()
 
         Paths.searchRa(jobId).writeText(
-            RaMatcher.toJson(match).put("schemaVersion", SchemaVersion.CURRENT).toString())
-        Log.d(TAG, "Match job done for '$title' ($platform) -> ${match?.gameId ?: 0}")
+            RaMatcher.toJson(answer).put("schemaVersion", SchemaVersion.CURRENT).toString())
+        Log.d(TAG, "Match job done for '$title' ($platform) -> " +
+                   ((answer as? RaMatcher.Answer.Found)?.match?.gameId ?: 0))
     }
 
     /** The console table, so a theme can label a platform without its own copy. */

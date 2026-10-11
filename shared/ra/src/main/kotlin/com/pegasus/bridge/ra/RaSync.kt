@@ -128,6 +128,8 @@ class RaSync(
     }
 
 
+    private val finder = RaGameFinder(paths)
+
     /**
      * Answers "which RetroAchievements game is this Pegasus game?".
      *
@@ -137,29 +139,24 @@ class RaSync(
      * of the pieces is what lets a theme drop that duplicated logic.
      *
      * Order of preference:
-     *  1. the scan index — an exact ROM hash match, so no guessing at all;
+     *  1. what the scan settled about the file, and the scan index where it
+     *     settled nothing ([RaGameFinder.withoutName]): no guessing at all;
      *  2. fuzzy match against the console catalogue, ROM filename first.
      */
     fun matchGame(title: String, platformShortName: String, romPath: String? = null,
-                  minScore: Double = 0.60): RaMatcher.Match? {
-        // 1. The scan index is authoritative wherever it has an answer.
-        RaMatcher.fromIndex(readIndex(), title, platformShortName, romPath)?.let { return it }
+                  minScore: Double = 0.60): RaMatcher.Answer {
+        finder.withoutName(title, platformShortName, romPath)?.let { return it }
 
         // 2. Otherwise guess from the console catalogue.
         val consoleId = RaConsoleMap.consoleId(platformShortName)
-        if (consoleId <= 0) return null
-        val creds = config.load().ra ?: return null
-        if (creds.user.isEmpty() || creds.apiKey.isEmpty()) return null
+        if (consoleId <= 0) return RaMatcher.Answer.None()
+        val creds = config.load().ra ?: return RaMatcher.Answer.None()
+        if (creds.user.isEmpty() || creds.apiKey.isEmpty()) return RaMatcher.Answer.None()
 
         val catalogue = RaApiClient.fetchGameList(consoleId, creds.user, creds.apiKey,
                                                  onlyWithAchievements = false)
         return RaMatcher.fromCatalogue(catalogue, title, platformShortName, romPath, minScore)
-    }
-
-    private fun readIndex(): JSONObject? = try {
-        if (paths.discoveryIndex.isFile) JSONObject(paths.discoveryIndex.readText()) else null
-    } catch (e: Exception) {
-        null
+            ?.let { RaMatcher.Answer.Found(it) } ?: RaMatcher.Answer.None()
     }
 
     /**

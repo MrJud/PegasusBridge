@@ -5,6 +5,9 @@ import com.pegasus.bridge.core.BridgePaths
 import com.pegasus.bridge.core.Config
 import com.pegasus.bridge.core.NoopLog
 import com.pegasus.bridge.core.StderrLog
+import com.pegasus.bridge.hasher.CollectionRef
+import com.pegasus.bridge.hasher.RomScanner
+import com.pegasus.bridge.hasher.ScanLedger
 import kotlinx.coroutines.runBlocking
 import okhttp3.mockwebserver.Dispatcher
 import okhttp3.mockwebserver.MockResponse
@@ -18,6 +21,7 @@ import kotlin.test.BeforeTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
+import kotlin.test.assertIs
 import kotlin.test.assertTrue
 
 class RaSyncTest {
@@ -240,54 +244,188 @@ class RaSyncTest {
             JSONObject().put("byKey", byKey).toString())
     }
 
+    private fun found(answer: RaMatcher.Answer): RaMatcher.Match =
+        assertIs<RaMatcher.Answer.Found>(answer, "$answer").match
+
     @Test fun `a scanned rom is answered from the index, with no network call`() {
         writeIndex("castlevaniaiiidraculascurse|nes" to
             """{"gameId":2221,"title":"Castlevania III: Dracula's Curse","platform":"nes"}""")
 
-        val m = sync.matchGame("Castlevania III - Dracula's Curse (USA)", "nes",
-                               "/roms/nes/Castlevania III - Dracula's Curse (USA).nes")
-        assertEquals(2221, m?.gameId)
-        assertEquals("hash_index", m?.method)
-        assertTrue(m!!.onDevice, "an indexed game is on the device by definition")
+        val m = found(sync.matchGame("Castlevania III - Dracula's Curse (USA)", "nes",
+                                     "/roms/nes/Castlevania III - Dracula's Curse (USA).nes"))
+        assertEquals(2221, m.gameId)
+        assertEquals("hash_index", m.method)
+        assertTrue(m.onDevice, "an indexed game is on the device by definition")
         assertEquals(0, server.requestCount, "the index is authoritative; do not call the API")
     }
 
-    // The platform half of a key comes from the folder name, which users pick.
-    @Test fun `an indexed game is still found when the folder name differs`() {
-        writeIndex("contra|nintendo-nes" to
-            """{"gameId":1447,"title":"Contra","platform":"nes"}""")
+    // A key with the same title under another platform used to answer, for a
+    // folder named unlike its collection. What it answered with was any game
+    // of that name on any console.
+    @Test fun `a game indexed under another platform's key is not this one`() {
+        writeIndex("contra|snes" to
+            """{"gameId":1447,"title":"Contra","platform":"snes"}""")
+        route(mapOf("API_GetGameList" to """[]"""))
 
-        val m = sync.matchGame("Contra (USA)", "nes", "/roms/nes/Contra (USA).nes")
-        assertEquals(1447, m?.gameId, "a title-only hit still identifies the game")
-        assertTrue(m!!.onDevice)
+        assertEquals<RaMatcher.Answer>(RaMatcher.Answer.None(),
+                                       sync.matchGame("Contra (USA)", "nes", "/roms/nes/Contra (USA).nes"))
     }
 
     @Test fun `an entry the hasher could not identify is not treated as a match`() {
         writeIndex("contra|nes" to """{"gameId":0,"title":"","platform":"nes"}""")
         route(mapOf("API_GetGameList" to """[]"""))
-        assertEquals(null, sync.matchGame("Contra", "nes", "/roms/nes/Contra (USA).nes"))
+        assertEquals<RaMatcher.Answer>(RaMatcher.Answer.None(),
+                                       sync.matchGame("Contra", "nes", "/roms/nes/Contra (USA).nes"))
     }
 
     @Test fun `a game not on the device falls back to the console catalogue`() {
         route(mapOf("API_GetGameList" to
             """[{"ID":1483,"Title":"Mega Man 3"},{"ID":1447,"Title":"Contra"}]"""))
 
-        val m = sync.matchGame("Mega Man 3", "nes")
-        assertEquals(1483, m?.gameId)
-        assertEquals("pegasus_title", m?.method)
-        assertFalse(m!!.onDevice, "a catalogue match says nothing about the device")
+        val m = found(sync.matchGame("Mega Man 3", "nes"))
+        assertEquals(1483, m.gameId)
+        assertEquals("pegasus_title", m.method)
+        assertFalse(m.onDevice, "a catalogue match says nothing about the device")
         assertEquals("NES", m.consoleName)
     }
 
     @Test fun `a platform without retroachievements is answered without a call`() {
         val m = sync.matchGame("Zelda Tears of the Kingdom", "switch")
-        assertEquals(null, m)
+        assertEquals<RaMatcher.Answer>(RaMatcher.Answer.None(), m)
         assertEquals(0, server.requestCount)
     }
 
     @Test fun `an unrecognisable title returns nothing rather than a wrong game`() {
         route(mapOf("API_GetGameList" to """[{"ID":1447,"Title":"Contra"}]"""))
-        assertEquals(null, sync.matchGame("Totally Unrelated Game XYZ", "nes"))
+        assertEquals<RaMatcher.Answer>(RaMatcher.Answer.None(), sync.matchGame("Totally Unrelated Game XYZ", "nes"))
+    }
+
+    // ── matchGame, by the file the scan settled ─────────────────────────────
+    //
+    // The games from here on are invented. The files are real ones in a
+    // folder of the test, and the ledger is written as a scan writes it.
+
+    private fun rom(name: String, content: String = name): File =
+        File(root, "roms/$name").apply { parentFile.mkdirs(); writeText(content) }
+
+    /** Leaves the ledger a scan would have saved, holding [state] for [file]. */
+    private fun settled(file: File, state: ScanLedger.State, gameId: Int = 0, size: Long = file.length()) {
+        ScanLedger(File(paths.cache, ScanLedger.FILE_NAME)).apply {
+            record(RomScanner.canonical(file), CollectionRef.inferred("nes"), state, size, file.lastModified(),
+                   now = 1_700_000_000L, gameId = gameId)
+            save { f, text -> BridgePaths.writeAtomic(f, text) }
+        }
+    }
+
+    private val mossKingdom = """{"gameId":4101,"title":"Moss Kingdom","platform":"nes"}"""
+
+    // The scan asked about this very file and was told no. The name would
+    // find the game the file is called after, which the file is not.
+    @Test fun `a file the scan settled is answered with no request`() {
+        val file = rom("nes/Moss Kingdom (USA).nes")
+        settled(file, ScanLedger.State.NOT_FOUND)
+        writeIndex("mosskingdom|nes" to mossKingdom)
+        route(mapOf("API_GetGameList" to """[{"ID":4101,"Title":"Moss Kingdom"}]"""))
+
+        assertEquals<RaMatcher.Answer>(RaMatcher.Answer.None(RaMatcher.NOT_IN_DATABASE),
+                                       sync.matchGame("Moss Kingdom", "nes", file.path))
+        assertEquals(0, server.requestCount)
+    }
+
+    // Every state a scan can leave for a file, and what a question about
+    // that file is told. The four the scan has an answer for are a no with
+    // their reason. The others say nothing of the game and go to the name:
+    // none is answered from the index, which holds the key of each name here.
+    @Test fun `each state of the ledger is answered as the table says`() {
+        writeIndex("mosskingdom|nes" to mossKingdom)
+        val finder = RaGameFinder(paths)
+        // A file for each state, so that the ledger is longer every time
+        // and is read again.
+        fun told(state: ScanLedger.State): RaMatcher.Answer? {
+            val file = rom("nes/Moss Kingdom (${state.name}).nes")
+            settled(file, state)
+            return finder.withoutName("Moss Kingdom", "nes", file.path)
+        }
+        val no = mapOf(
+            ScanLedger.State.NOT_FOUND to RaMatcher.NOT_IN_DATABASE,
+            ScanLedger.State.KNOWN_UNSUPPORTED to RaMatcher.NOT_IN_DATABASE,
+            ScanLedger.State.UNSUPPORTED to RaMatcher.UNSUPPORTED,
+            ScanLedger.State.PLACEHOLDER to RaMatcher.PLACEHOLDER)
+        val toTheName = listOf(
+            ScanLedger.State.UNSUPPORTED_FORMAT, ScanLedger.State.UNHASHABLE,
+            ScanLedger.State.NO_PLAYABLE_ENTRY, ScanLedger.State.AMBIGUOUS_ARCHIVE,
+            ScanLedger.State.API_RETRY, ScanLedger.State.HASH_FAILED)
+        assertEquals(ScanLedger.State.values().toSet() - ScanLedger.State.MATCHED, no.keys + toTheName,
+                     "a state of the ledger has no place in this test")
+
+        for ((state, reason) in no)
+            assertEquals<RaMatcher.Answer?>(RaMatcher.Answer.None(reason), told(state), state.name)
+        for (state in toTheName)
+            assertEquals<RaMatcher.Answer?>(null, told(state), "$state was answered without the name")
+        assertEquals(0, server.requestCount)
+    }
+
+    // Two dumps of one name share a key, and the index holds the game of the
+    // one that matched. The other was seen and not hashed: it is given a
+    // guess by its name, which says it is one, and never the scan's word.
+    @Test fun `a file the scan could not hash is not given the game of a file named like it`() {
+        val file = rom("nes/Moss Kingdom (USA).zip")
+        settled(file, ScanLedger.State.UNHASHABLE)
+        writeIndex("mosskingdom|nes" to mossKingdom)
+        route(mapOf("API_GetGameList" to """[{"ID":4101,"Title":"Moss Kingdom"}]"""))
+
+        val m = found(sync.matchGame("Moss Kingdom", "nes", file.path))
+
+        assertEquals(4101, m.gameId)
+        assertFalse(m.onDevice, "a guess by name was given as what the scan found")
+        assertTrue(m.method != "hash_index", m.method)
+    }
+
+    // Another file under the name of one that matched. Its old key stays in
+    // the index until the next scan.
+    @Test fun `a file changed since the scan is not answered from the index`() {
+        val file = rom("nes/Moss Kingdom (USA).nes")
+        settled(file, ScanLedger.State.MATCHED, gameId = 4101, size = file.length() + 1)
+        writeIndex("mosskingdom|nes" to mossKingdom)
+        route(mapOf("API_GetGameList" to """[{"ID":4101,"Title":"Moss Kingdom"}]"""))
+
+        val m = found(sync.matchGame("Moss Kingdom", "nes", file.path))
+
+        assertEquals(4101, m.gameId)
+        assertFalse(m.onDevice, "a guess by name was given as what the scan found")
+        assertTrue(m.method != "hash_index", m.method)
+    }
+
+    // A ledger from before a match carried its game. The scan did match
+    // the file, and the index is where its game is still written.
+    @Test fun `a match the ledger holds with no game is answered from the index`() {
+        val file = rom("nes/Moss Kingdom (USA).nes")
+        settled(file, ScanLedger.State.MATCHED)
+        writeIndex("mosskingdom|nes" to mossKingdom)
+
+        val m = found(sync.matchGame("Whatever The Library Calls It", "nes", file.path))
+
+        assertEquals(4101, m.gameId)
+        assertTrue(m.onDevice)
+        assertEquals("hash_index", m.method)
+        assertEquals(0, server.requestCount)
+    }
+
+    // The ledger says which game, and the metadata file what it is called.
+    @Test fun `a file the scan matched is its game whatever it is asked as`() {
+        val file = rom("nes/Moss Kingdom (USA).nes")
+        settled(file, ScanLedger.State.MATCHED, gameId = 4101)
+        BridgePaths.writeAtomic(paths.metadata("4101"), mossKingdom)
+
+        val m = found(sync.matchGame("Whatever The Library Calls It", "some-folder", file.path))
+
+        assertEquals(RaMatcher.Match(4101, "Moss Kingdom", "NES", 1.0, "hash_index", onDevice = true), m)
+        assertEquals(0, server.requestCount)
+
+        // With no metadata file to read, the ledger's word still stands.
+        assertTrue(paths.metadata("4101").delete())
+        assertEquals(RaMatcher.Match(4101, "Paper Rally", "NES", 1.0, "hash_index", onDevice = true),
+                     found(sync.matchGame("Paper Rally", "nes", file.path)))
     }
 
     // ── consoleTable ────────────────────────────────────────────────────────

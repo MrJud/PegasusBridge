@@ -234,7 +234,13 @@ class RomScanPipeline(
         val files = RomScanner.scanWithCollections(roots, CollectionResolver(), extensionsFor)
         val total = files.size
         BridgeLog.i(TAG, "found $total ROM files under ${roots.size} root(s)")
-        if (total == 0) return Summary(0, 0, 0, 0, 0, writeDiscoveryIndex())
+        // The index is written all the same, from the ledger as it is on
+        // disk: a scan that finds nothing is what a card that is out looks
+        // like, and the games on it are not to stay listed as on the device.
+        if (total == 0) {
+            val onDisk = ScanLedger(File(paths.cache, ScanLedger.FILE_NAME))
+            return Summary(0, 0, 0, 0, 0, writeDiscoveryIndex(onDisk))
+        }
 
         val meta = preloadMetadataCache()
         BridgeLog.i(TAG, "loaded ${meta.byKey.size} cached entries of ${meta.keyOfGame.size} " +
@@ -592,7 +598,7 @@ class RomScanPipeline(
             // forget() is below, for a scan that gets as far as its summary.
             BridgeLog.w(TAG, "stopped after $processed/$total by ${t.javaClass.simpleName}; " +
                              "keeping the index and the ledger")
-            runCatching { writeDiscoveryIndex() }
+            runCatching { writeDiscoveryIndex(ledger) }
                 .onFailure { BridgeLog.w(TAG, "could not rebuild the index: ${it.message}") }
             ledger.save(writeLedger)
             throw t
@@ -625,7 +631,7 @@ class RomScanPipeline(
         // The ledger was under it. A scan that got to its end and could not
         // write the index then left no ledger either, and the next one read and
         // asked about every file again, the misses with the rest.
-        val indexed = writeDiscoveryIndex()
+        val indexed = writeDiscoveryIndex(ledger)
         val states = ledger.counts()
         BridgeLog.i(TAG, "scan ${if (abortReason.isEmpty()) "complete" else "aborted"}: " +
                          "$processed/$total processed, $newEntries new, " +
@@ -961,13 +967,30 @@ class RomScanPipeline(
     }
 
     /**
-     * Rebuilds `metadata/_index.json` from every per-game file: `games[]` for the
+     * Rebuilds `metadata/_index.json` from the per-game files of the games
+     * [ledger] holds a match for whose file is there: `games[]` for the
      * discovered-games list, `byKey{}` for reverse lookup from a ROM cache key.
+     *
+     * The index says what is on the device, and a metadata file does not: it
+     * is never deleted, so a game whose ROM was removed stayed listed for
+     * good. The file is left where it is, and a game that comes back with
+     * its folder is listed again without a read.
+     *
+     * A match that names no game, which ledgers written before a match
+     * carried its id still hold, could be of any game. While the ledger
+     * holds one whose file is there nothing is left out, and the log says
+     * so every time: a scan that goes over the file writes the id in, and
+     * one in a folder no scan is given any more would keep every game
+     * listed without a word.
      */
-    private fun writeDiscoveryIndex(): Int {
+    private fun writeDiscoveryIndex(ledger: ScanLedger): Int {
         val files = paths.metadata.listFiles { f ->
             f.isFile && f.name.endsWith(".json") && !f.name.startsWith("_")
         } ?: return 0
+
+        val held = ledger.gamesOnDisk()
+        val cannotTell = ledger.matchesWithoutGame()
+        var leftOut = 0
 
         val games = JSONArray()
         val byKey = JSONObject()
@@ -980,6 +1003,7 @@ class RomScanPipeline(
                 // Blank, like the collector and the cache: a legacy title of spaces
                 // listed here would be a game with no name in the list.
                 if (gameId <= 0 || title.isBlank()) continue
+                if (gameId !in held && cannotTell.isEmpty()) { leftOut++; continue }
 
                 val entry = JSONObject()
                     .put("gameId", gameId)
@@ -1002,6 +1026,12 @@ class RomScanPipeline(
             .put("games", games)
             .put("byKey", byKey)
         BridgePaths.writeAtomic(paths.discoveryIndex, payload.toString(2))
+        if (cannotTell.isNotEmpty()) {
+            BridgeLog.w(TAG, "${cannotTell.size} matches name no game (first: ${cannotTell.first()}): " +
+                             "every game is left in the index until a scan rewrites them")
+        } else if (leftOut > 0) {
+            BridgeLog.i(TAG, "$leftOut games left out of the index: no file of theirs is there")
+        }
         return games.length()
     }
 

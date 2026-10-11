@@ -1134,6 +1134,33 @@ class ThemeContractTest {
         assertEquals("hash_index", m?.method)
     }
 
+    // The theme marks a game as on the device when the index lists it, and
+    // reads nothing else of the index's than `games`. A game whose file is
+    // gone is no longer there to mark, and the file's shape is as it was.
+    @Test fun `the index lists a game only while a file of it is there`(): Unit = runBlocking {
+        rom("snes", "Alpha.sfc", "hash-alpha")
+        val beta = rom("snes", "Beta.sfc", "hash-beta")
+        val sampleIndex = JSONObject(fixture("index-sample.json"))
+        val entry = kinds(sampleIndex.getJSONArray("games").getJSONObject(0))
+
+        assertEquals(2, scan(ContentHasher(), MapLookup(catalogue)).indexed)
+        val both = JSONObject(paths.discoveryIndex.readText())
+        assertEquals(kinds(sampleIndex), kinds(both))
+        assertEquals(2, both.getInt("count"))
+        assertEquals(2, both.getJSONArray("games").length())
+
+        assertTrue(beta.delete())
+        assertEquals(1, scan(ContentHasher(), MapLookup(catalogue)).indexed)
+
+        val one = JSONObject(paths.discoveryIndex.readText())
+        assertEquals(kinds(sampleIndex), kinds(one))
+        assertEquals(1, one.getInt("count"))
+        assertEquals(listOf(2001), one.getJSONArray("games").map { (it as JSONObject).getInt("gameId") })
+        assertEquals(entry, kinds(one.getJSONArray("games").getJSONObject(0)))
+        assertEquals(setOf("alpha|snes"), one.getJSONObject("byKey").keySet())
+        assertEquals(entry, kinds(one.getJSONObject("byKey").getJSONObject("alpha|snes")))
+    }
+
     // A disc game in a folder of its own, under a collection Pegasus reads
     // from the metafile above it. The theme asks for a game by its file and
     // the collection's short name, and that is the key the scan has to have

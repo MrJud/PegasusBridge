@@ -2,6 +2,7 @@ package com.pegasus.bridge.hasher
 
 import com.pegasus.bridge.core.BridgeLog
 import com.pegasus.bridge.core.BridgePaths
+import com.pegasus.bridge.core.FuzzyMatch
 import com.pegasus.bridge.core.NoopLog
 import com.pegasus.bridge.core.StderrLog
 import com.sun.net.httpserver.HttpServer
@@ -2053,6 +2054,133 @@ class RomScanPipelineTest {
         val h3 = ContentHasher()
         val s3 = pipeline(h3, MapLookup(invented)).scan(listOf(romRoot.absolutePath))
         assertEquals(listOf(1, 1, 1), listOf(h3.calls.get(), s3.newEntries, s3.cachedHits))
+    }
+
+    // ── The index lists what is on the device ───────────────────────────────
+
+    private val invented = mapOf(
+        "hash-alpha" to GameMetadata(2001, "Alpha", "Invented System", "/Images/002001.png", 10),
+        "hash-beta"  to GameMetadata(2002, "Beta", "Invented System", "/Images/002002.png", 20))
+
+    private fun index() = JSONObject(paths.discoveryIndex.readText())
+
+    private fun indexedGames() = index().getJSONArray("games").map { (it as JSONObject).getInt("gameId") }.sorted()
+
+    // A metadata file is never deleted, and the index was every metadata
+    // file: a game whose ROM was removed stayed listed as on the device.
+    @Test fun `a game whose only file is gone leaves the index and its metadata file stays`(): Unit = runBlocking {
+        rom("snes", "Alpha.sfc", "hash-alpha")
+        val beta = rom("snes", "Beta.sfc", "hash-beta")
+        assertEquals(2, pipeline(ContentHasher(), MapLookup(invented)).scan(listOf(romRoot.absolutePath)).indexed)
+        assertTrue(beta.delete())
+
+        val s = pipeline(ContentHasher(), MapLookup(invented)).scan(listOf(romRoot.absolutePath))
+
+        assertEquals(1, s.indexed)
+        assertEquals(1, index().getInt("count"))
+        assertEquals(listOf(2001), indexedGames())
+        assertEquals(setOf("alpha|snes"), index().getJSONObject("byKey").keySet())
+        assertTrue(paths.metadata("2002").isFile, "the metadata file of a game that is out was deleted")
+    }
+
+    // A card put back in. The metadata file still describes the file, so
+    // the game is taken from it and listed again, and nothing is read.
+    @Test fun `a game comes back into the index with its file and without a read`(): Unit = runBlocking {
+        rom("snes", "Alpha.sfc", "hash-alpha")
+        val beta = rom("snes", "Beta.sfc", "hash-beta")
+        pipeline(ContentHasher(), MapLookup(invented)).scan(listOf(romRoot.absolutePath))
+        val bytes = beta.readBytes(); val modified = beta.lastModified()
+        assertTrue(beta.delete())
+        pipeline(ContentHasher(), MapLookup(invented)).scan(listOf(romRoot.absolutePath))
+        assertEquals(listOf(2001), indexedGames())
+        beta.writeBytes(bytes); assertTrue(beta.setLastModified(modified))
+
+        val h = ContentHasher(); val l = MapLookup(invented)
+        val s = pipeline(h, l).scan(listOf(romRoot.absolutePath))
+
+        assertEquals(2, s.indexed)
+        assertEquals(listOf(2001, 2002), indexedGames())
+        assertEquals(setOf("alpha|snes", "beta|snes"), index().getJSONObject("byKey").keySet())
+        assertEquals(listOf(0, 0), listOf(h.calls.get(), l.calls.get()))
+    }
+
+    @Test fun `a game with two files stays in the index while one of them is there`(): Unit = runBlocking {
+        val usa = rom("snes", "Alpha (USA).sfc", "hash-alpha")
+        val revised = rom("snes", "Alpha Revised.sfc", "hash-alpha")
+        pipeline(ContentHasher(), MapLookup(invented)).scan(listOf(romRoot.absolutePath))
+        assertEquals(listOf(2001), indexedGames())
+        // The one the metadata file names goes, whichever of the two that is.
+        val named = JSONObject(paths.metadata("2001").readText()).getString("cacheKey")
+        val (goes, stays) = if (named == "alpha|snes") usa to revised else revised to usa
+        assertTrue(goes.delete())
+
+        pipeline(ContentHasher(), MapLookup(invented)).scan(listOf(romRoot.absolutePath))
+
+        assertEquals(listOf(2001), indexedGames())
+        assertEquals(setOf(FuzzyMatch.makeCacheKey(stays.nameWithoutExtension, "snes")),
+                     index().getJSONObject("byKey").keySet())
+    }
+
+    // What a card that is out looks like: the roots are there and hold
+    // nothing. The scan returns before it opens a ledger of its own, and the
+    // index it writes on the way is held to the one on disk all the same.
+    @Test fun `a scan that finds no ROM lists nothing whose file is gone`(): Unit = runBlocking {
+        val alpha = rom("snes", "Alpha.sfc", "hash-alpha")
+        val beta = rom("snes", "Beta.sfc", "hash-beta")
+        pipeline(ContentHasher(), MapLookup(invented)).scan(listOf(romRoot.absolutePath))
+        assertTrue(alpha.delete() && beta.delete())
+
+        val s = pipeline(ContentHasher(), MapLookup(invented)).scan(listOf(romRoot.absolutePath))
+
+        assertEquals(listOf(0, 0), listOf(s.total, s.indexed))
+        assertEquals(0, index().getInt("count"))
+        assertEquals(0, index().getJSONObject("byKey").length())
+        assertTrue(paths.metadata("2001").isFile && paths.metadata("2002").isFile)
+    }
+
+    // A ledger from before a match carried its game. The match could be of
+    // any game, so no game is taken out on its account, and the log says
+    // which file it is waiting for.
+    @Test fun `a ledger that holds a match with no game leaves every game in the index`(): Unit = runBlocking {
+        rom("snes", "Alpha.sfc", "hash-alpha")
+        val elsewhere = Files.createTempDirectory("hasher-elsewhere").toFile()
+        try {
+            val old = File(elsewhere, "Old Match.sfc").apply { writeText(romText("hash-old")) }
+            ScanLedger(File(paths.cache, ScanLedger.FILE_NAME)).apply {
+                record(old.canonicalPath, CollectionRef.inferred("snes"), ScanLedger.State.MATCHED,
+                       old.length(), old.lastModified(), now = 1000)
+                save { f, text -> BridgePaths.writeAtomic(f, text) }
+            }
+            // A game no ROM of which is anywhere: only its metadata file.
+            paths.metadata("2002").writeText(JSONObject()
+                .put("schemaVersion", 1).put("gameId", 2002).put("title", "Beta").put("platform", "snes")
+                .put("cacheKey", "beta|snes").put("ra", JSONObject().put("total", 20).put("imageIcon", ""))
+                .toString())
+            val said = java.util.Collections.synchronizedList(mutableListOf<String>())
+            BridgeLog.current = object : BridgeLog {
+                override fun d(tag: String, msg: String) {}
+                override fun i(tag: String, msg: String) {}
+                override fun w(tag: String, msg: String, t: Throwable?) { said += msg }
+                override fun e(tag: String, msg: String, t: Throwable?) {}
+            }
+
+            pipeline(ContentHasher(), MapLookup(invented)).scan(listOf(romRoot.absolutePath))
+
+            assertEquals(listOf(2001, 2002), indexedGames())
+            assertEquals(listOf("1 matches name no game (first: ${old.canonicalPath}): " +
+                                "every game is left in the index until a scan rewrites them"),
+                         said.filter { "name no game" in it })
+
+            said.clear()
+            assertTrue(old.delete())
+            pipeline(ContentHasher(), MapLookup(invented)).scan(listOf(romRoot.absolutePath))
+
+            assertEquals(listOf(2001), indexedGames())
+            assertEquals(emptyList(), said.filter { "name no game" in it })
+            assertTrue(paths.metadata("2002").isFile)
+        } finally {
+            elsewhere.deleteRecursively()
+        }
     }
 
     @Test fun `a missing root is ignored rather than failing`(): Unit = runBlocking {

@@ -523,7 +523,8 @@ had; a scan that returned, stopped or not, has a `result` object; the copy in
 
 Whenever the pipeline has walked the roots — at the end of a scan, and also of
 one that found no ROM, was stopped, was cancelled or failed — it rebuilds
-**`metadata/_index.json`**:
+**`metadata/_index.json`** from the metadata files of the games the ledger
+holds a match for whose file is there:
 
 ```json
 {
@@ -549,6 +550,22 @@ one that found no ROM, was stopped, was cancelled or failed — it rebuilds
   `FuzzyMatch.makeCacheKey` of the ROM's file name without its extension and
   of its collection's short name (the name of the folder it sits in, where no
   metafile declares a collection).
+
+The index says what is on the device, and the metadata files do not: none is
+ever deleted. A game is listed while the ledger holds a `MATCHED` entry of it
+whose file exists, any one of them for a game of several files.
+
+- A folder that is not there, a card that is out or a disk not mounted, takes
+  its games out of the index at the next scan. A scan with the folder back
+  lists them again without reading a file: the metadata file still describes
+  each, and the match is taken from it.
+- A ledger written before a match carried its game id holds matches that name
+  no game. While it holds one whose file exists, no game is left out, since
+  that match could be of any, and every rebuild logs at warning level how many
+  there are and the path of the first. A scan that goes over such a file
+  writes the id into its entry; a file in a folder no scan is given any more
+  keeps its entry, and the log is what says so.
+- The keys and their shapes are unchanged.
 
 The legacy `ra_hashes_cache.json` (single mega-file with `external_hashes` and `verify_map`) is gone. `verify_map` was user-stored state and now lives only in `api.memory("ra_hash_verify_map")`.
 

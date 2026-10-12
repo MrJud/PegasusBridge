@@ -725,18 +725,25 @@ What the theme keeps is memoisation, under a key of its own that no longer
 has to agree with anything the Bridge writes. `gameKey(game)` makes it, from
 the Pegasus game and nothing else, and is the only place that knows its
 shape: the title without its brackets, the short name of the game's own
-first collection, and the name of its first file (lowercase, letters and
-digits only, no folder, brackets' contents kept), as in
-`game|snes|gameusasfc`. The file is there so that two dumps of one title on
-one platform are two entries, each with its own game; the collection is the
-game's own so that an entry opened from "Last Played" or "Favourites" is the
-same one as from its platform. A game with no file keeps the two parts,
-`game|snes`. Every caller hands over the game, and `matchRevised` and
-`romVerdictChanged` carry the key, which the details panel compares with the
-key of the game it shows. The hub's count, the game database's mark on a
-search result and the way back from a game's page ask the service
-(`linkCounts`, `isLinked`, `libraryGameFor`) and no longer read the stored
-map.
+first collection, and the name of its first file (lowercase, no folder,
+brackets' contents kept, and without what is ASCII and neither a letter nor
+a digit), as in `game|snes|gameusasfc`. The file is there so that two dumps
+of one title on one platform are two entries, each with its own game; the
+collection is the game's own (`platformOf`) so that an entry opened from
+"Last Played" or "Favourites" is the same one as from its platform, and it
+is the platform the Bridge is asked with: by `/ra/match`, and by the game
+database's `/ra/search` for the games a link can be made to, which a list's
+name got a 400 from. The title keeps only the letters and digits of ASCII,
+as it always did, since older memory is found by it; the file's name keeps
+every character that is not ASCII, so that two games named in another
+script, of whose titles nothing is left, are still two entries. Two names
+that differ only in what is dropped, `Game (USA).sfc` and `Game [USA].sfc`,
+are one key. A game with no file keeps the two parts, `game|snes`. Every
+caller hands over the game, and `matchRevised` and `romVerdictChanged` carry
+the key, which the details panel compares with the key of the game it shows.
+The hub's count, the game database's mark on a search result and the way
+back from a game's page ask the service (`linkCounts`, `isLinked`,
+`libraryGameFor`) and no longer read the stored map.
 
 Memory written before the file was part of the key has keys of two parts.
 When an entry has no id under its own key and there is one under the
@@ -745,11 +752,26 @@ moved to the entry's key and the two-part key is removed (`_entryKey`), on
 whatever reads the entry first: a lookup, the badge, the game database, the
 batch verification, `libraryGameFor`. So the first entry of a title to be
 seen takes what was remembered and is then treated like any other, and the
-other entry of that title starts with nothing and asks about its own file. A
-verdict or a mark under a two-part key with no id beside it is not moved.
-The theme before this does not find the three-part keys and asks again.
-Stored JSON that is missing, empty, corrupt or not a map of keys is read as
-nothing remembered, for all three maps.
+other entry of that title starts with nothing and asks about its own file.
+Making, clearing and verifying a link move the older key first as well. A
+verdict or a mark under a two-part key with no id beside it is not moved. Of
+what the entry's own key holds with no id, a verdict goes unless one comes
+with the id, and a mark stays and makes the id that arrives a link by hand
+(see the writes, below). The theme before this does not find the three-part
+keys and asks again. Stored JSON that is missing, empty, corrupt or not a
+map of keys is read as nothing remembered, for all three maps.
+
+The three maps are written together. Each waits a second after its last
+change, and whichever is due first takes the others that are waiting with it
+(`_saveWaiting`), the marks first, then the verdicts, then the ids; the same
+when the theme closes. A map nothing has changed is not written. Written
+each on its own they could be half a second apart, and a theme killed in
+between had a link's mark under one key and its id under another, which the
+next session read as an answer of the Bridge's. With the marks first, a
+theme killed between two writes leaves the mark of a link that was being
+moved under its entry's key before the id, which is why the move keeps such
+a mark. Each write is one `api.memory.set`, which rewrites the theme's
+settings file.
 
 - `_gameIdCache` — the answer to a past `/ra/match`, plus manual links. A
   remembered id is asked about again once per session, whatever its ROM
@@ -759,8 +781,11 @@ nothing remembered, for all three maps.
   what is on screen alone (`romVerdictChanged`, where a change of game is
   `matchRevised`), and `not_in_database`, `unsupported` or `placeholder`
   take it away. A guess by name, a no for any other reason and an error
-  change nothing. A guess by name the theme was given itself is kept for the
-  session only
+  change nothing. Once per session is once whatever happens in it: a scan
+  run from the hub does not make the theme ask again about a game it has
+  already asked about, so that game's id and badge follow the scan the next
+  time the theme starts. A guess by name the theme was given itself is kept
+  for the session only
 - `_handLinks` — which of those ids the user linked by hand, in
   `api.memory("ra_hand_links")`. Nothing automatic replaces or removes such a
   link or its mark, "verified" or not. Its ROM verdict, which is only what

@@ -721,8 +721,36 @@ The theme no longer matches games. `RAFuzzyMatch.js` (236 lines) and
 and the console table live only in the Bridge, reached through
 `/ra/match` and `/ra/consoles` (`match-ra` / `ra-consoles` on Android).
 
-What the theme keeps is memoisation, under its own key format (`_memoKey`),
-which no longer has to agree with anything the Bridge writes:
+What the theme keeps is memoisation, under a key of its own that no longer
+has to agree with anything the Bridge writes. `gameKey(game)` makes it, from
+the Pegasus game and nothing else, and is the only place that knows its
+shape: the title without its brackets, the short name of the game's own
+first collection, and the name of its first file (lowercase, letters and
+digits only, no folder, brackets' contents kept), as in
+`game|snes|gameusasfc`. The file is there so that two dumps of one title on
+one platform are two entries, each with its own game; the collection is the
+game's own so that an entry opened from "Last Played" or "Favourites" is the
+same one as from its platform. A game with no file keeps the two parts,
+`game|snes`. Every caller hands over the game, and `matchRevised` and
+`romVerdictChanged` carry the key, which the details panel compares with the
+key of the game it shows. The hub's count, the game database's mark on a
+search result and the way back from a game's page ask the service
+(`linkCounts`, `isLinked`, `libraryGameFor`) and no longer read the stored
+map.
+
+Memory written before the file was part of the key has keys of two parts.
+When an entry has no id under its own key and there is one under the
+two-part key of its title and platform, the id, its verdict and its mark are
+moved to the entry's key and the two-part key is removed (`_entryKey`), on
+whatever reads the entry first: a lookup, the badge, the game database, the
+batch verification, `libraryGameFor`. So the first entry of a title to be
+seen takes what was remembered and is then treated like any other, and the
+other entry of that title starts with nothing and asks about its own file. A
+verdict or a mark under a two-part key with no id beside it is not moved.
+The theme before this does not find the three-part keys and asks again.
+Stored JSON that is missing, empty, corrupt or not a map of keys is read as
+nothing remembered, for all three maps.
+
 - `_gameIdCache` — the answer to a past `/ra/match`, plus manual links. A
   remembered id is asked about again once per session, whatever its ROM
   verdict, when Pegasus gives the game a file to ask with, and follows what
@@ -734,20 +762,24 @@ which no longer has to agree with anything the Bridge writes:
   change nothing. A guess by name the theme was given itself is kept for the
   session only
 - `_handLinks` — which of those ids the user linked by hand, in
-  `api.memory("ra_hand_links")`. Such a link is never asked about and nothing
-  automatic replaces or removes it, "verified" or not; it loses the verdict
-  of the id it replaces and gets its own from `verifyRomHash`, for the badge
-  only: asked for when the link is made, not again once it is stored, and
-  dropped when it comes back after the link was replaced or cleared. So the
-  badge of a link made by hand says what the scan knew of the file when the
-  link was made, or nothing if the Bridge did not answer then, until the
-  game is linked again. Clearing the link clears the mark, and clearing the
+  `api.memory("ra_hand_links")`. Nothing automatic replaces or removes such a
+  link or its mark, "verified" or not. Its ROM verdict, which is only what
+  the badge says, does follow the scan: the link loses the verdict of the id
+  it replaces and gets its own from `verifyRomHash` when it is made (dropped
+  when it comes back after the link was replaced or cleared), and after that
+  the Bridge is asked about the file once per session, under the same
+  conditions as for any other remembered id. `ok` with `onDevice` makes the
+  verdict "verified" when it is the linked id and "mismatch" when it is
+  another; any other answer that is not an error makes it "unsupported"; an
+  error changes nothing and the next opening may ask again.
+  `romVerdictChanged` says so when the verdict changed. So a game linked
+  before its file was scanned reads "ROM Verified" once a scan has matched
+  the file to that very game. Clearing the link clears the mark, and clearing the
   cache or signing out clears every link with its mark. A mark found with no
   id under it, which the theme before the marks leaves when it clears a
-  link, goes when an answer of the Bridge's is stored there; stored marks
-  that are not a map of keys are read as none. Memory written before the map
-  existed has no marks, so a link made by hand back then counts as an answer
-  of the Bridge's and may be replaced or removed once
+  link, goes when an answer of the Bridge's is stored there. Memory written
+  before the map existed has no marks, so a link made by hand back then
+  counts as an answer of the Bridge's and may be replaced or removed once
 - `_hashVerifyCache` — the ROM verdict, which a match already carries
 - `_consoleTable` — the fetched table, mirrored into `api.memory` so labels are
   right on the first frame of the next launch

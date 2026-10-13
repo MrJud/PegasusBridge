@@ -11,10 +11,12 @@
 # twice, once for the push and once for the request, as every job of the other
 # workflow is run twice.
 #
-# What it builds is the debug variant. Its library is compiled from the same C
-# with the same linker options as the release's, and the check after the link
-# runs for both, but the file checked here is the debug one: the release APK,
-# which is what a device gets, is still built and tried by hand.
+# It builds both variants, the debug one first. The release variant is what a
+# device gets: its classes are minified and its resources shrunk, and its
+# library is a second native build of the same C. It comes out unsigned here,
+# since no signing values are set, and is held to what the debug one is held
+# to. Still by hand are the signed APK and a run on a device: nothing here
+# installs either variant or loads its library.
 #
 # What it downloads: the Gradle distribution from services.gradle.org, held to
 # distributionSha256Sum in gradle/wrapper/gradle-wrapper.properties; the
@@ -111,6 +113,41 @@ jobs:
           cmake "-DLIBRARY=$RUNNER_TEMP/apk/lib/arm64-v8a/librahasher.so" -DPAGE=16384 -P hasher/src/main/cpp/check_page_size.cmake
           "$ANDROID_HOME/build-tools/35.0.0/zipalign" -c -P 16 4 app/build/outputs/apk/debug/app-debug.apk
 
+      # The variant a release is made of. R8 and the lint of a release build run
+      # nowhere else, and neither does the second native build; the check of
+      # the page size runs after its link and the check of the licence text
+      # after its packaging, as for the debug variant.
+      - name: Build the release variant, minified and unsigned
+        run: ./gradlew --no-daemon :app:assembleRelease
+
+      # As for the debug library above, on the folder the plugin keeps a
+      # release's native build in.
+      - name: The release library was built by that NDK and that CMake
+        run: |
+          grep -h -e '^CMAKE_ANDROID_NDK:' -e '^CMAKE_COMMAND:' hasher/.cxx/RelWithDebInfo/*/arm64-v8a/CMakeCache.txt
+          grep -q '^CMAKE_ANDROID_NDK:.*/ndk/27\.0\.12077973$' hasher/.cxx/RelWithDebInfo/*/arm64-v8a/CMakeCache.txt
+          grep -q '^CMAKE_COMMAND:.*/cmake/3\.22\.1/bin/cmake$' hasher/.cxx/RelWithDebInfo/*/arm64-v8a/CMakeCache.txt
+
+      # The first three lines are the debug APK's, on the file a device is
+      # handed. The last two are for what only this variant does to the code.
+      # The two functions librahasher.so exports are named after the class
+      # that declares them and after the method, so a minified build that
+      # renamed either would install, start and fail at the first file it was
+      # asked to hash. Two rules keep the names today, and one is enough: the
+      # keep of com.pegasus.bridge in app/proguard-rules.pro, and the plugin's
+      # own rule for classes with native methods. Built without both, the APK
+      # fails these two lines; without one of them it passes. They look for
+      # the method the scan calls; the other, which reads the version, is kept
+      # by the same rules. The steps of this job run without pipefail, so a
+      # grep that has found its line and closed the pipe fails nothing.
+      - name: The library in the release APK is laid out for 16 KB pages, and the minified code still has the class the library is named after
+        run: |
+          unzip -q -o app/build/outputs/apk/release/app-release-unsigned.apk 'lib/arm64-v8a/librahasher.so' -d "$RUNNER_TEMP/apk-release"
+          cmake "-DLIBRARY=$RUNNER_TEMP/apk-release/lib/arm64-v8a/librahasher.so" -DPAGE=16384 -P hasher/src/main/cpp/check_page_size.cmake
+          "$ANDROID_HOME/build-tools/35.0.0/zipalign" -c -P 16 4 app/build/outputs/apk/release/app-release-unsigned.apk
+          unzip -p app/build/outputs/apk/release/app-release-unsigned.apk 'classes*.dex' | strings | grep -q 'Lcom/pegasus/bridge/hasher/RcheevosNative;'
+          unzip -p app/build/outputs/apk/release/app-release-unsigned.apk 'classes*.dex' | strings | grep -q 'hashForConsole'
+
       - name: Upload reports
         if: failure()
         uses: actions/upload-artifact@v4
@@ -119,3 +156,4 @@ jobs:
           path: |
             */build/reports/
             */build/test-results/testDebugUnitTest/*.xml
+            app/build/outputs/mapping/release/

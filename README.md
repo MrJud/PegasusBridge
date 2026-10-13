@@ -639,7 +639,10 @@ That job also runs the unit tests of the Android modules that have any
 native library, as it lies in the debug APK, to a layout for pages of 16 KB.
 It builds with the NDK the Android Gradle plugin asks for when the build
 names none, 27.0.12077973, and CMake 3.22.1, and fails if the build found
-others. The release APK is built by no job.
+others. It then builds the release variant, minified and unsigned, holds its
+library to the same, and looks in its code for the class and the method the
+library's functions are named after. No job signs an APK or runs one on a
+device.
 
 ---
 

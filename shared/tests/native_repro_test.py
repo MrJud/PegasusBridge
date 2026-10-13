@@ -3,6 +3,7 @@
 any JVM and under a timeout.
 
     ./tests/native_repro_test.py [tools-dir]
+    ./tests/native_repro_test.py --remake-chd      (writes tests/chd/ again; needs chdman)
 
 tools-dir is what `native/build.sh <out> --tools=<tools-dir>` wrote: rahash_cli,
 the hasher's sources with a main() in place of the JNI file, compiled as the
@@ -20,7 +21,10 @@ seconds, and what it did is a line of the output.
 
 The reader of .wbfs containers that is in the library beside rcheevos
 (pb_wbfs.c) is run the same way and for the same reason: it takes every
-number it works with from the file, and it is C.
+number it works with from the file, and it is C. So is the reader of .chd
+images (pb_chd.c), and with it libchdr and the decompressors it hands a
+file's bytes to, which are somebody else's C. The images are written by
+chd_fixture.py beside this file, but for the few in chd/ that chdman wrote.
 
 Every file is made here, from the few bytes that matter and filler; none is a
 game. Two kinds of row:
@@ -62,6 +66,7 @@ If either report is missing no row is run, and the status is 2.
 """
 
 import hashlib
+import math
 import os
 import re
 import resource
@@ -70,6 +75,10 @@ import subprocess
 import sys
 import tempfile
 from pathlib import Path
+
+sys.dont_write_bytecode = True  # no __pycache__ left in tests/
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import chd_fixture  # noqa: E402
 
 SHARED = Path(__file__).resolve().parent.parent
 
@@ -115,6 +124,22 @@ class Bare(str):
     the folder it is in, where every other row gives the whole path."""
 
 
+# What a row expects that only has to end in order: a hash or a reason,
+# whichever, with no report, no signal and no file left open.
+EITHER = "either"
+
+# The address space a row marked Small is run in.
+SMALL_BYTES = 512 * 1024 * 1024
+
+
+class Small(str):
+    """The file of a row that is run with no more address space than
+    SMALL_BYTES, to show that nothing large is asked for on the way to its
+    refusal. On the plain build only: a program built with the address
+    sanitizer reserves far more than that before it has read a byte, and
+    does not start. There the row is run like any other."""
+
+
 def md5(data):
     return hashlib.md5(data).hexdigest()
 
@@ -137,7 +162,7 @@ def ines():
     return bytes(header) + noise(16 * 1024 + 8 * 1024, seed="nes")
 
 
-def sega_cd_track(sectors=32):
+def sega_cd_track(sectors=32, filler=None):
     """A Sega CD data track as a dump holds it: raw MODE1/2352 sectors, each
     with its sync pattern, its address after the two-second lead-in and mode 1,
     sector 0 opening with the disc and ROM headers rcheevos knows it by."""
@@ -150,7 +175,7 @@ def sega_cd_track(sectors=32):
         put(track, at + 1, b"\xff" * 10)
         lba = s + 150
         put(track, at + 12, bytes([bcd(lba // 4500), bcd(lba // 75 % 60), bcd(lba % 75), 1]))
-        put(track, at + 16, noise(2048, seed=f"segacd-{s}"))
+        put(track, at + 16, (filler or noise)(2048, seed=f"segacd-{s}"))
     put(track, 16, b"SEGADISCSYSTEM  REPROTEST ")
     put(track, 16 + 0x100, b"SEGA MEGA DRIVE ")
     return bytes(track)
@@ -674,11 +699,725 @@ def wad_md5(image):
     return md5(hashed)
 
 
+def raw_sectors(image, mode, first=0):
+    """Sectors of 2048 bytes as a dump of a CD holds them, 2352 bytes each:
+    the sync pattern, the address after the two-second lead-in, the mode,
+    for mode 2 the subheader twice over, the data, and zeros where the
+    error correction is. `first` is the number the first of them has on the
+    disc: rcheevos works out where a track of a cue sheet begins from the
+    address its sectors carry."""
+    def bcd(n):
+        return (n // 10) << 4 | n % 10
+
+    out = []
+    for s in range(len(image) // 2048):
+        lba = first + s + 150
+        sector = bytearray(2352)
+        put(sector, 1, b"\xff" * 10)
+        put(sector, 12, bytes([bcd(lba // 4500), bcd(lba // 75 % 60), bcd(lba % 75), mode]))
+        if mode == 2:
+            put(sector, 16, bytes([0, 0, 8, 0]) * 2)
+        put(sector, 24 if mode == 2 else 16, image[s * 2048:(s + 1) * 2048])
+        out.append(bytes(sector))
+    return out
+
+
+def iso9660(tree, first=0):
+    """An ISO 9660 volume of the files in `tree`, a dict of names to bytes or
+    to a dict for a folder: the volume descriptor in sector 16, the root
+    directory in 18, and every folder and file after it in the order given.
+    `first` is the number the volume's first sector has on its disc, which
+    every sector number written in it is counted from."""
+    placed = {}
+    free = [19]
+
+    def record(name, sector, size):
+        length = 33 + len(name) + (33 + len(name)) % 2
+        entry = bytearray(length)
+        entry[0] = length
+        put(entry, 2, (first + sector).to_bytes(3, "little"))
+        put(entry, 10, size.to_bytes(4, "little"))
+        entry[32] = len(name)
+        put(entry, 33, name)
+        return bytes(entry)
+
+    def lay(folder, at):
+        entries = b""
+        for name, item in folder.items():
+            where = free[0]
+            if isinstance(item, dict):
+                free[0] += 1
+                lay(item, where)
+                entries += record(name.encode(), where, 2048)
+            else:
+                free[0] += max(1, -(-len(item) // 2048))
+                placed[where] = item
+                entries += record(name.encode(), where, len(item))
+        placed[at] = entries
+
+    lay(tree, 18)
+    image = bytearray(free[0] * 2048)
+    volume = 16 * 2048
+    put(image, volume, b"\x01CD001\x01")
+    put(image, volume + 128, (2048).to_bytes(2, "little"))      # block size
+    put(image, volume + 156, record(b"\x00", 18, 2048))         # the root directory
+    for where, data in placed.items():
+        put(image, where * 2048, data)
+    return bytes(image)
+
+
+def quiet(size, seed):
+    """Filler a compressor makes shorter, where noise() is kept as it is:
+    sixteen values of a byte and no more. chdman packs a hunk only when
+    that makes it shorter, so a disc of noise would go through no
+    decompressor at all."""
+    return bytes(byte & 0x0F for byte in noise(size, seed))
+
+
+def playstation_disc(filler=noise):
+    """A PlayStation disc and its hash: SYSTEM.CNF names the program to
+    start, and the hash is of that name and then the program."""
+    program = filler(5000, seed="playstation-program")
+    image = iso9660({"SYSTEM.CNF;1": b"BOOT = cdrom:\\SLUS_000.01;1\r\nTCB = 4\r\n",
+                     "SLUS_000.01;1": program})
+    return image, md5(b"SLUS_000.01" + program)
+
+
+def playstation2_disc(filler=noise):
+    """The same of a PlayStation 2 disc, whose SYSTEM.CNF says BOOT2."""
+    program = filler(7000, seed="playstation2-program")
+    image = iso9660({"SYSTEM.CNF;1": b"BOOT2 = cdrom0:\\SLUS_200.02;1\r\nVER = 1.00\r\n",
+                     "SLUS_200.02;1": program})
+    return image, md5(b"SLUS_200.02" + program)
+
+
+def psp_disc(filler=noise):
+    """A PSP disc and its hash, which is of PARAM.SFO and then EBOOT.BIN."""
+    sfo, eboot = filler(700, seed="psp-sfo"), filler(4500, seed="psp-eboot")
+    image = iso9660({"PSP_GAME": {"PARAM.SFO": sfo, "SYSDIR": {"EBOOT.BIN": eboot}}})
+    return image, md5(sfo + eboot)
+
+
+def neogeo_cd_disc():
+    """A Neo Geo CD and its hash, which is of the .PRG files IPL.TXT names,
+    in its order."""
+    main, sub = noise(3000, seed="neogeo-main"), noise(2500, seed="neogeo-sub")
+    image = iso9660({"IPL.TXT;1": b"MAIN.PRG,0,0\r\nTITLE.FIX,0,0\r\nSUB.PRG,0,0\r\n",
+                     "SUB.PRG;1": sub, "MAIN.PRG;1": main, "TITLE.FIX;1": noise(100, seed="neogeo-fix")})
+    return image, md5(main + sub)
+
+
+def tone(sector):
+    """A sector of sound a FLAC encoder has something to do with: two sine
+    waves, one to a channel, with a little of noise() on top."""
+    grit = noise(2352, seed=f"tone-{sector}")
+    out = bytearray()
+    for sample in range(588):
+        at = sector * 588 + sample
+        for channel, (height, length) in enumerate(((3000, 9.0), (2000, 7.0))):
+            value = int(height * math.sin(at / length)) + grit[2 * sample + channel] % 8
+            out += value.to_bytes(2, "little", signed=True)
+    return bytes(out)
+
+
+PCE_AUDIO_FRAMES = 301      # not a multiple of four, so the track after it shows the filling
+PCE_PREGAP = 225
+
+
+def pce_cd_tracks(filler=noise):
+    """A PC Engine CD of two tracks and its hash: audio, then the data
+    track with three seconds of pregap ahead of its first sector. The second
+    sector of the data names the disc and says where the program is, and the
+    hash is of the name and the program's sectors. Returns the audio track's
+    sectors, the pregap's, and the data's, each 2352 bytes."""
+    data = bytearray(340 * 2048)
+    put(data, 0, filler(2048, seed="pce-first"))
+    header = bytearray(2048)
+    put(header, 0, bytes([0, 0, 2, 3]))     # the program: from sector 2, three sectors
+    put(header, 32, b"PC Engine CD-ROM SYSTEM")
+    put(header, 106, b"REPRO TEST PCE DISC   ")
+    put(data, 2048, header)
+    program = filler(3 * 2048, seed="pce-program")
+    put(data, 2 * 2048, program)
+    audio = [(noise(2352, seed="pce-audio") if filler is noise else tone(s)) if s in (0, 150, 300)
+             else bytes(2352) for s in range(PCE_AUDIO_FRAMES)]
+    pregap = [bytes(2352)] * PCE_PREGAP
+    return (audio, pregap, raw_sectors(bytes(data), 1, first=PCE_AUDIO_FRAMES + PCE_PREGAP),
+            md5(bytes(header[106:128]) + program))
+
+
+def saturn_track():
+    """A Saturn disc's first sectors, which rcheevos knows by other letters
+    than a Sega CD's and hashes the same way."""
+    image = bytearray(noise(32 * 2048, seed="saturn"))
+    put(image, 0, b"SEGA SEGASATURN REPROTEST ")
+    return raw_sectors(bytes(image), 1), md5(bytes(image[:512]))
+
+
 def cue(track, mode):
     """A cue sheet of one data track."""
     return (b'FILE "%s" BINARY\r\n' % track
             + b"  TRACK 01 %s\r\n" % mode
             + b"    INDEX 01 00:00:00\r\n")
+
+
+PLACED_DIFFERENTLY = "place differently"    # of the reader's words for a track it will not place
+
+
+def chd_rows(write):
+    """Writes the .chd images and returns their rows.
+
+    The first kind must give the hash of the same disc as a cue sheet, a
+    .gdi sheet or an .iso, which this script works out from the bytes: what
+    is shown is that a sector asked of the image is the sector of the disc.
+    The second kind is images no chdman writes, each of which has to be
+    refused, by the reader's own check where the reason is given: most of
+    them are refused before libchdr is handed the file at all."""
+    from chd_fixture import COPY, FROM_PARENT, STORED, cd, dvd, sectors_of
+
+    rows = []
+
+    def image(name, made):
+        write(name, made.bytes() if hasattr(made, "bytes") else made)
+        return name
+
+    # ---- one track, and every way a hunk is packed
+
+    track = sega_cd_track()
+    sega_cd = f"{md5(track[16:16 + 512])}|9"
+    one = [{"type": "MODE1_RAW", "sectors": sectors_of(track, 2352)}]
+    image("segacd.chd", cd(one))
+    image("SEGACD-CAPITALS.CHD", cd(one))
+    write("segacd-chd.m3u", b"segacd.chd\r\n")
+    rows += [
+        ("a .chd of one track under console 9, as the cue sheet of the same track",
+         9, "segacd.chd", sega_cd),
+        # Tried as a PlayStation, a PlayStation 2 and a Dreamcast disc first,
+        # each of which opens the image and closes it again.
+        ("the same image with no console given", 0, "segacd.chd", sega_cd),
+        ("the same image under a name in capitals", 9, "SEGACD-CAPITALS.CHD", sega_cd),
+        # Through the iterator rcheevos makes for a playlist's first file,
+        # which has a copy of the reader and the caller's reasons.
+        ("a playlist naming that image", 9, "segacd-chd.m3u", sega_cd),
+    ]
+    for codec in (b"cdzl", b"cdlz", b"cdzs", b"cdfl"):
+        name = image(f"segacd-{codec.decode()}.chd", cd(one, codecs=[codec]))
+        rows.append((f"the same track with its hunks packed by {codec.decode()}", 9, name, sega_cd))
+    # Every hunk kept as it is in an image that names a compressor, and
+    # every hunk but the first a copy of the first.
+    stored = cd(one, codecs=[b"cdzl"])
+    stored.kinds = {hunk: STORED for hunk in range(4)}
+    rows.append(("the same track with its hunks kept as they are in a packed image",
+                 9, image("segacd-stored.chd", stored), sega_cd))
+
+    saturn, saturn_hash = saturn_track()
+    rows.append(("a Saturn disc in a .chd under console 39", 39,
+                 image("saturn.chd", cd([{"type": "MODE1_RAW", "sectors": saturn}], codecs=[b"cdzl"])),
+                 f"{saturn_hash}|39"))
+
+    # ---- the consoles that read files off the disc
+
+    psx, psx_hash = playstation_disc()
+    write("psx.bin", b"".join(raw_sectors(psx, 2)))
+    write("psx.cue", cue(b"psx.bin", b"MODE2/2352"))
+    image("psx.chd", cd([{"type": "MODE2_RAW", "sectors": raw_sectors(psx, 2)}], codecs=[b"cdzl"]))
+    rows += [
+        ("a PlayStation disc as a cue sheet, under console 12", 12, "psx.cue", f"{psx_hash}|12"),
+        ("the same disc as a .chd of mode 2 sectors, packed", 12, "psx.chd", f"{psx_hash}|12"),
+        ("the same image with no console given", 0, "psx.chd", f"{psx_hash}|12"),
+    ]
+
+    ps2, ps2_hash = playstation2_disc()
+    write("ps2.iso", ps2)
+    image("ps2-cd.chd", cd([{"type": "MODE2_RAW", "sectors": raw_sectors(ps2, 2)}]))
+    image("ps2-dvd.chd", dvd(ps2, codecs=[b"zlib"]))
+    image("ps2-iso-as-cd.chd", cd([{"type": "MODE1", "sectors": sectors_of(ps2, 2048)}], codecs=[b"cdlz"]))
+    rows += [
+        ("a PlayStation 2 disc as an .iso, under console 21", 21, "ps2.iso", f"{ps2_hash}|21"),
+        ("the same disc as a .chd of a CD", 21, "ps2-cd.chd", f"{ps2_hash}|21"),
+        ("the same disc as a .chd of a DVD, two sectors to a hunk", 21, "ps2-dvd.chd", f"{ps2_hash}|21"),
+        ("the same disc as a DVD's sectors in a .chd of a CD", 21, "ps2-iso-as-cd.chd", f"{ps2_hash}|21"),
+        ("the DVD image with no console given", 0, "ps2-dvd.chd", f"{ps2_hash}|21"),
+    ]
+    for codec in (b"lzma", b"zstd", b"huff"):
+        name = image(f"ps2-dvd-{codec.decode()}.chd", dvd(ps2, codecs=[codec]))
+        rows.append((f"the DVD image with its hunks packed by {codec.decode()}", 21, name, f"{ps2_hash}|21"))
+    # All four compressors named, and the hunks dealt out among them.
+    mixed = dvd(ps2, codecs=[b"zlib", b"lzma", b"zstd", b"huff"], copies=False)
+    mixed.kinds = {hunk: hunk % 4 for hunk in range(len(ps2) // 4096) if ps2[hunk * 4096:(hunk + 1) * 4096].count(0) > 2048}
+    rows.append(("the DVD image with four compressors, each used for some hunk",
+                 21, image("ps2-dvd-mixed.chd", mixed), f"{ps2_hash}|21"))
+
+    psp, psp_hash = psp_disc()
+    rows.append(("a PSP disc as a .chd of a DVD, one sector to a hunk", 41,
+                 image("psp.chd", dvd(psp, codecs=[b"zlib"], hunk_sectors=1)), f"{psp_hash}|41"))
+
+    opera, opera_hash = opera_disc()
+    rows.append(("a 3DO disc as a .chd, under console 43", 43,
+                 image("3do.chd", cd([{"type": "MODE1_RAW", "sectors": raw_sectors(opera, 1)}], codecs=[b"cdzl"])),
+                 f"{opera_hash}|43"))
+
+    neogeo, neogeo_hash = neogeo_cd_disc()
+    rows.append(("a Neo Geo CD as a .chd, under console 56", 56,
+                 image("neogeocd.chd", cd([{"type": "MODE1_RAW", "sectors": raw_sectors(neogeo, 1)}])),
+                 f"{neogeo_hash}|56"))
+
+    # ---- a track whose kind does not say what its sectors are
+    #
+    # For any kind but the three that say it, the reader looks at sector 16
+    # for the letters of a volume descriptor, as RetroAchievements' hasher
+    # does, and where it finds them is what comes before a sector's data.
+    # The rows above come to one of those cases, a mode 2 sector with the
+    # letters 25 bytes in; these are the others, each a disc of the rows
+    # above under a kind that does not fit it, so that the look alone says
+    # where the data is.
+    image("probe-mode1.chd", cd([{"type": "MODE2_RAW", "sectors": raw_sectors(neogeo, 1)}]))
+    image("probe-cooked.chd", cd([{"type": "MODE2_FORM1", "sectors": sectors_of(ps2, 2048)}]))
+    image("probe-sync.chd", cd([{"type": "MODE2_RAW", "sectors": sectors_of(track, 2352)}]))
+    image("probe-nothing.chd", cd([{"type": "MODE2_FORM1", "sectors": sectors_of(opera + bytes(16 * 2048), 2048)}]))
+    image("probe-short.chd", cd([{"type": "MODE2_RAW", "sectors": raw_sectors(psx, 2)[:16]}]))
+    rows += [
+        ("a .chd whose track is said to be mode 2 and holds mode 1 sectors: the letters 17 bytes in",
+         56, "probe-mode1.chd", f"{neogeo_hash}|56"),
+        ("a .chd whose track of another kind holds sectors of 2048 bytes: the letters one byte in",
+         21, "probe-cooked.chd", f"{ps2_hash}|21"),
+        ("a .chd whose track is said to be mode 2 and has no volume: the sector's own mode",
+         9, "probe-sync.chd", sega_cd),
+        ("a .chd whose track of another kind has neither letters nor a sector's beginning",
+         43, "probe-nothing.chd", f"{opera_hash}|43"),
+        ("a .chd whose track of such a kind ends before sector 16",
+         12, "probe-short.chd", refused("has no sector 16")),
+    ]
+
+    # ---- more tracks than one
+
+    # The data track's own pregap is in the image, ahead of its first
+    # sector, and no track before it has one: the one shape of pregap the
+    # two ways of placing a track agree on. The audio track's 301 frames are
+    # filled up to 304, so a reader that left the filling out would be three
+    # frames early.
+    audio, pregap, data, pce_hash = pce_cd_tracks()
+    write("pce-1.bin", b"".join(audio))
+    write("pce-2.bin", b"".join(pregap + data))
+    write("pce.cue", b'FILE "pce-1.bin" BINARY\r\n  TRACK 01 AUDIO\r\n    INDEX 01 00:00:00\r\n'
+                     b'FILE "pce-2.bin" BINARY\r\n  TRACK 02 MODE1/2352\r\n'
+                     b"    INDEX 00 00:00:00\r\n    INDEX 01 00:03:00\r\n")
+    pce = [{"type": "AUDIO", "sectors": audio},
+           {"type": "MODE1_RAW", "sectors": pregap + data, "pregap": PCE_PREGAP, "pgtype": "VMODE1_RAW"}]
+    image("pce.chd", cd(pce, codecs=[b"cdzl"]))
+    unstored = [pce[0], {"type": "MODE1_RAW", "sectors": data, "pregap": PCE_PREGAP, "pgtype": "MODE1_RAW"}]
+    image("pce-unstored-pregap.chd", cd(unstored))
+    trailing = [pce[0], dict(pce[1], line=f"TRACK:2 TYPE:MODE1_RAW SUBTYPE:NONE FRAMES:{len(pregap + data)} "
+                                          f"PREGAP:{PCE_PREGAP} PGTYPE:VMODE1_RAW PGSUB:NONE POSTGAP:0 "
+                                          "SESSION:1 SOMETHING:ELSE")]
+    image("trailing-field.chd", cd(trailing))
+    rows += [
+        ("a PC Engine CD as a cue sheet of an audio and a data track with a pregap, under console 76",
+         76, "pce.cue", f"{pce_hash}|76"),
+        ("the same disc as a .chd, the pregap in the image", 76, "pce.chd", f"{pce_hash}|76"),
+        ("the same with fields after the last one this reader knows", 76, "trailing-field.chd", f"{pce_hash}|76"),
+        # RetroAchievements' hasher would read 225 frames into the data and
+        # say this is no PC Engine CD; chdman's layout has the data where
+        # the hash above was found. No hash, and the reason says why.
+        ("the same disc with the pregap left out of the image is not placed",
+         76, "pce-unstored-pregap.chd", refused(PLACED_DIFFERENTLY)),
+    ]
+
+    # A GD-ROM: the third track begins at sector 45000, which the first two
+    # add up to, the second by frames of filling that are in the image.
+    third, dreamcast = dreamcast_track()
+    low = raw_sectors(noise(8 * 2048, seed="gd-low"), 1)
+    gd = [{"type": "MODE1_RAW", "sectors": low + [bytes(2352)] * 292},
+          {"type": "AUDIO", "sectors": [bytes(2352)] * (DREAMCAST_FIRST_SECTOR - 300), "pad": 44103},
+          {"type": "MODE1", "sectors": sectors_of(third, 2048)}]
+    image("dreamcast.chd", cd(gd, tag=b"CHGD"))
+    # The program in a fourth track, the last, where most discs have it.
+    moved = bytearray(third)
+    last_at = DREAMCAST_FIRST_SECTOR + len(third) // 2048
+    put(moved, 18 * 2048 + 2, (last_at + 2).to_bytes(3, "little"))
+    program = bytes(moved[20 * 2048:22 * 2048])
+    put(moved, 20 * 2048, bytes(2 * 2048))
+    fourth = sectors_of(bytes(4096) + program + bytes(4 * 2048), 2048)
+    image("dreamcast-last.chd", cd(gd[:2] + [{"type": "MODE1", "sectors": sectors_of(bytes(moved), 2048)},
+                                             {"type": "MODE1", "sectors": fourth}], tag=b"CHGD"))
+    # The program in the very first sector of the fourth track. rcheevos
+    # asks the third track for one byte of that sector to learn whether the
+    # program is there, and it is the sector just past the track: answered,
+    # the program would be hashed from the third track, which ends there.
+    put(moved, 18 * 2048 + 2, last_at.to_bytes(3, "little"))
+    image("dreamcast-last-first.chd",
+          cd(gd[:2] + [{"type": "MODE1", "sectors": sectors_of(bytes(moved), 2048)},
+                       {"type": "MODE1", "sectors": sectors_of(program + bytes(6 * 2048), 2048)}], tag=b"CHGD"))
+    # A Dreamcast disc whose audio track has a pregap, in the image or not
+    # in it: either way RetroAchievements' hasher looks for the third track
+    # 150 frames late. The first is what chdman 0.289 makes of a cue sheet
+    # that does not say which tracks are the high-density area (the image
+    # chdman-gd-cue-bare.chd further down is one it wrote); of a cue sheet
+    # that says it, and of a .gdi sheet, it made lines with no pregap at
+    # all, which are hashed. The second is written by hand: no chdman at
+    # hand made it.
+    kept = [gd[0], dict(gd[1], pregap=150, pgtype="VAUDIO"), gd[2]]
+    image("dreamcast-redump-cue.chd", cd(kept))
+    given = [gd[0], dict(gd[1], pregap=150, pgtype="AUDIO"), gd[2]]
+    image("dreamcast-gdi-2026.chd", cd(given, tag=b"CHGD"))
+    # The last track with a pregap of its own in the image, and the program
+    # numbered as the disc numbers it, after that pregap. Both ways of
+    # placing the track agree, so it is opened; the track's first sector is
+    # numbered as RetroAchievements' hasher numbers it, without the pregap,
+    # and the program is then looked for 225 sectors on from where it is.
+    # What a cue sheet of the same disc hashes to is not what this gives:
+    # held here as it is, with decision 2 of the plan for it, not as right.
+    put(moved, 18 * 2048 + 2, (last_at + 225 + 2).to_bytes(3, "little"))
+    image("dreamcast-last-pregap.chd",
+          cd(gd[:2] + [{"type": "MODE1", "sectors": sectors_of(bytes(moved), 2048)},
+                       {"type": "MODE1", "sectors": [bytes(2048)] * 225 + fourth,
+                        "pregap": 225, "pgtype": "VMODE1"}], tag=b"CHGD"))
+    rows += [
+        ("a GD-ROM as a .chd of three tracks, hashed from its third", 40, "dreamcast.chd", f"{dreamcast}|40"),
+        ("the same image with no console given", 0, "dreamcast.chd", f"{dreamcast}|40"),
+        ("a GD-ROM whose program is in a fourth track, the last", 40, "dreamcast-last.chd", f"{dreamcast}|40"),
+        ("a GD-ROM whose program begins the fourth track", 40, "dreamcast-last-first.chd", f"{dreamcast}|40"),
+        ("a GD-ROM made from a cue sheet, its audio track's pregap in the image, is not placed",
+         40, "dreamcast-redump-cue.chd", refused(PLACED_DIFFERENTLY)),
+        ("a GD-ROM made from a .gdi sheet, its audio track given a pregap, is not placed",
+         40, "dreamcast-gdi-2026.chd", refused(PLACED_DIFFERENTLY)),
+        ("a GD-ROM whose last track has a pregap in the image: held as it is, not as right",
+         40, "dreamcast-last-pregap.chd", refused("Could not read boot executable")),
+    ]
+
+    # The one hash that asks for more than a sector's data in one read, so
+    # the one that reads on into the next frame and the next hunk. No answer
+    # is expected of it, only an end in order.
+    jaguar = [{"type": "AUDIO", "sectors": [noise(2352, seed="jaguar-audio")] * 5},
+              {"type": "MODE1_RAW", "sectors": [noise(2352, seed=f"jaguar-{s}") for s in range(21)]}]
+    rows.append(("a .chd of two tracks under console 77, which reads across frames",
+                 77, image("jaguar.chd", cd(jaguar, codecs=[b"cdzl"], hunk_frames=4)), EITHER))
+
+    # ---- refused by what the header says, before libchdr has the file
+
+    def changed(made, **fields):
+        for field, value in fields.items():
+            setattr(made, field, value)
+        return made
+
+    def named(made, codec):
+        """The image with another compressor's letters in its header."""
+        data = bytearray(made.bytes())
+        put(data, 16, codec)
+        return bytes(data)
+
+    write("short.chd", cd(one).bytes()[:60])
+    write("notchd.chd", noise(4096, seed="not a chd"))
+    image("v4.chd", changed(cd(one), version=4))
+    image("header-length.chd", changed(cd(one), header_length=108))
+    image("parent.chd", changed(cd(one, codecs=[b"cdzl"]), parent=b"\x11" * 20))
+    write("avhu.chd", named(cd(one, codecs=[b"cdzl"]), b"avhu"))
+    write("odd-codec.chd", named(cd(one, codecs=[b"cdzl"]), b"a;b\x00"))
+    image("hugehunk.chd", changed(cd(one), hunk_bytes=128 * 1024 * 1024))
+    image("zerohunk.chd", changed(cd(one), hunk_bytes=0))
+    image("hunk-not-units.chd", changed(cd(one), hunk_bytes=8 * 2448 + 4))
+    image("dvd-unit512.chd", changed(dvd(ps2), unit_bytes=512))
+    image("logical-odd.chd", changed(dvd(ps2), logical=len(ps2) + 7))
+    image("logical-zero.chd", changed(dvd(ps2), logical=0))
+    image("manyhunks.chd", changed(dvd(ps2), logical=1 << 40))
+    image("logical-top.chd", changed(dvd(ps2), logical=(1 << 64) - 2048))
+    image("mapoutside.chd", changed(dvd(ps2, codecs=[b"zlib"]), map_at=1 << 40))
+    image("map-in-header.chd", changed(dvd(ps2, codecs=[b"zlib"]), map_at=64))
+    whole = dvd(ps2, codecs=[b"zlib"]).bytes()
+    write("mapcut.chd", whole[:-9])
+    image("mapbytes-huge.chd", changed(dvd(ps2, codecs=[b"zlib"]), map_bytes=0x7FFFFFFF))
+    write("plain-map-cut.chd", dvd(ps2).bytes()[:124 + 16])
+    image("metadata-outside.chd", changed(dvd(ps2), metadata_at=1 << 40))
+    for what, name, saying in (
+            ("of 60 bytes", "short.chd", "shorter than a header"),
+            ("that is noise", "notchd.chd", "does not begin as a CHD does"),
+            ("of version 4", "v4.chd", "version 4, and only version 5 is read"),
+            ("of version 5 that says its header is 108 bytes", "header-length.chd", "a header of 108 bytes"),
+            ("that is a difference against a parent", "parent.chd", "parents are not read"),
+            ("packed by the laserdisc's compressor", "avhu.chd", "compressor avhu is not one a disc image uses"),
+            ("whose compressor is no letters", "odd-codec.chd", "compressor 0x613b6200 is not one"),
+            ("with hunks of 128 MiB", "hugehunk.chd", "hunks of 134217728 bytes"),
+            ("with hunks of no bytes", "zerohunk.chd", "hunks of 0 bytes"),
+            ("whose hunks are not a whole number of units", "hunk-not-units.chd", "hunks of 19588 bytes"),
+            ("of a DVD with units of 512 bytes", "dvd-unit512.chd", "units of 512 bytes"),
+            ("whose size is not a whole number of units", "logical-odd.chd", "not a whole number of units"),
+            ("of no bytes", "logical-zero.chd", "not a whole number of units"),
+            ("of 2^64 less a sector", "logical-top.chd", "hunks, and no more than"),
+            ("whose map is said to lie a terabyte in", "mapoutside.chd", "its map runs past the end"),
+            ("whose map is said to lie inside the header", "map-in-header.chd", "its map runs past the end"),
+            ("cut short inside its map", "mapcut.chd", "its map runs past the end"),
+            ("whose packed map is said to be 2 GiB", "mapbytes-huge.chd", "its map runs past the end"),
+            ("not packed, cut short inside its map", "plain-map-cut.chd", "its map runs past the end"),
+            ("whose metadata is said to lie a terabyte in", "metadata-outside.chd",
+             "its metadata begins past the end")):
+        rows.append((f"a .chd {what}", 21, name, refused(saying)))
+    # A terabyte of disc in hunks of two sectors is 2^28 hunks, and three
+    # gigabytes of map to libchdr. Refused by the count, with nothing asked
+    # for: on the plain build the row has 512 MiB of address space.
+    rows.append(("a .chd of a terabyte, in an address space of 512 MiB",
+                 21, Small("manyhunks.chd"), refused("hunks, and no more than")))
+    rows.append(("a .chd that is not there", 21, "missing.chd", refused("Could not open file")))
+    rows.append(("the same with no console given", 0, "missing.chd", refused("Could not open file")))
+
+    # ---- refused by what the map says, once libchdr has decoded it
+
+    def packed_dvd(**fields):
+        return changed(dvd(ps2, codecs=[b"zlib"], copies=False), **fields)
+
+    image("selfloop.chd", packed_dvd(kinds={9: (COPY, 9)}))
+    image("copy-forward.chd", packed_dvd(kinds={9: (COPY, 10)}))
+    image("copy-of-copy.chd", packed_dvd(kinds={3: (COPY, 0), 9: (COPY, 3)}))
+    image("parenthunk.chd", packed_dvd(kinds={9: (FROM_PARENT, 0)}))
+    image("kind14.chd", packed_dvd(kinds={9: 14}))
+    image("unnamed-codec.chd", packed_dvd(kinds={9: 2}, packed_as={9: b"\x00"}))
+    # 200,000 hunks, each from the eighteenth on a copy of the one before
+    # it, and the volume's directory said to be in the last. libchdr follows
+    # a copy by calling itself, once for each link, and holds only that a
+    # copy is of an earlier hunk: without the reader's own look at the map
+    # this row ends with a signal, the stack used up. The map is 300 KiB and
+    # the image holds seventeen hunks of data.
+    links = 200000
+    chain = bytearray(17 * 2048)
+    put(chain, 16 * 2048, b"\x01CD001\x01")
+    put(chain, 16 * 2048 + 128, (2048).to_bytes(2, "little"))
+    put(chain, 16 * 2048 + 156 + 2, (links - 1).to_bytes(3, "little"))
+    put(chain, 16 * 2048 + 156 + 10, (2048).to_bytes(4, "little"))
+    chained = dvd(bytes(chain), codecs=[b"zlib"], hunk_sectors=1, copies=False)
+    chained.logical, chained.hunks = links * 2048, links
+    chained.kinds = {hunk: (COPY, hunk - 1) for hunk in range(17, links)}
+    image("selfchain.chd", chained)
+    for what, name, saying in (
+            ("with a hunk that is a copy of itself", "selfloop.chd", "a copy of one that is not an earlier hunk of data"),
+            ("with a hunk that is a copy of a later one", "copy-forward.chd", "a copy of one that is not an earlier hunk of data"),
+            ("with a hunk that is a copy of a copy", "copy-of-copy.chd", "a copy of one that is not an earlier hunk of data"),
+            ("of 200,000 hunks, each a copy of the one before", "selfchain.chd",
+             "hunk 18 a copy of one that is not an earlier hunk of data"),
+            ("with a hunk taken from a parent", "parenthunk.chd", "from a parent CHD"),
+            ("with a hunk of kind 14", "kind14.chd", "a kind no map has"),
+            ("with a hunk packed by a compressor the header leaves empty", "unnamed-codec.chd",
+             "a compressor the header does not name")):
+        rows.append((f"a .chd {what}", 21, name, refused(saying)))
+
+    # ---- hunks that cannot be read: no hash, and never that of a part
+
+    # The program is sectors 20 to 23 of the volume: SYSTEM.CNF is 19.
+    def a_sector_a_hunk(**fields):
+        return changed(dvd(ps2, codecs=[b"zlib"], hunk_sectors=1, copies=False), **fields)
+
+    image("crc.chd", a_sector_a_hunk(wrong_crc={20}))
+    # rcheevos has the first sector and part of the hash by now, and takes a
+    # sector that does not come for the end of the program: it would answer
+    # the hash of the name and 2048 bytes. Only the reader's word stops it.
+    image("crc-second.chd", a_sector_a_hunk(wrong_crc={21}))
+    image("zlibbomb.chd", a_sector_a_hunk(packed_as={21: chd_fixture.deflate(bytes(4 * 2048))}))
+    image("zlib-noise.chd", a_sector_a_hunk(packed_as={21: noise(900, seed="no deflate")}))
+    image("zlib-short.chd", a_sector_a_hunk(packed_as={21: chd_fixture.deflate(bytes(1000))}))
+    plain = dvd(ps2, hunk_sectors=1)
+    image("hunkoutside.chd", changed(plain, kinds={21: 0x00FFFFFF}))
+    write("truncated-data.chd", dvd(ps2, hunk_sectors=1).bytes()[:-3000])
+    for what, name, hunk in (
+            ("whose first hunk of the program has another checksum than the map says", "crc.chd", 20),
+            ("whose second hunk of the program has", "crc-second.chd", 21),
+            ("with a hunk that unpacks to four times its size", "zlibbomb.chd", 21),
+            ("with a hunk of noise where deflate is expected", "zlib-noise.chd", 21),
+            ("with a hunk that unpacks to half its size", "zlib-short.chd", 21),
+            ("not packed, with a hunk said to lie past the end", "hunkoutside.chd", 21),
+            ("not packed, cut short inside the program", "truncated-data.chd", 22)):
+        rows.append((f"a .chd {what}", 21, name, refused(f"CHD: hunk {hunk} could not be read")))
+    rows.append(("the image with the wrong checksum, with no console given: no other console's hash either",
+                 0, "crc-second.chd", refused("CHD: hunk 21 could not be read")))
+
+    # ---- refused by what the metadata says
+
+    def line(text):
+        return [(b"CHT2", text.encode("ascii") + b"\0")]
+
+    plain_track = "TRACK:1 TYPE:MODE1_RAW SUBTYPE:NONE FRAMES:32 PREGAP:0 PGTYPE:MODE1_RAW PGSUB:NONE POSTGAP:0"
+    image("tracks100.chd", changed(cd(one), metadata=line(plain_track) * 100))
+    # The same of the kind of line the reader keeps last: the hundredth of
+    # these is the one that would be written past the room there is for
+    # lines, where the hundredth of another kind lands in the next kind's.
+    image("tracks100-gd.chd", changed(cd(one), metadata=[
+        (b"CHGD", plain_track.replace(" PREGAP", " PAD:0 PREGAP").encode("ascii") + b"\0")] * 100))
+    image("meta600.chd", changed(cd(one), metadata=[(b"XTRA", b"something\0")] * 600 + line(plain_track)))
+    image("metaloop.chd", changed(cd(one), metadata=[(b"XTRA", b"something\0")] * 3, loop=True))
+    # A hundred letters and not more: the reader takes 255 bytes of a line,
+    # and a line cut short there is refused for the field it ends in.
+    image("longtype.chd", changed(cd(one), metadata=line(plain_track.replace("MODE1_RAW", "M" * 100, 1))))
+    image("longline.chd", changed(cd(one), metadata=line(plain_track + " " + "X" * 400)))
+    image("track0.chd", changed(cd(one), metadata=line(plain_track.replace("TRACK:1", "TRACK:0"))))
+    image("frames-digits.chd", changed(cd(one), metadata=line(plain_track.replace("FRAMES:32", "FRAMES:" + "9" * 12))))
+    image("frames-too-many.chd", changed(cd(one), metadata=line(plain_track.replace("FRAMES:32", "FRAMES:33"))))
+    image("no-pregap-field.chd", changed(cd(one), metadata=line(plain_track.split(" PREGAP")[0])))
+    image("nometa.chd", changed(cd(one), metadata=[(b"GDDD", b"CYLS:1,HEADS:1,SECS:1,BPS:512\0")]))
+    image("no-metadata.chd", changed(cd(one), metadata=[]))
+    image("old-gd.chd", changed(cd(one), metadata=[(b"CHGT", plain_track.encode() + b"\0")]))
+    image("mode1raw-on-2048.chd", changed(dvd(ps2), metadata=line(plain_track)))
+    image("dvd-on-2448.chd", changed(cd(one), metadata=[(b"DVD ", b"\0")]))
+    image("no-such-track.chd", cd(one))
+    form = "not in the form chdman writes"
+    for what, name, saying in (
+            ("of 100 tracks", "tracks100.chd", "more than 99 tracks"),
+            ("of 100 tracks in the lines of a GD-ROM", "tracks100-gd.chd", "more than 99 tracks"),
+            ("with 601 pieces of metadata", "meta600.chd", "more than 512 pieces of metadata"),
+            ("whose metadata is chained in a ring", "metaloop.chd", "more than 512 pieces of metadata"),
+            ("whose track is of a type 100 letters long", "longtype.chd", form),
+            ("whose track is said to be track 0", "track0.chd", form),
+            ("whose track has frames in 12 digits", "frames-digits.chd", form),
+            ("whose newer kind of line ends where the older does", "no-pregap-field.chd", form),
+            ("whose track has a frame more than the image", "frames-too-many.chd", "more frames than the image holds"),
+            ("of a hard disk", "nometa.chd", "neither a CD nor a DVD"),
+            ("with no metadata at all", "no-metadata.chd", "neither a CD nor a DVD"),
+            ("with only the older kind of line for a GD-ROM", "old-gd.chd", "neither a CD nor a DVD"),
+            ("of a CD's tracks in units of 2048 bytes", "mode1raw-on-2048.chd", "the tracks of a CD in units of 2048"),
+            ("marked as a DVD in units of 2448 bytes", "dvd-on-2448.chd", "a DVD in units of 2448")):
+        rows.append((f"a .chd {what}", 9, name, refused(saying)))
+    rows += [
+        # More text after the last field is read past, however long: the
+        # reader hands libchdr room for 255 bytes of a line and ends it.
+        ("a .chd whose track's line goes on for 400 letters after its last field",
+         9, "longline.chd", sega_cd),
+        ("a .chd of one track asked for its third, as a Dreamcast disc is, and then for its first with data",
+         40, "no-such-track.chd", refused("Not a Dreamcast CD")),
+        # Console 49 asks for the largest track, which RetroAchievements'
+        # hasher reads where the last one lies.
+        ("a .chd whose largest track is not its last, under console 49",
+         49, "pce-largest-first.chd", refused("its largest track is not its last")),
+    ]
+    image("pce-largest-first.chd",
+          cd([{"type": "MODE1_RAW", "sectors": data}, {"type": "MODE1_RAW", "sectors": data[:8]}]))
+    return rows
+
+
+# The images in chd/ beside this file, which chdman wrote (0.289) from discs
+# made here: the name, the file given to chdman, what chdman was told, the
+# console and what the image has to show. `./tests/native_repro_test.py
+# --remake-chd` writes them again and needs chdman on PATH; no test does.
+# They are what puts real streams through the decompressors: chdman packs
+# every hunk with whichever of the image's compressors makes it shortest.
+CHDMAN_IMAGES = (
+    ("chdman-ps2-dvd.chd", "c-ps2.iso", ("createdvd",), 21,
+     "a DVD as chdman writes one unasked: LZMA, deflate, Huffman and FLAC"),
+    ("chdman-ps2-dvd-huff.chd", "c-ps2.iso", ("createdvd", "-c", "huff"), 21, "a DVD packed by Huffman alone"),
+    ("chdman-ps2-dvd-flac.chd", "c-ps2.iso", ("createdvd", "-c", "flac"), 21, "a DVD packed by FLAC alone"),
+    ("chdman-ps2-dvd-zstd.chd", "c-ps2.iso", ("createdvd", "-c", "zstd"), 21, "a DVD packed by Zstandard alone"),
+    ("chdman-ps2-dvd-lzma.chd", "c-ps2.iso", ("createdvd", "-c", "lzma"), 21, "a DVD packed by LZMA alone"),
+    ("chdman-ps2-dvd-zlib.chd", "c-ps2.iso", ("createdvd", "-c", "zlib"), 21, "a DVD packed by deflate alone"),
+    ("chdman-psp-dvd.chd", "c-psp.iso", ("createdvd", "-hs", "2048"), 41, "a DVD with a sector to a hunk"),
+    ("chdman-psx-cd.chd", "c-psx.cue", ("createcd",), 12,
+     "a CD as chdman writes one unasked: LZMA, deflate and FLAC"),
+    ("chdman-psx-cd-zstd.chd", "c-psx.cue", ("createcd", "-c", "cdzs"), 12, "a CD packed by Zstandard alone"),
+    ("chdman-pce-cd.chd", "c-pce.cue", ("createcd",), 76,
+     "a CD of an audio track and a data track with a pregap, from a cue sheet"),
+    ("chdman-segacd-cd-flac.chd", "c-segacd.cue", ("createcd", "-c", "cdfl", "-hs", "4896"), 9,
+     "a CD whose data is packed by FLAC, two frames to a hunk"),
+    ("chdman-gd.chd", "c-gd.gdi", ("createcd",), 40, "a GD-ROM from a .gdi sheet of three tracks"),
+    ("chdman-gd-cue.chd", "c-gdc.cue", ("createcd",), 40,
+     "a GD-ROM from a cue sheet of five tracks that names its two areas, the program in the last"),
+    ("chdman-gd-cue-bare.chd", "c-gdc-bare.cue", ("createcd",), 40,
+     "the same cue sheet without the two lines that name the areas"),
+)
+# The images of those that are not to be hashed, and the words of the reason.
+# chdman 0.289 takes a cue sheet for a GD-ROM's by the two REM lines dumps of
+# one carry (SINGLE-DENSITY AREA, HIGH-DENSITY AREA), and then writes lines
+# with no pregap, each pregap counted to the track before it: the image is
+# hashed. Without them it writes the pregaps as a CD's, in the image, and
+# the third track then lies where the two ways of placing a track differ.
+CHDMAN_REFUSED = {"chdman-gd-cue-bare.chd": PLACED_DIFFERENTLY}
+CHDMAN_FOLDER = SHARED / "tests" / "chd"
+
+
+def chdman_sources(write):
+    """Writes the discs chdman was given, and returns {file: its hash}. Their
+    filler is of the kind a compressor shortens."""
+    ps2, ps2_hash = playstation2_disc(quiet)
+    write("c-ps2.iso", ps2)
+    psp, psp_hash = psp_disc(quiet)
+    write("c-psp.iso", psp)
+    psx, psx_hash = playstation_disc(quiet)
+    write("c-psx.bin", b"".join(raw_sectors(psx, 2)))
+    write("c-psx.cue", cue(b"c-psx.bin", b"MODE2/2352"))
+    audio, pregap, data, pce_hash = pce_cd_tracks(quiet)
+    write("c-pce-1.bin", b"".join(audio))
+    write("c-pce-2.bin", b"".join(pregap + data))
+    write("c-pce.cue", b'FILE "c-pce-1.bin" BINARY\r\n  TRACK 01 AUDIO\r\n    INDEX 01 00:00:00\r\n'
+                       b'FILE "c-pce-2.bin" BINARY\r\n  TRACK 02 MODE1/2352\r\n'
+                       b"    INDEX 00 00:00:00\r\n    INDEX 01 00:03:00\r\n")
+    # A GD-ROM's three tracks: data, sound that ends long before the third
+    # begins, and the data track at sector 45000.
+    third, dreamcast = dreamcast_track()
+    write("c-gd-1.bin", b"".join(raw_sectors(quiet(8 * 2048, seed="gd-low") + bytes(292 * 2048), 1)))
+    write("c-gd-2.raw", b"".join(tone(s) for s in range(8)) + bytes(92 * 2352))
+    write("c-gd-3.iso", third)
+    write("c-gd.gdi", b"3\n1 0 4 2352 c-gd-1.bin 0\n2 450 0 2352 c-gd-2.raw 0\n3 45000 4 2048 c-gd-3.iso 0\n")
+    # The same kind of disc as dumps of it are handed round: a cue sheet of
+    # five tracks, each track a file of raw sectors with its pregap ahead of
+    # it, where it has one. Data, sound, the data track at sector 45000,
+    # sound, and a last data track that holds the program, three seconds of
+    # pregap before it. That track has the 24 sectors it has because
+    # rcheevos learns where a track of a cue sheet begins from its
+    # seventeenth sector.
+    fourth_at = DREAMCAST_FIRST_SECTOR + 40 + 150
+    fifth_at = fourth_at + 40 + 225
+    moved = bytearray(third)
+    put(moved, 18 * 2048 + 2, (fifth_at + 2).to_bytes(3, "little"))
+    program = bytes(moved[20 * 2048:22 * 2048])
+    put(moved, 20 * 2048, bytes(2 * 2048))
+    write("c-gdc-2.bin", bytes(150 * 2352) + b"".join(tone(s) for s in range(8)) + bytes(92 * 2352))
+    write("c-gdc-3.bin", b"".join(raw_sectors(bytes(moved) + bytes(16 * 2048), 1, first=DREAMCAST_FIRST_SECTOR)))
+    write("c-gdc-4.bin", bytes(150 * 2352) + b"".join(tone(s) for s in range(8, 12)) + bytes(36 * 2352))
+    write("c-gdc-5.bin", b"".join(raw_sectors(bytes(225 * 2048), 1, first=fifth_at - 225)
+                                  + raw_sectors(bytes(4096) + program + bytes(20 * 2048), 1, first=fifth_at)))
+    sheet = (b'%sFILE "c-gd-1.bin" BINARY\r\n  TRACK 01 MODE1/2352\r\n    INDEX 01 00:00:00\r\n'
+             b'FILE "c-gdc-2.bin" BINARY\r\n  TRACK 02 AUDIO\r\n    INDEX 00 00:00:00\r\n    INDEX 01 00:02:00\r\n'
+             b'%sFILE "c-gdc-3.bin" BINARY\r\n  TRACK 03 MODE1/2352\r\n    INDEX 01 00:00:00\r\n'
+             b'FILE "c-gdc-4.bin" BINARY\r\n  TRACK 04 AUDIO\r\n    INDEX 00 00:00:00\r\n    INDEX 01 00:02:00\r\n'
+             b'FILE "c-gdc-5.bin" BINARY\r\n  TRACK 05 MODE1/2352\r\n    INDEX 00 00:00:00\r\n    INDEX 01 00:03:00\r\n')
+    write("c-gdc.cue", sheet % (b"REM SINGLE-DENSITY AREA\r\n", b"REM HIGH-DENSITY AREA\r\n"))
+    write("c-gdc-bare.cue", sheet % (b"", b""))
+    track = sega_cd_track(sectors=8, filler=quiet)
+    write("c-segacd.bin", track)
+    write("c-segacd.cue", cue(b"c-segacd.bin", b"MODE1/2352"))
+    return {"c-ps2.iso": ps2_hash, "c-psp.iso": psp_hash, "c-psx.cue": psx_hash,
+            "c-pce.cue": pce_hash, "c-gd.gdi": dreamcast, "c-gdc.cue": dreamcast, "c-gdc-bare.cue": dreamcast,
+            "c-segacd.cue": md5(track[16:16 + 512])}
+
+
+def chdman_rows(write):
+    """The rows of the images chdman wrote. Each must give the hash of the
+    disc it was made from, which is worked out here from that disc as it is
+    made today: an image left behind by a change to the disc fails its row,
+    and is to be written again. The one in CHDMAN_REFUSED must be refused,
+    in the words given there."""
+    hashes = chdman_sources(write)
+    rows = []
+    for name, source, command, console, what in CHDMAN_IMAGES:
+        write(name, (CHDMAN_FOLDER / name).read_bytes())
+        answer = refused(CHDMAN_REFUSED[name]) if name in CHDMAN_REFUSED else f"{hashes[source]}|{console}"
+        rows.append((f"chdman's own image: {what} ({' '.join(command)})", console, name, answer))
+    # And the discs themselves, so that a row above that fails says whether
+    # the disc or the image is at fault.
+    for source, console in (("c-ps2.iso", 21), ("c-psp.iso", 41), ("c-psx.cue", 12),
+                            ("c-pce.cue", 76), ("c-gd.gdi", 40), ("c-gdc.cue", 40), ("c-gdc-bare.cue", 40),
+                            ("c-segacd.cue", 9)):
+        rows.append((f"the disc chdman was given, {source}", console, source, f"{hashes[source]}|{console}"))
+    return rows
+
+
+def remake_chdman_images():
+    """Writes the images of CHDMAN_IMAGES again, with the chdman on PATH."""
+    with tempfile.TemporaryDirectory(prefix="native-repro-chdman-") as tmp:
+        tmp = Path(tmp)
+        chdman_sources(lambda name, data: (tmp / name).write_bytes(data))
+        CHDMAN_FOLDER.mkdir(exist_ok=True)
+        for name, source, command, _, _ in CHDMAN_IMAGES:
+            done = subprocess.run(["chdman", command[0], "-f", "-i", source, "-o", str(CHDMAN_FOLDER / name),
+                                   *command[1:]], cwd=tmp, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+            if done.returncode != 0:
+                sys.stderr.write(done.stdout.decode("utf-8", "replace"))
+                return 1
+            print(f"{name}: {(CHDMAN_FOLDER / name).stat().st_size} bytes")
+    return 0
 
 
 def write_fixtures(directory):
@@ -1682,6 +2421,9 @@ def write_fixtures(directory):
     # (what the row shows, console, path from the folder of fixtures). The six
     # files there were are rows above since local patches 0001 to 0004, and
     # the path that was the seventh since rcheevos 12.5.0.
+    must_pass += chd_rows(write)
+    must_pass += chdman_rows(write)
+
     known_gaps = []
     return must_pass, known_gaps
 
@@ -1720,13 +2462,18 @@ class Outcome:
         return None
 
 
-def run(binary, console, path, extra_env=None, seconds=TIMEOUT_SECONDS, cwd=None):
+def run(binary, console, path, extra_env=None, seconds=TIMEOUT_SECONDS, cwd=None, address_space=None):
     env = dict(os.environ)
     env.update(extra_env or {})
+
+    def limit():   # in the child, before the program is started
+        resource.setrlimit(resource.RLIMIT_AS, (address_space, address_space))
+
     try:
         done = subprocess.run([str(binary), str(console), str(path)], env=env, cwd=cwd,
                               stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-                              stderr=subprocess.PIPE, timeout=seconds)
+                              stderr=subprocess.PIPE, timeout=seconds,
+                              preexec_fn=limit if address_space else None)
     except subprocess.TimeoutExpired as late:   # run() has killed it by now
         return Outcome("timeout", str(seconds),
                        stderr=(late.stderr or b"").decode("utf-8", "replace"))
@@ -1756,6 +2503,10 @@ def check_must_pass(outcome, answer, sanitized):
     saying = None
     if isinstance(answer, tuple):
         answer, saying = answer
+    if answer == EITHER:
+        if outcome.kind not in ("hash", "refused"):
+            return f"expected a hash or a reason, got {outcome}"
+        return None
     if answer == REFUSED:
         if outcome.kind != "refused":
             return f"expected no hash and a reason, got {outcome}"
@@ -1819,6 +2570,8 @@ def build_tools(directory):
 
 
 def main(argv):
+    if argv[1:] == ["--remake-chd"]:
+        return remake_chdman_images()
     if len(argv) > 2 or (len(argv) == 2 and argv[1].startswith("-")):
         print(__doc__.strip().splitlines()[0], file=sys.stderr)
         print("usage: native_repro_test.py [tools-dir]", file=sys.stderr)
@@ -1865,7 +2618,8 @@ def main(argv):
             for what, console, name, answer in must_pass:
                 # Joined as text: a Path would drop the separator a row may end with.
                 path = name if isinstance(name, Bare) else f"{files}{os.sep}{name}"
-                outcome = run(binary, console, path, env, MUST_PASS_SECONDS, cwd=files)
+                small = SMALL_BYTES if isinstance(name, Small) and env is None else None
+                outcome = run(binary, console, path, env, MUST_PASS_SECONDS, cwd=files, address_space=small)
                 wrong = check_must_pass(outcome, answer, sanitized=env is not None)
                 if wrong:
                     failures += 1

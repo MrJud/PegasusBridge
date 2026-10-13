@@ -19,7 +19,8 @@
 # tests and their corpora, the ports to boards in contrib/ and cmake/, the
 # notes in docs/, the assembler of the LZMA decoder, a second FLAC decoder
 # written in C++, and unity.c, link.T and pkg-config.pc.in, which belong to
-# upstream's own build, by which nothing here is built.
+# upstream's own build, by which nothing here is built: what is compiled is
+# what rahasher.sources lists, every C file of the copy.
 #
 # Two licence texts are not in upstream's tree, which carries miniz and
 # Zstandard without them. They are kept in licenses/ beside this file, each
@@ -38,7 +39,9 @@
 # the `upstream` line with the commit, and one line for every file that
 # `git ls-tree -r <commit>` prints, `file` for those copied and `left-out`
 # for the rest; take the licence text of a dependency whose version changed
-# from that version's tag and rename it.
+# from that version's tag and rename it; and bring rahasher.sources and
+# licenses/NATIVE-LICENSES.txt in line with what is then compiled, the second
+# of which the same check holds to the licence texts as they stand.
 upstream master 47d794151b2b64f6aba60304e6480f4f5a2bc24b
 licence 1982f4bb8f4afa3dcbe803887fb4af7573430e51 miniz-3.1.2-LICENSE
 licence 75800288cc243f164b9d130f125e2ffae28f8e39 zstd-1.5.7-LICENSE

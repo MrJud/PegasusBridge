@@ -14,6 +14,8 @@
 # one thing more, which only a DLL can get wrong: that it calls none of the
 # C library's "secure" functions that put text together.
 #
+# And of either, that it does not call the function behind assert().
+#
 #   ./native_lib_check.sh <librahasher.so | rahasher.dll>
 #
 # It reads the dynamic section and the dynamic symbol table of an ELF file, or
@@ -49,6 +51,15 @@ system_dlls='^(kernel32|msvcrt|api-ms-win-crt-[a-z0-9-]+)\.dll$'
 # file can show the difference on a system that is not Windows.
 forbidden_calls='printf_s$'
 
+# What neither kind of library may call: the function assert() ends the
+# process through, by the names the C libraries have it under (glibc's,
+# Android's, and the two of Windows). The decompressors a .chd is unpacked by
+# are full of assert(), and a file made to fail one would end the daemon or
+# the app where the decompressor's own error ends in a reason. NDEBUG takes
+# them out, in build.sh and in CMakeLists.txt; a build that has lost it is
+# the same library to every test of its hashes, and is known by this alone.
+assert_calls='^(__assert_fail|__assert_perror_fail|__assert|__assert2|_assert|_wassert)$'
+
 if [[ $# -ne 1 ]]; then
     echo "usage: native_lib_check.sh <librahasher.so | rahasher.dll>" >&2
     exit 2
@@ -80,7 +91,20 @@ headers="$(tr -d '\r' <<<"$headers")"
 
 failures=0
 
-# What both kinds of library are held to at the end.
+# What both kinds of library are held to at the end: the names it calls in
+# other libraries, one to a line, and the names it shows.
+asserts_nothing() {
+    local asserting
+    asserting="$(grep -E "$assert_calls" <<<"$1")"
+    if [[ -n "$asserting" ]]; then
+        echo "  FAIL calls what assert() ends the process through, so it was not built with NDEBUG:"
+        sed 's/^/         /' <<<"$asserting"
+        failures=$((failures + 1))
+    else
+        echo "  ok   has no assert() left in it"
+    fi
+}
+
 exports_are() {
     local exports="$1"
     if [[ "$exports" == "$(LC_ALL=C sort <<<"$expected_exports")" ]]; then
@@ -135,6 +159,7 @@ if [[ $dll -eq 1 ]]; then
     else
         echo "  ok   calls $(grep -c . <<<"$calls") function(s) of those, none that ends the process on text too long"
     fi
+    asserts_nothing "$calls"
 
     # Under this heading, a line for every name the DLL shows, the name
     # last, up to the first empty line.
@@ -200,7 +225,9 @@ else
     echo "  ok   needs glibc $highest (the floor is $glibc_floor)"
 fi
 
-# A line of the table that begins with an address and is not *UND* is a symbol
-# the library defines and shows; its name is the last word.
+# A line of the table that is *UND* is a name the library calls in another;
+# one that begins with an address and is not *UND* is a symbol the library
+# defines and shows. The name is the last word of either.
+asserts_nothing "$(awk '/\*UND\*/ { print $NF }' <<<"$symbols" | LC_ALL=C sort -u)"
 exports_are "$(awk '/^[0-9a-f]+ / && $0 !~ /\*UND\*/ { print $NF }' <<<"$symbols" | LC_ALL=C sort)"
 verdict

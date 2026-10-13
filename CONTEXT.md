@@ -142,7 +142,11 @@ came from blocks the container does not hold. `RcheevosNative.wbfsCaveat`
 makes a note of the two, which begins `scrubbed copy` when they are half or
 more, and `HashResult.caveat` carries it. No note means that no byte of a
 missing block was hashed, not that the copy is a full one: a tool can blank
-what a disc does not use inside blocks that are held. The rcheevos it is compiled
+what a disc does not use inside blocks that are held. A path that ends in `.chd`
+is hashed by rcheevos as the disc console that was asked for, through the reader
+of tracks in `pb_chd.c` (see "The hasher's library"); a scan does not come to
+that yet, since `ConsoleChoice` still turns every `.chd` away before the
+library is asked. The rcheevos it is compiled
 from is the folder `hasher/src/main/cpp/rcheevos`: upstream's tree as
 `rcheevos.version` beside it names it, file by file, with the patches of
 `rcheevos-patches/` on it, which `shared/tests/vendored_check.py` holds it to.
@@ -1025,13 +1029,113 @@ After install, on first run the theme creates `/sdcard/PegasusData/*` subdirs (o
 
 ### The hasher's library
 
-Two C files of ours and six of rcheevos' are the hasher: `rahasher_jni.c`,
-which the JVM calls, and the list in `hasher/src/main/cpp/rahasher.sources`,
-rcheevos' six and `pb_wbfs.c`. That last one reads a Wii disc out of a `.wbfs`
-container, for which rcheevos has no reader, and hands rcheevos the disc
-through the callbacks rcheevos reads any file by. It is not a patch to
-rcheevos and is not in its folder, which `vendored_check.py` holds to
-upstream. Three builds compile that list:
+The hasher is `rahasher_jni.c`, which the JVM calls, and the list in
+`hasher/src/main/cpp/rahasher.sources`: rcheevos' six files, two of ours, and
+libchdr with the decompressors it carries. `pb_wbfs.c` reads a Wii disc out of
+a `.wbfs` container, for which rcheevos has no reader, and hands rcheevos the
+disc through the callbacks rcheevos reads any file by. `pb_chd.c` reads a disc
+out of a `.chd`, for which it has none either, and hands rcheevos tracks and
+sectors through the callbacks it reads a cue sheet by. Neither is a patch to
+rcheevos nor in its folder, which `vendored_check.py` holds to upstream.
+
+**The `.chd` reader.** libchdr (`hasher/src/main/cpp/libchdr`, 48 files of
+upstream's master at 47d794151b2b, with no patch; `libchdr.version` names
+every file and `vendored_check.py` holds the folder to it) unpacks the hunks,
+with miniz, the LZMA SDK's decoder, Zstandard's and dr_flac. It is treated as
+code that a file can mislead. `pb_chd.c` reads the 124-byte header itself and
+refuses, before libchdr is given the file: any version but 5, an image that is
+a difference against a parent, a compressor that is none of the nine a disc
+image uses, units that are not 2448 or 2048 bytes, hunks over 1 MiB, more
+than 5,592,405 hunks (64 MiB of map in libchdr's memory), and a map or
+metadata said to lie outside the file. After libchdr has decoded the map it is
+gone over once: a hunk that is a copy must be a copy of an earlier hunk of
+data, because libchdr follows a copy of a copy by calling itself and a short
+map can describe a chain that uses up the stack (still open upstream at that
+commit; the row `selfchain.chd` ends with a signal without the check). The
+tracks' lines of text are parsed here, strictly and with bounds, and what
+follows the last known field is ignored. A hunk that cannot be read, cut
+short or failing its checksum, makes the call one with no hash
+(`pb_chd_is_damage`, `reasons.damaged` in the two programs): rcheevos takes a
+sector that did not come for the end of the file and would answer the hash of
+a part.
+
+Where a track lies is worked out in one function, `place`, in two ways:
+as RetroAchievements' own hasher does it (RALibretro `HashCHD.cpp`) and as
+chdman, which writes the format, lays the frames out. They agree for a first
+track, and for a track whose own pregap is in the image (`PGTYPE` beginning
+with `V`) when no earlier track has a pregap; then that value is used. Where
+they differ the track is refused with a reason that says so ("lies after a
+pregap that RetroAchievements' hasher and chdman place differently"), and no
+hash is given that only one of them would give. That refuses a Dreamcast
+image whose audio track has a pregap, and a PC Engine CD whose data track's
+pregap is not in the image or whose first track has one. What chdman 0.289
+makes of a Dreamcast disc was seen, on a disc made for it: of a `.gdi`, and
+of a cue sheet that carries the two lines a dump of a GD-ROM has (`REM
+SINGLE-DENSITY AREA`, `REM HIGH-DENSITY AREA`), tracks with no pregap at all,
+each pregap counted to the track before it, and such an image is hashed like
+its cue sheet, the program in the last track too; of the same cue sheet
+without those two lines, a CD's tracks with the audio tracks' pregaps in the
+image, and that one is refused. What an older chdman wrote is not known here.
+A request for the largest track (PC-FX) is refused when that track is not the
+last, where RetroAchievements' hasher reads it. A track's first sector is
+numbered as that hasher numbers it, by the frames of the tracks before it.
+
+What is shown: `native_repro_test.py` hashes the same synthetic disc as a cue
+sheet, a `.gdi` or an `.iso` and as a `.chd` for nine consoles (PlayStation,
+PlayStation 2 as a CD, a DVD and a DVD in a CD's frames, PSP, Saturn, Sega
+CD, Dreamcast, PC Engine CD, 3DO, Neo Geo CD), with every compressor; fourteen
+of the images, in `shared/tests/chd/`, were written by chdman 0.289 from
+those discs (a DVD with each compressor, CDs, a cue sheet with a pregap, a
+`.gdi`, a GD-ROM's cue sheet with and without the lines that name its
+areas), which is what puts real packed streams through the decoders. The
+images `chd_fixture.py` writes are read back by chdman as well, each way of
+packing a hunk, though no test holds that: none may need chdman.
+**What is not shown**: a real game's image against the hash RetroAchievements
+lists for it; what RetroAchievements' hasher itself answers for a multi-track
+image with pregaps (it could not be run here); a Dreamcast image whose last
+track has a pregap of its own in the image and holds the program, which this
+reader opens and reads one pregap away from where a cue sheet of the same
+disc is read (the row `dreamcast-last-pregap.chd` holds what happens, not
+that it is right; chdman 0.289 wrote no such image of the discs it was
+given); any decoder against hostile input beyond the rows there are. One
+thing is known of that: handed a FLAC stream that has been spoiled, dr_flac
+adds and multiplies past what a signed number holds, which C leaves
+undefined and the sanitized build reports; what comes out fails the hunk's
+checksum, and no row has such a stream. The file a scan has in the hasher is
+written down
+(`cache/scan-inflight.jsonl`), which is what covers a file that ends the
+process inside a decoder.
+
+The decoders' `assert()` is compiled out of all three libraries (`NDEBUG`, in
+`build.sh` and in `CMakeLists.txt`), so a stream made to mislead one ends in
+the decoder's own error or the hunk's checksum and not in the end of the
+daemon or the app; the sanitized test program is built with the asserts in.
+`native_lib_check.sh` refuses a desktop library or a DLL that still calls
+what `assert()` ends the process through; nothing checks the Android one,
+which was read by hand.
+Nothing of the reader, of libchdr or of the decoders is shared between two
+calls, with one exception read off the source and not seen to matter:
+dr_flac writes what the CPU can do into process-wide flags each time a
+decoder is made, the same values from every thread.
+
+Memory for one open image, measured on the Linux test program as the peak
+resident size: 1.9 MiB for a file that is not there, 2.1 MiB for an `.iso`,
+2.3 MiB for a CD image in chdman's usual hunks, 4.6 MiB at the 1 MiB hunk
+limit with four compressors, 19.5 MiB for a map of a single-layer DVD's
+1,150,000 hunks, 86.5 MiB for a map at the limit of 5,592,405 hunks (the map
+and, while it is decoded, its packed form). A scan hashes several files at
+once, each with its own. Those are what is touched. What is asked of the
+system can be more: a Zstandard hunk says how far back it may refer, and one
+made to say 128 MiB, which is as much as the decoder takes unasked, has it
+reserve that much for as long as the image is open, of which no more than a
+hunk is ever written to. chdman's own hunks say their own size.
+
+The reader made each library larger: `librahasher.so` 412,896 bytes where it
+was 97,288, `rahasher.dll` 502,154 where it was 188,908, the stripped arm64
+library of a debug build 306,648 where it was 81,632. No option removes the
+decoders' unused functions.
+
+Three builds compile that list:
 
 - **Android** — CMake, with the app, for each ABI. Linked for pages of 16 KB
   (`-Wl,-z,max-page-size=16384` in `hasher/src/main/cpp/CMakeLists.txt`, given
@@ -1064,9 +1168,10 @@ upstream. Three builds compile that list:
 
 CI's `native` job builds a fresh Linux library and runs the tests on that as
 well as on the committed one, and runs `shared/tests/native_repro_test.py`:
-files made to hurt rcheevos, and containers made to hurt the `.wbfs` reader,
-each in a process of its own under a timeout, on a plain build and on one with
-the address and undefined-behaviour sanitizers.
+files made to hurt rcheevos, and containers and images made to hurt the
+`.wbfs` and `.chd` readers, each in a process of its own under a timeout, on a
+plain build and on one with the address and undefined-behaviour sanitizers.
+The `.chd` images are written by `shared/tests/chd_fixture.py`.
 `hasher/src/main/cpp/rcheevos-patches/PATCHES.md` says what each local patch is
 for and which of those rows hold it.
 

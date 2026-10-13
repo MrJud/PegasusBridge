@@ -1,6 +1,8 @@
 # The sources the hasher is made of beside rahasher_jni.c, one to a line, from
-# this folder: rcheevos' own, and after them the one of ours that reads a
-# container rcheevos has no reader for. shared/native/build.sh, for the
+# this folder: rcheevos' own; after them the two of ours that read what
+# rcheevos has no reader for, a .wbfs and a .chd; and then what the second of
+# those is built on, libchdr and the decompressors a .chd may be packed with.
+# shared/native/build.sh, for the
 # desktop, and CMakeLists.txt here, for Android, both read this list and
 # compile these and no others, and link with every symbol resolved: a name
 # missing here is a link error on the machine that builds, where it used to be
@@ -11,6 +13,12 @@
 # off by RC_HASH_NO_ENCRYPTED, and aes.c is used by nothing else. rc_compat.c
 # and rc_util.c are the helpers of the achievement runtime, of which hashing
 # calls none; rc_compat.c brought a mutex with it and so a newer C library.
+#
+# Of libchdr every source upstream's own build compiles is here, the codec of
+# laserdisc images among them, which no file can reach: pb_chd.c refuses an
+# image that names it before libchdr is given the file. Left out, its three
+# functions would have to be written here under upstream's names. What of
+# upstream's tree is not in the folder at all is in libchdr.version.
 rcheevos/src/rhash/cdreader.c
 rcheevos/src/rhash/hash.c
 rcheevos/src/rhash/hash_disc.c
@@ -18,3 +26,22 @@ rcheevos/src/rhash/hash_rom.c
 rcheevos/src/rhash/hash_zip.c
 rcheevos/src/rhash/md5.c
 pb_wbfs.c
+pb_chd.c
+libchdr/src/libchdr_bitstream.c
+libchdr/src/libchdr_cdrom.c
+libchdr/src/libchdr_chd.c
+libchdr/src/libchdr_codec_avhuff.c
+libchdr/src/libchdr_codec_cdfl.c
+libchdr/src/libchdr_codec_cdlz.c
+libchdr/src/libchdr_codec_cdzl.c
+libchdr/src/libchdr_codec_cdzs.c
+libchdr/src/libchdr_codec_flac.c
+libchdr/src/libchdr_codec_huff.c
+libchdr/src/libchdr_codec_lzma.c
+libchdr/src/libchdr_codec_zlib.c
+libchdr/src/libchdr_codec_zstd.c
+libchdr/src/libchdr_flac.c
+libchdr/src/libchdr_huffman.c
+libchdr/deps/lzma-26.02/src/LzmaDec.c
+libchdr/deps/miniz-3.1.2/miniz.c
+libchdr/deps/zstd-1.5.7/zstddeclib.c

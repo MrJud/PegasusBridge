@@ -5,6 +5,12 @@ plugins {
 
 android {
     sourceSets["main"].java.srcDir("../shared/hasher/src/android-shared/kotlin")
+    // The library is compiled from other people's code as well, whose
+    // licences ask that their text travel with every copy of it. The app is
+    // such a copy, so the texts go into it as they are, as assets:
+    // NATIVE-LICENSES.txt, which has them all, and the two files it has
+    // them from that are kept in that folder.
+    sourceSets["main"].assets.srcDir("src/main/cpp/licenses")
     namespace  = "com.pegasus.bridge.hasher"
     compileSdk = 35
     defaultConfig {

@@ -128,6 +128,20 @@ class LibCheckTest(LibraryCheck):
         self.assertIn("FAIL needs glibc 2.25, and the floor is 2.14", output)
         self.assertRegex(output, r"\(GLIBC_2\.25\) +(__)?explicit_bzero")
 
+    def test_a_library_with_an_assert_left_in_it_is_refused_and_one_built_without_passes(self):
+        # What the decompressors of a .chd are full of. With NDEBUG, which
+        # the build gives, the same source calls nothing.
+        body = "#include <assert.h>\nint checked(int n) { assert(n > 0); return n; }\n"
+        status, output = self.check(self.library("asserting", body=body))
+        self.assertEqual(status, 1, output)
+        self.assertEqual(output.count("FAIL"), 1, output)
+        self.assertIn("FAIL calls what assert() ends the process through", output)
+        self.assertRegex(output, r"\n +__assert_fail\n")
+
+        status, output = self.check(self.library("quiet", body=body, link=["-DNDEBUG"]))
+        self.assertEqual(status, 0, output)
+        self.assertIn("ok   has no assert() left in it", output)
+
     def test_packed_relocations_are_refused_though_no_symbol_shows_them(self):
         # Every symbol of this library is one the first library has. What
         # differs is a line among its version references, and a loader older
@@ -255,6 +269,18 @@ class DllCheckTest(LibraryCheck):
         status, output = self.check(library)
         self.assertEqual(status, 0, output)
         self.assertRegex(output, r"ok   calls \d+ function\(s\) of those, none that ends the process")
+
+    def test_a_dll_with_an_assert_left_in_it_is_refused_and_one_built_without_passes(self):
+        body = "#include <assert.h>\nint checked(int n) { assert(n > 0); return n; }\n"
+        status, output = self.check(self.library("asserting", body=body))
+        self.assertEqual(status, 1, output)
+        self.assertEqual(output.count("FAIL"), 1, output)
+        self.assertIn("FAIL calls what assert() ends the process through", output)
+        self.assertRegex(output, r"\n +_w?assert\n")
+
+        status, output = self.check(self.library("quiet", body=body, link=[*self.AS_BUILT, "-DNDEBUG"]))
+        self.assertEqual(status, 0, output)
+        self.assertIn("ok   has no assert() left in it", output)
 
     def test_a_name_too_few_in_a_dll_is_refused(self):
         library = self.library("narrow", exports=["some_other_name"])

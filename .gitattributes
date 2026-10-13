@@ -47,3 +47,6 @@ hasher/src/main/cpp/libchdr/** -whitespace
 # And of the licence texts beside it, each as its author's repository has it:
 # the one of miniz ends its lines as Windows does.
 hasher/src/main/cpp/licenses/** -whitespace
+
+# Disc images the tests hash, as chdman wrote them: bytes, not text.
+shared/tests/chd/*.chd binary

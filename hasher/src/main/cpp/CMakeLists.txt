@@ -2,7 +2,10 @@ cmake_minimum_required(VERSION 3.22.1)
 project("rahasher" C)
 
 # rcheevos is vendored in rcheevos/, as plain files of this repository: upstream
-# 12.5.0 with the local patches rcheevos-patches/ describes.
+# 12.5.0 with the local patches rcheevos-patches/ describes. libchdr and the
+# decompressors it carries are in libchdr/, as upstream has them, and include
+# each other by paths from their own files, so no folder of theirs is named
+# below.
 set(RCHEEVOS_DIR "${CMAKE_CURRENT_SOURCE_DIR}/rcheevos")
 
 # One list of sources for both builds. shared/native/build.sh reads the same
@@ -50,9 +53,19 @@ target_include_directories(rahasher PRIVATE
 )
 
 # The 3DS is the one console left out: hash_encrypted.c and aes.c are not on
-# the list, and this is what keeps the rest from calling them.
+# the list, and this is what keeps the rest from calling them. Of miniz,
+# libchdr uses the part that unpacks, and the rest is not compiled. NDEBUG
+# takes the decompressors' assert() out, in a debug build as in a release
+# one: a failed assert ends the app, and a stream made to mislead one is to
+# end in the decompressor's own error or the hunk's checksum, as it does in
+# the desktop library. All six are the ones build.sh gives.
 target_compile_definitions(rahasher PRIVATE
     RC_HASH_NO_ENCRYPTED
+    MINIZ_NO_ARCHIVE_APIS
+    MINIZ_NO_DEFLATE_APIS
+    MINIZ_NO_STDIO
+    MINIZ_NO_TIME
+    NDEBUG
 )
 
 # C11 with the GNU extensions, as build.sh says it (-std=gnu11), and not
@@ -66,6 +79,13 @@ set_target_properties(rahasher PROPERTIES
 )
 
 target_compile_options(rahasher PRIVATE -O2 -Wall)
+# -Wall is for the code of this repository. What is copied from elsewhere is
+# compiled as it is, and its warnings are not ours to act on.
+foreach(source IN LISTS RAHASHER_SOURCES)
+    if(source MATCHES "/libchdr/")
+        set_property(SOURCE "${source}" APPEND PROPERTY COMPILE_OPTIONS -w)
+    endif()
+endforeach()
 
 # jni.map lets the functions the JVM looks up by name out of the library and
 # nothing else: rcheevos marks its own functions for export, and md5_init in

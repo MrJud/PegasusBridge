@@ -504,9 +504,11 @@ hand.
 The desktop's `librahasher.so` is committed, in `shared/native/out/`, with a
 manifest beside it of everything it was compiled from. The tests load that
 file, so a change to the C under `hasher/src/main/cpp` has to come with the
-library built again, in the same commit. The C is two files of ours and six
-of rcheevos': `rahasher_jni.c`, which the JVM calls, and `pb_wbfs.c`, which
-reads a Wii disc out of a `.wbfs` container for rcheevos to hash.
+library built again, in the same commit. The C is three files of ours,
+six of rcheevos' and libchdr with the decompressors it carries:
+`rahasher_jni.c`, which the JVM calls, `pb_wbfs.c`, which reads a Wii disc
+out of a `.wbfs` container for rcheevos to hash, and `pb_chd.c`, which reads
+the tracks of a `.chd` for it through libchdr.
 
 ```bash
 cd shared
@@ -514,8 +516,12 @@ JAVA_HOME=<a JDK 21> ./native/build.sh      # writes native/out/librahasher.so a
 ./tests/native_manifest_check.py            # fails when the library is older than its sources
 ./tests/native_lib_check.sh native/out/librahasher.so
 ./tests/vendored_check.py                   # rcheevos is upstream plus the patches listed, libchdr is upstream's files, and nothing else
-./tests/native_repro_test.py                # files made to hurt rcheevos and the .wbfs reader, on a plain and a sanitized build
+./tests/native_repro_test.py                # files made to hurt rcheevos and the .wbfs and .chd readers, on a plain and a sanitized build
 ```
+
+A few of the `.chd` images those rows hash were written by chdman and are
+committed, in `shared/tests/chd/`; `./tests/native_repro_test.py --remake-chd`
+writes them again and is the one thing here that needs chdman.
 
 It needs gcc. `./native/build.sh <dir> --target=windows` builds `rahasher.dll`
 with `x86_64-w64-mingw32-gcc`, on Linux as well as in Git Bash on Windows; a
@@ -662,11 +668,21 @@ stays free for everyone downstream.
 | component | licence | how it is used |
 | --- | --- | --- |
 | [rcheevos](https://github.com/RetroAchievements/rcheevos) | MIT | vendored C sources, built into the native hasher |
+| [libchdr](https://github.com/rtissera/libchdr) | BSD-3-Clause | vendored C sources, built into the native hasher: reads `.chd` disc images |
+| [LZMA SDK](https://www.7-zip.org/sdk.html) | public domain | its decoder, as libchdr carries it |
+| [miniz](https://github.com/richgel999/miniz) | MIT | its deflate decoder, as libchdr carries it |
+| [Zstandard](https://github.com/facebook/zstd) | BSD-3-Clause, of the two it is offered under | its decoder, as libchdr carries it |
+| [dr_flac](https://github.com/mackron/dr_libs) | public domain or MIT-0 | the FLAC decoder, as libchdr carries it |
 | [NewPipeExtractor](https://github.com/TeamNewPipe/NewPipeExtractor) | GPL-3.0 | YouTube search and stream resolution |
 | [OkHttp](https://square.github.io/okhttp/) | Apache-2.0 | every HTTP call |
 | [Apache Commons Compress](https://commons.apache.org/proper/commons-compress/) | Apache-2.0 | reading zip and 7z ROM archives |
 | [XZ for Java](https://tukaani.org/xz/java.html) | public domain | LZMA2, which most 7z ROMs use |
 | [JSON-java](https://github.com/stleary/JSON-java) | JSON licence | parsing, on desktop; Android supplies its own |
+
+The licence texts of what the native hasher is compiled from travel with it:
+`hasher/src/main/cpp/licenses/NATIVE-LICENSES.txt` in the sources, the same
+file beside `LICENSE` at the top of the desktop archive, and
+`assets/NATIVE-LICENSES.txt` inside the APK.
 
 Data and media fetched from third-party databases stay under their own terms —
 they are cached locally for the user who requested them and are never

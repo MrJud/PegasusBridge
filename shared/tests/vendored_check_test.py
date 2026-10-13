@@ -33,6 +33,7 @@ SOURCE = "src/rhash/one.c"
 HEADER = "include/one.h"
 HIDDEN = "include/module.modulemap"
 IGNORE = ".gitignore"
+TERMS = "LICENSE"
 PATCH = "0001-one.patch"
 
 UPSTREAM = {
@@ -43,6 +44,7 @@ UPSTREAM = {
     HIDDEN: "module one { header \"one.h\" }\n",
     # As upstream's own does: it hides the file above from a plain `git add`.
     IGNORE: "*.mod*\n*.out\n",
+    TERMS: "Do as you like with one, and say whose it was.\n",
 }
 
 # The second tree: what upstream has, of which the last is not in the copy.
@@ -50,7 +52,7 @@ CODEC = "src/two.c"
 NOTICE = "LICENSE.txt"
 UNWANTED = "tests/two_test.c"
 SECOND = {
-    CODEC: "int two(void) { return 2; }\n",
+    CODEC: "/*\n    Copyright Somebody Else\n    Keep these lines.\n*/\nint two(void) { return 2; }\n",
     NOTICE: "Take it, and keep this notice.\n",
     UNWANTED: "int main(void) { return two() != 2; }\n",
 }
@@ -83,10 +85,18 @@ class VendoredCheckTest(unittest.TestCase):
             self.write(self.second / name, SECOND[name])
         self.write(self.root / check.LICENCES / LICENCE, LICENCE_TEXT)
         self.write_second_manifest()
+        # What the downloads carry: every licence text, and the notice the
+        # second tree has in a source file.
+        self.kept_notices = check.LIBCHDR.notices
+        check.LIBCHDR.notices = ((CODEC, "    Copyright Somebody Else\n", "    Keep these lines.\n"),)
+        self.write(self.root / check.NOTICES,
+                   "Other people's code\n\n" + UPSTREAM[TERMS] + "\n" + SECOND[NOTICE] + "\n"
+                   + "    Copyright Somebody Else\n    Keep these lines.\n\n" + LICENCE_TEXT)
         self.git("init", "-q")
         self.git("add", "-f", "--", check.CPP)
 
     def tearDown(self):
+        check.LIBCHDR.notices = self.kept_notices
         self._tmp.cleanup()
 
     # ---- the made-up repository
@@ -145,7 +155,7 @@ class VendoredCheckTest(unittest.TestCase):
     def test_a_tree_that_is_upstream_and_its_patch_passes(self):
         status, said = self.run_check()
         self.assertEqual(status, 0, said)
-        self.assertIn("rcheevos v1.0.0 (abababababab), 4 files and 0 left out on purpose, "
+        self.assertIn("rcheevos v1.0.0 (abababababab), 5 files and 0 left out on purpose, "
                       "with 1 local patches on 1 of them", said)
         self.assertIn("libchdr master (cdcdcdcdcdcd), 2 files and 1 left out on purpose, "
                       "each as upstream has it, and 1 licence text(s) beside them", said)
@@ -159,7 +169,7 @@ class VendoredCheckTest(unittest.TestCase):
         (self.tree / HEADER).unlink()
         status, said = self.run_check()
         self.assertEqual(status, 0, said)
-        self.assertIn("3 files and 1 left out on purpose", said)
+        self.assertIn("4 files and 1 left out on purpose", said)
 
     # ---- the files
 
@@ -286,6 +296,38 @@ class VendoredCheckTest(unittest.TestCase):
         self.write_manifest(extra=f"licence {check.blob_id(LICENCE_TEXT.encode('utf-8'))} {LICENCE}\n")
         self.refused(f"names the licence text {LICENCE}, and no folder of such texts goes with rcheevos")
 
+    # ---- the file that carries the licence texts into the downloads
+
+    def notices(self):
+        return (self.root / check.NOTICES).read_text()
+
+    def test_a_licence_of_the_first_tree_that_the_downloads_do_not_carry_is_named(self):
+        self.write(self.root / check.NOTICES, self.notices().replace("say whose it was", "say nothing"))
+        said = self.refused(f"{check.NOTICES} does not carry {check.TREE}/{TERMS} as it stands")
+        self.assertNotIn(f"wrong with {check.LIBCHDR.tree}:", said)
+
+    def test_a_licence_of_the_second_tree_that_the_downloads_do_not_carry_is_named(self):
+        self.write(self.root / check.NOTICES, self.notices().replace("keep this notice", "keep quiet"))
+        self.refused_in_the_second(f"{check.NOTICES} does not carry {check.LIBCHDR.tree}/{NOTICE} as it stands")
+
+    def test_a_licence_kept_beside_the_second_tree_that_the_downloads_do_not_carry_is_named(self):
+        self.write(self.root / check.NOTICES, self.notices().replace(LICENCE_TEXT, LICENCE_TEXT.upper()))
+        self.refused_in_the_second(f"{check.NOTICES} does not carry {check.LICENCES}/{LICENCE} as it stands")
+
+    def test_a_notice_in_a_source_file_that_the_downloads_do_not_carry_is_named(self):
+        self.write(self.root / check.NOTICES, self.notices().replace("Somebody Else", "Nobody"))
+        self.refused_in_the_second(f"{check.NOTICES} does not carry the notice in {check.LIBCHDR.tree}/{CODEC}")
+
+    def test_a_source_file_that_lost_its_notice_is_named(self):
+        check.LIBCHDR.notices = ((CODEC, "    Copyright Another\n", "    Keep these lines.\n"),)
+        self.refused_in_the_second(f"{check.LIBCHDR.tree}/{CODEC} no longer has the notice that begins "
+                                   "'Copyright Another'")
+
+    def test_without_the_file_that_carries_them_both_trees_are_refused(self):
+        (self.root / check.NOTICES).unlink()
+        said = self.refused(f"there is no {check.NOTICES}, which is to carry the licence texts of rcheevos")
+        self.assertIn("which is to carry the licence texts of libchdr", said)
+
     def test_what_is_wrong_with_both_trees_is_said_in_one_run(self):
         self.write(self.tree / HEADER, "int one(void); /* changed by hand */\n")
         self.write(self.second / CODEC, "int two;\n")
@@ -318,7 +360,7 @@ class VendoredCheckTest(unittest.TestCase):
 
     def test_a_manifest_with_a_line_of_no_known_kind_is_not_read_in_part(self):
         self.write_manifest(extra="files 117\n")
-        self.refused("cannot be read as a manifest: line 8 begins with 'files'")
+        self.refused("cannot be read as a manifest: line 9 begins with 'files'")
 
     def test_a_manifest_that_names_no_upstream_is_refused(self):
         text = (self.root / check.MANIFEST).read_text().replace("upstream v1.0.0", "upstream")

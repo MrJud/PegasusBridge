@@ -17,6 +17,11 @@
  * reader for. pb_wbfs.c beside this file reads it, and the answer for one is
  * "<md5>|19|<bytes read>|<bytes not held>".
  *
+ * A path that ends in .chd is a disc packed in a way rcheevos has no reader
+ * for either. pb_chd.c reads its tracks and sectors for rcheevos, which
+ * hashes the disc as it would from a cue sheet, and the answer is the two
+ * fields of any other file.
+ *
  * Nothing is logged from here and nothing is kept between calls: what
  * rcheevos said of a file it gave no hash for goes back to the caller, in the
  * caller's own buffer, and the caller decides who is told. One thing is kept
@@ -34,12 +39,14 @@
 #include "rc_version.h"
 #include "pb_patchlevel.h"
 #include "pb_wbfs.h"
+#include "pb_chd.h"
 
 /* Every error of one call, in the order rcheevos gave them. */
 struct reasons {
     char text[1024];
     size_t length;
     int full; /* a message was cut short or left out, and nothing goes after it */
+    int damaged; /* a hunk of a .chd could not be read: whatever hash there is, is of a part */
 };
 
 /*
@@ -78,7 +85,12 @@ static void keep_reason(const char* message, const rc_hash_iterator_t* iterator)
     struct reasons* reasons = (struct reasons*)iterator->userdata;
     size_t room, length, whole;
 
-    if (!reasons || !message || reasons->full)
+    if (!reasons || !message)
+        return;
+    /* Ahead of the room there is for text: this must not be lost with it. */
+    if (pb_chd_is_damage(message))
+        reasons->damaged = 1;
+    if (reasons->full)
         return;
 
     room = sizeof(reasons->text) - 1 - reasons->length;
@@ -209,6 +221,7 @@ Java_com_pegasus_bridge_hasher_RcheevosNative_hashForConsole(
     reasons.text[0] = '\0';
     reasons.length = 0;
     reasons.full = 0;
+    reasons.damaged = 0;
 
     /*
      * The callback goes in after rc_hash_initialize_iterator and not before:
@@ -230,6 +243,10 @@ Java_com_pegasus_bridge_hasher_RcheevosNative_hashForConsole(
         return refuse(env, error_out, "No memory for the path");
     iterator.userdata = &reasons;
     iterator.callbacks.error_message = keep_reason;
+    /* After the same call, for the same reason. The tracks of a .chd are
+     * read by pb_chd.c from here on, for this iterator and for the one
+     * rcheevos makes of a playlist's first file, which gets a copy. */
+    pb_chd_install(&iterator);
 
     /* What a .wbfs is, which console may be asked for one, what is counted
      * of it and how the answer is written are the reader's to say, here and
@@ -250,7 +267,10 @@ Java_com_pegasus_bridge_hasher_RcheevosNative_hashForConsole(
 
     rc_hash_destroy_iterator(&iterator);
 
-    if (!found) {
+    /* rcheevos hashes what it could read of a file and takes a sector that
+     * did not come for the file's end. A .chd with a hunk that cannot be
+     * read would so be given the hash of some other, shorter disc. */
+    if (!found || reasons.damaged) {
         /* An error on the way to a hash is not a failure; these were. And
          * rcheevos gives some files up without a word, a playlist with no
          * line in it among them: the caller is told that much, so that null

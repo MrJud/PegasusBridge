@@ -47,6 +47,14 @@ those decompressors, which upstream's tree does not carry and which are kept
 in licenses/: each has to be in git and to have the content the line says.
 Most of upstream's tree is not in that copy, each file on a `left-out` line.
 
+And it holds licenses/NATIVE-LICENSES.txt, the one file that goes into every
+download with the library, to the licence texts it is there to carry: every
+file of either copy that is called LICENSE, the two texts kept beside
+libchdr, and two notices that upstream has in a source file and nowhere
+else. Each has to be in it byte for byte. A text that changed upstream, or a
+copy taken anew with another licence in it, is then a file to write again,
+and not a download that says something its authors did not.
+
 It needs git, to ask what is tracked and to take the patches off, and it
 compiles nothing. Without git, or outside a checkout, it says so and ends
 with 2: that is no answer either way.
@@ -68,6 +76,10 @@ MANIFEST = f"{CPP}/rcheevos.version"
 PATCHES = f"{CPP}/rcheevos-patches"
 PATCH_LEVEL = f"{CPP}/pb_patchlevel.h"
 LICENCES = f"{CPP}/licenses"
+NOTICES = f"{LICENCES}/NATIVE-LICENSES.txt"
+
+# A file of a copy that is its licence, by what it is called.
+LICENCE_NAME = re.compile(r"(^|/)(LICEN[CS]E|COPYING)(\.txt|\.md)?$")
 
 
 class Vendored:
@@ -75,7 +87,8 @@ class Vendored:
     manifest that says which copy, and what it has beside those two. A tree
     with no folder of patches is one that has to be upstream's as it is."""
 
-    def __init__(self, name, tree, manifest, remedy, patches=None, patch_level=None, licences=None):
+    def __init__(self, name, tree, manifest, remedy, patches=None, patch_level=None, licences=None,
+                 notices=()):
         self.name = name
         self.tree = tree
         self.manifest = manifest
@@ -83,6 +96,9 @@ class Vendored:
         self.patches = patches
         self.patch_level = patch_level
         self.licences = licences
+        # (file, first line, last line): a notice upstream keeps inside a
+        # source file, from the one line to the other.
+        self.notices = notices
 
 
 RCHEEVOS = Vendored(
@@ -94,7 +110,11 @@ LIBCHDR = Vendored(
     "libchdr", f"{CPP}/libchdr", f"{CPP}/libchdr.version",
     "take the files again from a checkout of upstream at the commit the manifest names, with "
     f"`git add -f`, and the licence texts from the tags it names; {CPP}/libchdr.version says how",
-    licences=LICENCES)
+    licences=LICENCES,
+    notices=(("src/libchdr_chd.c", "    Copyright Aaron Giles\n", "    POSSIBILITY OF SUCH DAMAGE.\n"),
+             ("include/dr_libs/dr_flac.h",
+              "This software is available as a choice of the following licenses. Choose\n",
+              "OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE\nSOFTWARE.\n")))
 TREES = (RCHEEVOS, LIBCHDR)
 
 
@@ -251,6 +271,36 @@ def licences_held(repository, vendored, licences):
     return wrong
 
 
+def notices_carried(repository, vendored, files, licences):
+    """What is wrong between the licence texts of one copy and the file that
+    carries them into the downloads: each text has to be in it whole, as its
+    bytes are."""
+    try:
+        carried = (repository / NOTICES).read_bytes()
+    except OSError:
+        return [f"there is no {NOTICES}, which is to carry the licence texts of {vendored.name}"]
+    wrong = []
+    texts = [(f"{vendored.tree}/{name}", None, None) for name in sorted(files) if LICENCE_NAME.search(name)]
+    texts += [(f"{vendored.licences}/{name}", None, None) for name in sorted(licences) if vendored.licences]
+    texts += [(f"{vendored.tree}/{name}", first, last) for name, first, last in vendored.notices]
+    for path, first, last in texts:
+        try:
+            text = (repository / path).read_bytes()
+        except OSError:
+            continue    # said already, as a file that is not there
+        if first is not None:
+            start = text.find(first.encode("utf-8"))
+            end = text.find(last.encode("utf-8"), start) if start >= 0 else -1
+            if end < 0:
+                wrong.append(f"{path} no longer has the notice that begins {first.strip()!r}")
+                continue
+            text = text[start:end + len(last.encode("utf-8"))]
+        if text not in carried:
+            wrong.append(f"{NOTICES} does not carry {'the notice in ' if first is not None else ''}"
+                         f"{path} as it stands")
+    return wrong
+
+
 def check(repository=REPOSITORY, vendored=RCHEEVOS):
     """The list of what is wrong with one tree, empty when nothing is, and
     what was read."""
@@ -276,6 +326,7 @@ def check(repository=REPOSITORY, vendored=RCHEEVOS):
                          f"{vendored.name} is kept as upstream has it, with none")
 
     wrong += licences_held(repository, vendored, licences)
+    wrong += notices_carried(repository, vendored, files, licences)
 
     # What is in git, and what is in the folder, against upstream's list.
     tracked = tracked_files(repository, vendored.tree)

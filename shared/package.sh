@@ -23,6 +23,17 @@ for tool in jlink jdeps; do
     [[ -x "$JAVA_HOME/bin/$tool" ]] || { echo "$tool not found in $JAVA_HOME/bin" >&2; exit 1; }
 done
 
+# The hasher's library in lib/native is compiled from other people's code as
+# well: rcheevos, libchdr and the decompressors libchdr carries. Their licences
+# ask that their text travel with every copy, and this file is those texts.
+# Looked for before anything is built: a bundle without it is one this
+# project has no right to hand out, so none is made.
+notices="$here/../hasher/src/main/cpp/licenses/NATIVE-LICENSES.txt"
+if [[ ! -s "$notices" ]]; then
+    echo "no $notices: the bundle would carry the hasher's library without the licences of what it is made of" >&2
+    exit 1
+fi
+
 echo "==> building the daemon distribution"
 "$JAVA_HOME/bin/java" -cp "$here/../gradle/wrapper/gradle-wrapper.jar" \
     org.gradle.wrapper.GradleWrapperMain -p "$here" :daemon:installDist --console=plain -q
@@ -135,6 +146,7 @@ chmod +x "$out/install.sh" 2>/dev/null || true
 # GPLv3 requires the licence to travel with the binary, and this bundle is a
 # binary: without it the only licence texts inside are the JDK runtime's own.
 cp "$here/../LICENSE" "$out/LICENSE" 2>/dev/null || true
+cp "$notices" "$out/NATIVE-LICENSES.txt"
 
 size="$(du -sh "$out" | cut -f1)"
 echo

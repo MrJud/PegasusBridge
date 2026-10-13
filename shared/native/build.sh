@@ -114,15 +114,25 @@ if [[ ${#rhash[@]} -eq 0 ]]; then
 fi
 
 # What of rcheevos is left out, which is the same for every system the
-# library is built for and for the test programs.
-defines=(-DRC_HASH_NO_ENCRYPTED)
+# library is built for and for the test programs; and what of miniz, of which
+# libchdr uses the part that unpacks: its archives, its packing, and what it
+# does with files and with the clock are not compiled.
+defines=(-DRC_HASH_NO_ENCRYPTED
+         -DMINIZ_NO_ARCHIVE_APIS -DMINIZ_NO_DEFLATE_APIS -DMINIZ_NO_STDIO -DMINIZ_NO_TIME)
+# The decompressors are full of assert(), dr_flac's and miniz's above all, and
+# an assert that fails ends the process: the daemon's, or the app's. NDEBUG
+# takes them out of every library that is shipped, here as in CMakeLists.txt,
+# so that a stream made to mislead one ends in the decompressor's own error
+# or in the checksum of the hunk, and the same way on every system. The
+# sanitized test program is built without it, and sees them.
+shipped=(-DNDEBUG)
 
 # -std=gnu11: left to itself gcc 15 and later compile C23, in which sscanf and
 # strtol are functions glibc has had only since 2.38, and the library then
 # loads on nothing older. -fvisibility=hidden keeps this build's own functions
 # out of the symbol table; rcheevos marks its own for export, and jni.map below
 # hides those.
-cflags=(-std=gnu11 -O2 -fPIC -fvisibility=hidden "${defines[@]}")
+cflags=(-std=gnu11 -O2 -fPIC -fvisibility=hidden "${defines[@]}" "${shipped[@]}")
 # The folder of the sources themselves is among them for the test program,
 # which is not in it and includes the header of the .wbfs reader that is.
 rc_includes=(-I"$cpp" -I"$cpp/rcheevos/include" -I"$cpp/rcheevos/src" -I"$cpp/rcheevos/src/rhash")
@@ -149,7 +159,7 @@ case "$target" in
         # and it shows only the functions marked for it, which jni_md.h has
         # JNIEXPORT do and nothing of rcheevos does. Its linker refuses a
         # function nobody defines without being asked.
-        cflags=(-std=gnu11 -O2 "${defines[@]}")
+        cflags=(-std=gnu11 -O2 "${defines[@]}" "${shipped[@]}")
         # -static and -static-libgcc: what the compiler adds of its own goes
         # into the library. Left out, the DLL can come to need libgcc and
         # libwinpthread beside it, two files no Windows has and no bundle of

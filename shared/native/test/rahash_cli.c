@@ -17,6 +17,11 @@
  * console and no other. The library's hashForConsole takes its console the
  * same way, and like this program sets the callback for errors and no other.
  *
+ * A path that ends in .chd is a disc rcheevos hashes through the reader of
+ * tracks in pb_chd.c, which is put on the iterator here as the library puts
+ * it. A hunk of one that cannot be read makes the run one with no hash,
+ * whatever rcheevos made of what it could read.
+ *
  * A path that ends in .wbfs is handed to the reader in pb_wbfs.c, which the
  * library calls for such a path too: what console may be asked for, how the
  * container is read and what is counted are all in that file, and here the
@@ -58,11 +63,13 @@
 #include <string.h>
 #include "rc_hash.h"
 #include "pb_wbfs.h"
+#include "pb_chd.h"
 
 /* Every error of one run, in the order rcheevos gave them. */
 struct reasons {
     char text[2048];
     size_t length;
+    int damaged; /* a hunk of a .chd could not be read: a hash would be of a part */
 };
 
 /*
@@ -77,6 +84,9 @@ static void keep_reason(const char* message, const rc_hash_iterator_t* iterator)
 
     if (!reasons || !message)
         return;
+    /* Ahead of the room there is for text, as in the library. */
+    if (pb_chd_is_damage(message))
+        reasons->damaged = 1;
 
     room = sizeof(reasons->text) - 1 - reasons->length;
     if (reasons->length && room > 2) {
@@ -182,6 +192,7 @@ int main(int argc, char** argv) {
 
     reasons.text[0] = '\0';
     reasons.length = 0;
+    reasons.damaged = 0;
     hash[0] = '\0'; /* the answer is put together before it is known whether there is one */
 
     /*
@@ -193,6 +204,7 @@ int main(int argc, char** argv) {
     rc_hash_initialize_iterator(&iterator, argv[2], NULL, 0);
     iterator.userdata = &reasons;
     iterator.callbacks.error_message = keep_reason;
+    pb_chd_install(&iterator); /* the reader of .chd, as the library puts it */
 
     if (pb_wbfs_names(argv[2])) {
         found = pb_wbfs_hash(hash, (uint32_t)console, &iterator, &stats, why);
@@ -213,6 +225,9 @@ int main(int argc, char** argv) {
 
     rc_hash_destroy_iterator(&iterator);
     after = open_descriptors();
+    /* A hunk that could not be read: no hash, as the library answers. */
+    if (reasons.damaged)
+        found = 0;
 
     if (before >= 0 && after > before) {
         if (found)

@@ -117,6 +117,13 @@ jobs:
         working-directory: shared
         run: ./tools/audit_report_test.py
 
+      # The comparison of our hasher with RetroAchievements' own program is
+      # run by hand, where that program has been built. Here only its tests
+      # run, on two programs they write themselves: nothing is downloaded.
+      - name: The comparison with RAHasher passes its own tests
+        working-directory: shared
+        run: ./tools/rahasher_compare_test.py
+
       - name: Upload test reports
         if: failure()
         uses: actions/upload-artifact@v4

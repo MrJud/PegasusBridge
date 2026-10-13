@@ -526,6 +526,13 @@ A few of the `.chd` images those rows hash were written by chdman and are
 committed, in `shared/tests/chd/`; `./tests/native_repro_test.py --remake-chd`
 writes them again and is the one thing here that needs chdman.
 
+`./tools/rahasher_compare.py --rahasher <RAHasher> --ours <dir>/rahash_cli`
+hashes the same synthetic disc images with RetroAchievements' own program,
+RAHasher, and says where the two part. RAHasher is not in this repository
+and nothing here downloads or builds it; `CONTEXT.md` has how it was built
+and what the run showed, under "What RAHasher 1.8.4 does".
+`./tools/rahasher_compare_test.py` tests the script without it.
+
 It needs gcc. `./native/build.sh <dir> --target=windows` builds `rahasher.dll`
 with `x86_64-w64-mingw32-gcc`, on Linux as well as in Git Bash on Windows; a
 DLL is not committed. CI builds a fresh library in its `native` job and tests

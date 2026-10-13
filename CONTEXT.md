@@ -1216,8 +1216,9 @@ areas), which is what puts real packed streams through the decoders. The
 images `chd_fixture.py` writes are read back by chdman as well, each way of
 packing a hunk, though no test holds that: none may need chdman.
 **What is not shown**: a real game's image against the hash RetroAchievements
-lists for it; what RetroAchievements' hasher itself answers for a multi-track
-image with pregaps (it could not be run here); a Dreamcast image whose last
+lists for it, for a multi-track image with pregaps least of all (what its
+hasher answers for the synthetic ones is under "What RAHasher 1.8.4 does",
+below); a Dreamcast image whose last
 track has a pregap of its own in the image and holds the program, which this
 reader opens and reads one pregap away from where a cue sheet of the same
 disc is read (the row `dreamcast-last-pregap.chd` holds what happens, not
@@ -1235,6 +1236,85 @@ patch level and with it every verdict taken again. The file a scan has in the ha
 written down
 (`cache/scan-inflight.jsonl`), which is what covers a file that ends the
 process inside a decoder.
+
+**What RAHasher 1.8.4 does.** RAHasher is the program RetroAchievements
+gives out for hashing a file, part of RALibretro, and `place` above models
+its `HashCHD.cpp` from the source. It has now been run beside ours:
+`shared/tools/rahasher_compare.py --rahasher <RAHasher> --ours
+<dir>/rahash_cli` writes the synthetic images, has both programs hash each
+image and the disc it was made from, and prints a line an image with a
+class. Nothing of RALibretro is in this repository and no CI job runs it;
+CI runs the script's own tests, on two programs they write
+(`rahasher_compare_test.py`). The run below was made by hand, with RAHasher
+built outside the repository from
+
+    git clone --branch 1.8.4 --depth 1 https://github.com/RetroAchievements/RALibretro
+    git -C RALibretro submodule update --init --depth 1 src/miniz src/rcheevos src/libchdr src/RAInterface
+    make -C RALibretro -f Makefile.RAHasher ARCH=x64 HAVE_CHD=1 CC='gcc -std=gnu17 -DHAVE_UNISTD_H'
+
+(commit 38c3741598b3551347fbce752c604d536d470d63; `git submodule status`:
+RAInterface 9b999253eee5b5236f090405b9215c8c9eef00c4, libchdr
+cb077337d53392454e7100a0fd07139ca678e527, miniz
+36b6c99f622a61b7f97d0238461d4d723aa1322b, rcheevos
+f1417fbf2236936e8334533628b2948dfa4a46d0; gcc 16.2.1, which refuses the
+bundled zlib without the two additions to `CC`), and ours with
+`./native/build.sh <a folder outside the checkout> --tools=<dir>`.
+
+49 images: the 14 chdman wrote and 35 of `chd_fixture.py`'s, the ones made
+to be damaged left out. 41 are `AGREE`: both programs give the same hash,
+which is the disc's. Among them are 13 of chdman's 14, with the two that
+were in doubt: `chdman-gd-cue.chd`, a GD-ROM from a cue sheet whose last
+track has a pregap, and `chdman-pce-cd.chd`, an audio track and then a data
+track with a pregap. No line is `VERSION`: the newer rcheevos inside
+RAHasher hashes each of the ten plain discs as ours does. The other eight
+lines, `-` being no hash:
+
+| image | console | ours | RAHasher | the disc | class |
+|---|---|---|---|---|---|
+| `chdman-gd-cue-bare.chd` | 40 | - | - | c24ded9a… | BOTH-REFUSE |
+| `dreamcast-redump-cue.chd` | 40 | - | - | c24ded9a… | BOTH-REFUSE |
+| `dreamcast-gdi-2026.chd` | 40 | - | - | c24ded9a… | BOTH-REFUSE |
+| `dreamcast-last-pregap.chd` | 40 | - | - | c24ded9a… | BOTH-REFUSE |
+| `pce-unstored-pregap.chd` | 76 | - | - | 8c88cff9… | BOTH-REFUSE |
+| `jaguar.chd` | 77 | - | - | none expected | BOTH-REFUSE |
+| `pce-largest-first.chd` | 49 | - | 8c88cff9… | 8c88cff9… | WE-REFUSE-THEIRS-IS-THE-DISC'S |
+| `dreamcast-last-first.chd` | 40 | c24ded9a… | 96ab8781… | c24ded9a… | DIFFER |
+
+What it says, line by line.
+- Every image `place` refuses for a pregap the two ways of placing a track
+  differ on, RAHasher gives no hash for either ("Not a Dreamcast CD", "Not a
+  PC Engine CD"): the three Dreamcast images whose audio track has a pregap,
+  chdman's own among them, and the PC Engine CD whose pregap is not in the
+  image. So the model of where RAHasher looks was right, and by refusing we
+  give up no hash RAHasher would have given.
+- `dreamcast-last-pregap.chd`, which the reader opens and then finds no
+  program in, RAHasher ends the same way ("Could not read boot executable").
+- `pce-largest-first.chd`: asked for the largest track of an image whose
+  largest is the first, RAHasher gives the hash both programs give for a cue
+  sheet of the same two tracks. The reader refuses that image on the ground
+  that RetroAchievements' hasher reads the largest track where the last one
+  lies; for this image at least, 1.8.4 does not.
+- `dreamcast-last-first.chd`, a GD-ROM whose program begins its fourth
+  track, in the very sector after the third: ours gives the disc's hash,
+  which is also what both programs give for a `.gdi` sheet of the same four
+  tracks, and RAHasher gives another for the image. It says it found the
+  program at sector 45024 and hashed 3000 bytes from there, where the third
+  track has ended: it answered a read one sector past that track, which is
+  the read this reader refuses so that rcheevos goes on to the last track.
+  The script ends with status 1 for this line. It is a hand-made image of
+  an edge, not a disc anybody has, and it is RAHasher's reading of the image
+  that left the disc, not ours.
+
+What it does not say: which hash RetroAchievements lists for a real game.
+RAHasher is what a person checks a file with, and it is not what the
+emulators players earn achievements in read a `.chd` with. So "RAHasher
+gives nothing" does not make a refusal free, and the choice for the images
+`place` refuses is among three, **none taken here**: keep refusing; follow
+RAHasher, which for these gives nothing; or hash the disc where chdman put
+it, which is the hash of the cue sheet. The same holds for the largest
+track that is not the last, where RAHasher now gives the disc's. `pb_chd.c`
+is as it was. A real multi-track image and the lists would settle one case;
+`--also <console>:<file>` adds a file of one's own to the table.
 
 The decoders' `assert()` is compiled out of all three libraries (`NDEBUG`, in
 `build.sh` and in `CMakeLists.txt`), so a stream made to mislead one ends in

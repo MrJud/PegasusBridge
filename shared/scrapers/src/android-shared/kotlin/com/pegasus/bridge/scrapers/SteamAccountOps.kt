@@ -43,9 +43,10 @@ import java.util.Locale
  * key, a rate limit, no network and an unusable answer are states of the
  * moment: kept, each would go on being said after it had stopped being true.
  * When a file has gone old and the call for a new one ends in no network, a
- * rate limit or an unusable answer, the old file is served and marked `stale`.
- * It is not served after "private" or a refused key, which are about the
- * account as it is now.
+ * rate limit or an unusable answer, the old file is served and marked `stale`,
+ * with the state it would have been without the file beside it as
+ * `staleState`. It is not served after "private" or a refused key, which are
+ * about the account as it is now.
  *
  * A name on disk is made of a number parsed here, a language out of
  * [LANGUAGES] and a SteamID held to seventeen digits. No parameter is ever
@@ -261,8 +262,20 @@ object SteamAccountOps {
 
     private fun nowSeconds(): Long = clock() / 1000L
 
-    /** What every `results` object of this source begins with. */
-    private fun results(state: State, op: String, cached: Boolean, stale: Boolean, fetchedAt: Long) =
+    /**
+     * What every `results` object of this source begins with.
+     *
+     * [trouble] is what the call for a new answer ended in, when [stale] says
+     * that an old one is served in its place.
+     */
+    private fun results(
+        state: State,
+        op: String,
+        cached: Boolean,
+        stale: Boolean,
+        fetchedAt: Long,
+        trouble: State? = null
+    ) =
         JSONObject()
             // Named so nothing downstream is tempted to add these numbers to a
             // RetroAchievements total. Two accounts, two catalogues; a combined
@@ -271,8 +284,20 @@ object SteamAccountOps {
             .put("state", state.wire)
             .put("message", sentence(state, op))
             .put("cached", cached)
-            .put("stale", stale)
             .put("fetchedAt", fetchedAt)
+            .staleBecause(stale, trouble)
+
+    /**
+     * `stale`, and beside a true one `staleState`: why Steam gave no new
+     * answer, in the word the state would have been had nothing been kept.
+     * A theme shows the old answer and says this of it. An answer that is not
+     * stale has no `staleState` at all.
+     */
+    private fun JSONObject.staleBecause(stale: Boolean, trouble: State?): JSONObject {
+        put("stale", stale)
+        if (stale) put("staleState", (trouble?.takeIf { it.servesStale } ?: State.UPSTREAM_ERROR).wire)
+        return this
+    }
 
     private fun stateOf(e: Throwable): State = when ((e as? SteamAccountClient.SteamException)?.refusal) {
         SteamAccountClient.Refusal.PRIVATE      -> State.PRIVATE
@@ -372,7 +397,8 @@ object SteamAccountOps {
         val games = SteamAccountClient.ownedGames(account).getOrElse { e ->
             val state = stateOf(e)
             note("library", e, state)
-            return if (kept != null && state.servesStale) libraryResults(account, shelf, kept, cached = true, stale = true)
+            return if (kept != null && state.servesStale)
+                       libraryResults(account, shelf, kept, cached = true, stale = true, trouble = state)
                    else libraryRefused(state, account.steamId)
         }
 
@@ -408,7 +434,8 @@ object SteamAccountOps {
         shelf: Shelf,
         kept: JSONObject,
         cached: Boolean,
-        stale: Boolean
+        stale: Boolean,
+        trouble: State? = null
     ): JSONObject {
         val arr = kept.optJSONArray("games") ?: JSONArray()
         val games = (0 until arr.length()).mapNotNull { arr.optJSONObject(it) }
@@ -438,7 +465,7 @@ object SteamAccountOps {
             }
             out.put(entry)
         }
-        return results(State.OK, "library", cached, stale, kept.optLong("fetchedAt"))
+        return results(State.OK, "library", cached, stale, kept.optLong("fetchedAt"), trouble)
             .put("steamId", account.steamId)
             .put("games", out)
     }
@@ -488,7 +515,10 @@ object SteamAccountOps {
         val stale: Boolean,
         val trouble: State? = null,
         val schema: SchemaGot? = null
-    )
+    ) {
+        /** Why [stale]: the player call's trouble, or that of the schema the count was made with. */
+        val why: State? get() = trouble ?: schema?.trouble
+    }
 
     private fun readProgress(file: File?, steamId: String, appId: Int): ProgressRecord? {
         val j = read(file) ?: return null
@@ -753,10 +783,13 @@ object SteamAccountOps {
         if (account == null) halt.fatal = State.NOT_CONFIGURED
         val items = JSONArray()
         var stale = false
+        var why: State? = null
         var answered = 0
         for (appId in appIds) {
             val got = if (account == null) ProgressGot(State.SKIPPED, null, cached = false, stale = false)
                       else progressOf(account, appId, language, shelf, refresh, halt)
+            // The first old count's reason speaks for the request.
+            if (got.stale && !stale) why = got.why
             stale = stale || got.stale
             if (got.record != null) answered++
             items.put(JSONObject()
@@ -768,7 +801,8 @@ object SteamAccountOps {
                 .put("fetchedAt", got.record?.fetchedAt ?: 0L))
         }
         return results(halt.fatal ?: State.OK, "progress",
-                       cached = halt.calls == 0 && answered > 0, stale = stale, fetchedAt = nowSeconds())
+                       cached = halt.calls == 0 && answered > 0, stale = stale, fetchedAt = nowSeconds(),
+                       trouble = why)
             .put("items", items)
     }
 
@@ -809,8 +843,8 @@ object SteamAccountOps {
             return achievementsRefused(State.NO_ACHIEVEMENTS, appId)
                 .put("gameName", record.gameName)
                 .put("cached", got.cached)
-                .put("stale", got.stale)
                 .put("fetchedAt", record.fetchedAt)
+                .staleBecause(got.stale, got.why)
 
         // Told a moment ago that Steam cannot be reached, or will not be asked
         // more for now: the schema is taken as it lies on disk.
@@ -837,7 +871,8 @@ object SteamAccountOps {
         val total = list.length()
         val unlocked = if (record.noStats) 0 else record.unlocked
         return results(if (total == 0) State.NO_ACHIEVEMENTS else State.OK, "achievements",
-                       cached = got.cached, stale = got.stale || schema.stale, fetchedAt = record.fetchedAt)
+                       cached = got.cached, stale = got.stale || schema.stale, fetchedAt = record.fetchedAt,
+                       trouble = got.why ?: schema.trouble)
             .put("appId", appId)
             .put("gameName", record.gameName.ifEmpty { listed?.gameName.orEmpty() })
             .put("unlocked", unlocked)

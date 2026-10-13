@@ -468,7 +468,9 @@ nothing else.
 
 Every `results` carries `namespace: "steam"`, `state`, `message`, `cached`,
 `stale` and `fetchedAt`. `message` is one fixed English sentence per state, never
-Steam's own text.
+Steam's own text. A `results` with `stale: true` also carries `staleState`:
+`offline`, `rate_limited` or `upstream_error`, which is why Steam gave no new
+answer. One that is not stale has no `staleState`.
 
 | op | params | `results` |
 | --- | --- | --- |
@@ -499,7 +501,9 @@ achievements, it is `ok` with none of them unlocked.
 `progress` is for the games on screen. It stops starting calls about 8 seconds
 in, and after a state that ends the request, and the games it did not reach come
 back `skipped`; the state of the whole answer is the one that ended it, or `ok`.
-Asked again, it finds the games it had answered on disk.
+A game whose count on disk is younger than 10 minutes is answered whatever ended
+the request, since it costs no call. Asked again, it finds the games it had
+answered on disk.
 
 `lang` is the theme's language code (`it`, `en`, `pt_BR`). The Bridge turns it
 into Steam's name for the language, and whatever it does not know into English.
@@ -508,9 +512,19 @@ What is kept is under `<dataRoot>/cache/steam/`: a game's schema for 30 days,
 per language, and the library and each game's unlock list for 10 minutes.
 `refresh=1` asks Steam again, but not about an answer younger than a minute.
 Nothing is kept for `private`, `key_refused`, `rate_limited`, `offline` or
-`upstream_error`. When what is kept has gone old and the call for a new one ends
-in `offline`, `rate_limited` or `upstream_error`, the old one is served, with
-`stale: true`.
+`upstream_error`, so a profile made public, or a key put right, is answered for
+at the next request. When what is kept has gone old and the call for a new one
+ends in `offline`, `rate_limited` or `upstream_error`, the old one is served:
+`state` is the old answer's own (`ok`, or `no_achievements`), with `cached:
+true`, `stale: true`, and `staleState` naming which of the three it was. It is
+not served after `private` or `key_refused`.
+
+Two answers are made of two calls, and either can be the old half. An
+`achievements` whose unlock list is new and whose names are from an old schema
+is `stale` with the schema call's `staleState`, and `cached: false`. A
+`progress` is `stale` when any of its counts is, with the `staleState` of the
+first such; its `state` stays the one that ended the request, so after `offline`
+it reads `state: "offline"`, `stale: true`, and the old counts in `items`.
 
 `/ra/match` is the one worth knowing about. Ask it *which RetroAchievements game
 this is*, with the path of the game's file, and it answers with what the scan

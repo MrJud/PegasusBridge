@@ -295,6 +295,7 @@ class SteamAccountOpsTest {
 
     @Test fun `an old library is served when steam cannot be asked, and not when the account is refused`() {
         val first = ask("library")
+        assertFalse(first.has("staleState"), "a new answer names a reason for being stale: $first")
         val kept = File(root, libraryFile).readText()
 
         for (state in listOf("offline", "rate_limited", "upstream_error", "upstream_error")) {
@@ -306,6 +307,7 @@ class SteamAccountOpsTest {
             }
             assertEquals("ok", r.getString("state"), "after $state")
             assertTrue(r.getBoolean("stale"), "an old library served after $state is not marked stale")
+            assertEquals(state, r.getString("staleState"), "an old library does not say why it is served")
             assertTrue(r.getBoolean("cached"))
             assertEquals(first.getLong("fetchedAt"), r.getLong("fetchedAt"))
             assertEquals(4, r.getJSONArray("games").length())
@@ -319,6 +321,7 @@ class SteamAccountOpsTest {
             assertEquals(state, r.getString("state"))
             assertEquals(0, r.getJSONArray("games").length(), "an old library was served after $state")
             assertFalse(r.getBoolean("stale") || r.getBoolean("cached"))
+            assertFalse(r.has("staleState"), "an answer that is not stale names a reason for being so: $r")
             assertEquals(kept, File(root, libraryFile).readText(), "$state rewrote the kept library")
         }
     }
@@ -423,6 +426,7 @@ class SteamAccountOpsTest {
             val r = during(state) { ask("achievements", "appId" to "440") }
             assertEquals("ok", r.getString("state"), "after $state")
             assertTrue(r.getBoolean("stale"), "an old list served after $state is not marked stale")
+            assertEquals(state, r.getString("staleState"), "an old list does not say why it is served")
             assertTrue(r.getBoolean("cached"))
             assertEquals(first.getLong("fetchedAt"), r.getLong("fetchedAt"))
             assertEquals(first.getJSONArray("achievements").toString(), r.getJSONArray("achievements").toString())
@@ -432,6 +436,9 @@ class SteamAccountOpsTest {
             assertEquals("ok", item.getString("state"))
             assertEquals(1 to 2, item.getInt("unlocked") to item.getInt("total"))
             assertTrue(progress.getBoolean("stale"))
+            assertEquals(state, progress.getString("staleState"))
+            // The request's own state is still what ended it, which one game's trouble does not.
+            assertEquals(if (state == "upstream_error") "ok" else state, progress.getString("state"))
             assertEquals(kept, File(root, progressFile(440)).readText(), "$state rewrote the kept list")
         }
         assertEquals(1, schemaCalls.get(), "a schema was asked for while Steam could not be")
@@ -443,8 +450,58 @@ class SteamAccountOpsTest {
             assertEquals(state, r.getString("state"))
             assertEquals(0, r.getJSONArray("achievements").length(), "an old list was served after $state")
             assertFalse(r.getBoolean("stale") || r.getBoolean("cached"))
+            assertFalse(r.has("staleState"), "an answer that is not stale names a reason for being so: $r")
             assertEquals(kept, File(root, progressFile(440)).readText(), "$state rewrote the kept list")
+
+            val progress = ask("progress", "appIds" to "440")
+            assertEquals(state, progress.getString("state"))
+            assertFalse(progress.getBoolean("stale") || progress.has("staleState"), "got $progress")
         }
+    }
+
+    // The count is new and the names are not, or the other way about: the
+    // reason is that of whichever call gave nothing.
+    @Test fun `an answer made with an old schema says why the schema is old`() {
+        player[901] = { json(NO_STATS, 400) }
+        assertEquals("ok", ask("achievements", "appId" to "901").getString("state"))
+        assertEquals("ok", ask("achievements", "appId" to "440").getString("state"))
+
+        advance(31L * 24 * 60 * 60)
+        schema[901] = { html("slow down", 429) }
+        schema[440] = { html("oops", 500) }
+
+        // Steam still lists the account's achievements; their names are a month old.
+        val named = ask("achievements", "appId" to "440")
+        assertEquals("ok", named.getString("state"))
+        assertTrue(named.getBoolean("stale"))
+        assertEquals("upstream_error", named.getString("staleState"))
+        assertEquals("ACH_ONE in english", named.list().first().getString("title"))
+
+        // "No stats", and the schema that says how many there are is the old one.
+        val counted = ask("achievements", "appId" to "901")
+        assertEquals("ok", counted.getString("state"))
+        assertEquals(0 to 2, counted.getInt("unlocked") to counted.getInt("total"))
+        assertTrue(counted.getBoolean("stale"))
+        assertEquals("rate_limited", counted.getString("staleState"))
+
+        advance(11 * 60)
+        val progress = ask("progress", "appIds" to "901")
+        assertEquals("ok", progress.items().single().getString("state"))
+        assertTrue(progress.getBoolean("stale"))
+        assertEquals("rate_limited", progress.getString("staleState"))
+        assertEquals("rate_limited", progress.getString("state"))
+    }
+
+    @Test fun `a game known to have no achievements is still that when steam cannot be asked, and says why`() {
+        player[900] = { json(NO_STATS, 400) }
+        schema[900] = { json("""{"game":{}}""") }
+        assertEquals("no_achievements", ask("achievements", "appId" to "900").getString("state"))
+
+        advance(11 * 60)
+        val r = offline { ask("achievements", "appId" to "900") }
+        assertEquals("no_achievements", r.getString("state"))
+        assertTrue(r.getBoolean("stale") && r.getBoolean("cached"))
+        assertEquals("offline", r.getString("staleState"))
     }
 
     // ── No stats: no achievements, or never played ──────────────────────────
@@ -568,6 +625,7 @@ class SteamAccountOpsTest {
         assertEquals(3, schemaCalls.get())
         assertEquals("ACH_ONE in english", still.list().first().getString("title"))
         assertTrue(still.getBoolean("stale"))
+        assertEquals("upstream_error", still.getString("staleState"))
     }
 
     @Test fun `a schema that lacks an achievement of the account's list is asked for again once`() {
@@ -650,6 +708,7 @@ class SteamAccountOpsTest {
         val r = offline { ask("achievements", "appId" to "440", "refresh" to "1") }
         assertEquals("ok", r.getString("state"))
         assertTrue(r.getBoolean("stale"))
+        assertEquals("offline", r.getString("staleState"))
         assertEquals(2, r.getInt("total"))
     }
 
@@ -1029,6 +1088,9 @@ class SteamAccountOpsTest {
                 .add(r.getString("message"))
             assertFalse(r.toString().contains(MARKER), "Steam's own text reached the answer: $r")
             assertFalse(r.toString().contains("127.0.0.1"), "the network layer's text reached the answer: $r")
+            assertEquals(r.getBoolean("stale"), r.has("staleState"), "a reason goes with a stale answer and no other: $r")
+            if (r.has("staleState"))
+                assertTrue(r.getString("staleState") in setOf("offline", "rate_limited", "upstream_error"), "got $r")
         }
 
         record("library", ask("library", credentials = null))
@@ -1053,6 +1115,17 @@ class SteamAccountOpsTest {
         record("library", offline { ask("library") })
         record("achievements", offline { ask("achievements", "appId" to "440") })
         record("progress", offline { ask("progress", "appIds" to "440") })
+        // And with something kept: the old answer, under the sentence of "ok".
+        player.remove(440)
+        owned = { json(OWNED) }
+        ask("library"); ask("achievements", "appId" to "440")
+        advance(11 * 60)
+        val old = listOf("library" to offline { ask("library") },
+                         "achievements" to offline { ask("achievements", "appId" to "440") })
+        for ((op, r) in old) {
+            assertTrue(r.getBoolean("stale"), "$op: $r")
+            record(op, r)
+        }
 
         assertEquals(SENTENCES.filterKeys { it != "skipped" }.mapValues { setOf(it.value) }, seen)
         assertEquals(SENTENCES.getValue("skipped"),

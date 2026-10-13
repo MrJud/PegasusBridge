@@ -64,9 +64,21 @@ val buildNative by tasks.registering(Exec::class) {
     // change to what it is built from. rc_compat.h is the one header the
     // sources include from above their own folder, and rc_version.h and
     // pb_patchlevel.h are where the JNI file takes the version it reports.
+    //
+    // The two readers of our own and the whole of libchdr are named as
+    // well. They were not, when they came: a change to one of them alone
+    // left this task up to date, and a system that builds its own library,
+    // which is every one but Linux, kept the library of the old source in
+    // its bundle. tests/native_manifest_check_test.py holds this list to
+    // what the committed manifest says the library is compiled from.
     inputs.file(script)
     inputs.file(File(cpp, "rahasher_jni.c"))
     inputs.file(File(cpp, "pb_patchlevel.h"))
+    inputs.file(File(cpp, "pb_wbfs.c"))
+    inputs.file(File(cpp, "pb_wbfs.h"))
+    inputs.file(File(cpp, "pb_chd.c"))
+    inputs.file(File(cpp, "pb_chd.h"))
+    inputs.dir(File(cpp, "libchdr"))
     inputs.file(File(cpp, "rahasher.sources"))
     inputs.file(File(cpp, "jni.map"))
     inputs.file("$rootDir/native/include/win32/jni_md.h")

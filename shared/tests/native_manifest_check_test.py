@@ -14,10 +14,17 @@ printing that all is well. It compiles nothing, and neither does this.
 One test more asks git, where there is a git and a checkout, whether it would
 hand out the files the committed manifest names with their line endings
 changed. It would not show in the sums here, only in somebody else's checkout.
+
+And two read the build files beside the real manifest. Gradle runs build.sh,
+and the tests that hold the Kotlin to the C, only when a file it was told of
+has changed, and it is told of them by name in two build files. A source that
+is in the library and in neither list is one whose change builds nothing and
+tests nothing, until some other file happens to change with it.
 """
 
 import hashlib
 import io
+import re
 import shutil
 import subprocess
 import sys
@@ -252,8 +259,9 @@ class ManifestCheckTest(unittest.TestCase):
 
 
 class CheckoutTest(unittest.TestCase):
-    """The one test here that looks at the real repository: at what git is
-    told to do with the files the committed manifest names."""
+    """The tests here that look at the real repository: at what git is told
+    to do with the files the committed manifest names, and at what Gradle is
+    told the library and its tests are made from."""
 
     def test_git_hands_out_every_input_of_the_committed_manifest_as_it_is(self):
         # The sums are of the bytes in git. A checkout that turns LF into CRLF
@@ -278,6 +286,43 @@ class CheckoutTest(unittest.TestCase):
         self.assertEqual(rewritten, [],
                          "a checkout may rewrite the line endings of these, and the sums in "
                          "the manifest would no longer hold: give them `-text` in .gitattributes")
+
+    def test_the_task_that_builds_the_library_is_told_of_every_file_it_is_compiled_from(self):
+        # installDist, and so package.sh, builds the library through the task
+        # buildNative, which Gradle skips while the inputs it was given are
+        # as they were. The manifest is the compiler's own list of what the
+        # library is made of. A file on it that the task does not name can
+        # change and leave the task up to date: on Linux the committed
+        # library stands in, and on a system that builds its own, which is
+        # every other, the bundle keeps the library of the old source.
+        build = (check.SHARED / "daemon" / "build.gradle.kts").read_text(encoding="utf-8")
+        task = build[build.index("val buildNative by tasks.registering"):]
+        task = task[:task.index("\n}\n")]
+        files = {f"{CPP}/{name}" for name in re.findall(r'inputs\.file\(File\(cpp, "([^"]+)"\)\)', task)}
+        folders = [f"{CPP}/{name}/" for name in re.findall(r'inputs\.dir\(File\(cpp, "([^"]+)"\)\)', task)]
+        self.assertTrue(files and folders, "the inputs of buildNative are no longer written as this reads them")
+        _, inputs, _ = check.read_manifest(check.DEFAULT)
+        unnamed = [name for _, name in inputs
+                   if name.startswith(CPP + "/") and name not in files
+                   and not any(name.startswith(folder) for folder in folders)]
+        self.assertEqual(unnamed, [],
+                         "shared/daemon/build.gradle.kts does not give these to buildNative as inputs, "
+                         "so a change to one of them does not build the library again")
+
+    def test_the_hasher_tests_are_told_of_every_header_the_version_is_read_from(self):
+        # NativeConsoleHashTest reads the numbers the library's version is
+        # made of out of the headers, and holds the library and the Kotlin to
+        # them. The headers are no source of that module, so its test task
+        # names them: one it does not name can be edited and the task stays
+        # up to date, with the test passing on the run before the edit.
+        test = (check.SHARED / "hasher" / "src" / "test" / "kotlin" / "com" / "pegasus" / "bridge" / "hasher"
+                / "NativeConsoleHashTest.kt").read_text(encoding="utf-8")
+        read = sorted(set(re.findall(r'defined\("([^"]+\.h)"', test)))
+        self.assertTrue(read, "NativeConsoleHashTest no longer reads the headers as this reads it")
+        build = (check.SHARED / "hasher" / "build.gradle.kts").read_text(encoding="utf-8")
+        named = set(re.findall(r'File\(cpp, "([^"]+)"\)', build))
+        self.assertEqual([header for header in read if header not in named], [],
+                         "shared/hasher/build.gradle.kts does not name these as inputs of the test task")
 
 
 if __name__ == "__main__":

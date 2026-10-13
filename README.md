@@ -490,8 +490,11 @@ Steam's own text.
 | `skipped` | an item that was not asked about | |
 
 A game the account has never started is `ok` with 0 of its total, every
-achievement locked: Steam says "no stats" of it as it does of a game with no
-achievements, and the game's schema tells the two apart.
+achievement locked: Steam lists them all, none achieved. A tool (Proton, a Steam
+Linux Runtime) is `no_achievements`: Steam says "Requested app has no stats" of
+it, with a private profile as with a public one, and its schema lists nothing.
+The sentence alone does not decide. Said of a game whose schema lists
+achievements, it is `ok` with none of them unlocked.
 
 `progress` is for the games on screen. It stops starting calls about 8 seconds
 in, and after a state that ends the request, and the games it did not reach come

@@ -476,7 +476,8 @@ class SteamAccountOpsTest {
         assertEquals(3 to 2, playerCalls.get() to schemaCalls.get(), "an empty schema was trusted for more than a week")
     }
 
-    // Never started, or not owned: Steam says "no stats" of this one too.
+    // Not measured: Steam saying "no stats" of a game whose schema lists some.
+    // Should it, the schema is believed, and the game is not shown as having none.
     @Test fun `no stats and a schema that lists some is a game with none of them unlocked`() {
         player[901] = { json(NO_STATS, 400) }
 
@@ -893,6 +894,102 @@ class SteamAccountOpsTest {
         assertEquals(1, answers.count { !it.getBoolean("cached") })
     }
 
+    // ── As measured against Steam on 2026-10-13 ─────────────────────────────
+    //
+    // Each of these is an answer Steam gave that day, at the status and with
+    // the body it gave it. The shapes are Steam's; the games and the account
+    // are the test's.
+
+    @Test fun `measured - a private profile is refused with 403 and its body, and once public is answered at once`() {
+        player[440] = { json(NOT_PUBLIC, 403) }
+        player[570] = { json(NOT_PUBLIC, 403) }
+
+        val refused = ask("achievements", "appId" to "440")
+        assertEquals("private", refused.getString("state"))
+        val batch = ask("progress", "appIds" to "440,570")
+        assertEquals("private", batch.getString("state"))
+        assertEquals(listOf("private", "skipped"), batch.items().map { it.getString("state") })
+        // The library is listed all the same: Steam gives an account's own key
+        // its games while their details are private.
+        assertEquals("ok", ask("library").getString("state"))
+        assertEquals(listOf(libraryFile), files(), "something was kept of a private profile")
+
+        // Made public. No time has passed and no refresh is asked for.
+        val calls = playerCalls.get()
+        player.remove(440)
+        player.remove(570)
+        val r = ask("achievements", "appId" to "440")
+        assertEquals("ok", r.getString("state"))
+        assertEquals(1 to 2, r.getInt("unlocked") to r.getInt("total"))
+        assertFalse(r.getBoolean("cached") || r.getBoolean("stale"))
+        val after = ask("progress", "appIds" to "440,570")
+        assertEquals("ok", after.getString("state"))
+        assertEquals(listOf("ok", "ok"), after.items().map { it.getString("state") })
+        assertEquals(calls + 2, playerCalls.get(), "one call for each game, the first of them answered from disk since")
+    }
+
+    @Test fun `measured - a tool has no stats and an empty schema, and is a game with no achievements`() {
+        // Proton, Steam Linux Runtime: five of the eighteen games Pegasus lists for Steam.
+        player[1493710] = { json(NO_STATS, 400) }
+        schema[1493710] = { json(EMPTY_SCHEMA) }
+        // Said of the tool while the profile is private as well.
+        player[440] = { json(NOT_PUBLIC, 403) }
+
+        val batch = ask("progress", "appIds" to "1493710,440")
+        assertEquals(listOf("no_achievements", "private"), batch.items().map { it.getString("state") })
+        assertEquals(0 to 0, batch.items().first().let { it.getInt("unlocked") to it.getInt("total") })
+
+        val r = ask("achievements", "appId" to "1493710")
+        assertEquals("no_achievements", r.getString("state"))
+        assertEquals(0, r.getInt("total"))
+        assertEquals(0, r.getJSONArray("achievements").length())
+        assertTrue(r.getBoolean("cached"), "a tool was asked about twice")
+        assertEquals(1 to 1, (playerCalls.get() - 1) to schemaCalls.get())
+        assertEquals(listOf(progressFile(1493710), schemaFile(1493710, "english")), files())
+    }
+
+    @Test fun `measured - a game never started is answered with its whole list and nothing achieved`() {
+        // With a language, each entry has the achievement's name and description beside its id.
+        val entries = (1..5).joinToString(",") {
+            """{"apiname":"TF_ACH_$it","achieved":0,"unlocktime":0,"name":"Shown name $it","description":"How $it is earned"}"""
+        }
+        player[440] = {
+            json("""{"playerstats":{"steamID":"$STEAM_ID","gameName":"Team Fortress 2","achievements":[$entries],"success":true}}""")
+        }
+
+        val item = ask("progress", "appIds" to "440", "lang" to "it").items().single()
+        assertEquals("ok", item.getString("state"))
+        assertEquals(0 to 5, item.getInt("unlocked") to item.getInt("total"))
+        assertEquals(0, schemaCalls.get(), "a game with a list was counted with its schema")
+
+        val r = ask("achievements", "appId" to "440", "lang" to "it")
+        assertEquals("ok", r.getString("state"))
+        assertEquals(0 to 5, r.getInt("unlocked") to r.getInt("total"))
+        assertEquals(0.0, r.getDouble("progress"))
+        assertEquals((1..5).map { "TF_ACH_$it" }, r.list().map { it.getString("id") })
+        assertTrue(r.list().none { it.getBoolean("unlocked") || it.getLong("unlockedAt") != 0L })
+    }
+
+    @Test fun `measured - a hidden achievement comes with no description and is listed without one`() {
+        schema[367520] = { l ->
+            json("""{"game":{"gameName":"Hollow Knight","gameVersion":"36","availableGameStats":{"achievements":[
+                {"name":"CHARMED","defaultvalue":0,"displayName":"Charmed in $l","hidden":0,"description":"Acquire a charm",
+                 "icon":"https://cdn.example/367520/a.jpg","icongray":"https://cdn.example/367520/a_gray.jpg"},
+                {"name":"ENDING","defaultvalue":0,"displayName":"The ending in $l","hidden":1,
+                 "icon":"https://cdn.example/367520/b.jpg","icongray":"https://cdn.example/367520/b_gray.jpg"}]}}}""")
+        }
+        player[367520] = { json(playerBody("Hollow Knight", "CHARMED" to 1, "ENDING" to 0)) }
+
+        val r = ask("achievements", "appId" to "367520", "lang" to "it")
+        val (shown, hidden) = r.list()
+        assertEquals("Acquire a charm", shown.getString("description"))
+        assertFalse(shown.getBoolean("hidden"))
+        assertEquals("The ending in italian", hidden.getString("title"))
+        assertEquals("", hidden.getString("description"))
+        assertTrue(hidden.getBoolean("hidden"))
+        assertEquals("https://cdn.example/367520/b_gray.jpg", hidden.getString("iconLockedUrl"))
+    }
+
     // ── resolve, and requests that are wrong in themselves ──────────────────
 
     @Test fun `resolve answers with the id alone and fails as it always has`() {
@@ -1041,9 +1138,14 @@ class SteamAccountOpsTest {
             "<html><head><title>Bad Request</title></head><body><h1>Bad Request</h1>" +
             "Required parameter 'key' is missing</body></html>"
 
-        // Believed, not measured.
+        // As Steam sent them on 2026-10-13: the first with HTTP 403, to an account
+        // whose game details were private; the second with HTTP 400, about a tool,
+        // and the same whether that account's details were private or public.
         const val NOT_PUBLIC = """{"playerstats":{"error":"Profile is not public","success":false}}"""
         const val NO_STATS = """{"playerstats":{"error":"Requested app has no stats","success":false}}"""
+
+        /** The schema Steam sent for that tool, with HTTP 200. */
+        const val EMPTY_SCHEMA = """{"game":{}}"""
 
         val PLAYER = playerBody("Team Fortress 2", "ACH_ONE" to 1, "ACH_TWO" to 0)
 

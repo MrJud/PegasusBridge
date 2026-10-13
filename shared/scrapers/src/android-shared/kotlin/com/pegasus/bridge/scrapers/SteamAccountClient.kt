@@ -27,12 +27,15 @@ import java.net.URLEncoder
  * Measured against Steam on 2026-10-13: a wrong key is **HTTP 403 with an HTML
  * body** on `GetPlayerAchievements` and **401 with an HTML body** on
  * `GetOwnedGames`, and no key at all is **400 with an HTML body**. A profile
- * that is not public and a game that has no stats are refused with statuses
- * out of the same handful, and what tells them from a refused key is that
- * their body is JSON and says which it is. So the body is read first and the
- * status second, in [judge], and a status alone never names a refusal that a
- * body could have named better. This used to go by the status before the body
- * was looked at, and a private profile came out as a key to type again.
+ * that is not public is a **403** as well, and a game that has no stats a
+ * **400**, both measured the same day, and what tells them from a refused key
+ * is that their body is JSON and says which it is:
+ * `{"playerstats":{"error":"Profile is not public","success":false}}` and
+ * `{"playerstats":{"error":"Requested app has no stats","success":false}}`.
+ * So the body is read first and the status second, in [judge], and a status
+ * alone never names a refusal that a body could have named better. This used
+ * to go by the status before the body was looked at, and a private profile
+ * came out as a key to type again.
  */
 object SteamAccountClient {
 
@@ -59,8 +62,11 @@ object SteamAccountClient {
         /** Steam did not take the key: wrong, revoked or missing. */
         KEY_REFUSED,
         /**
-         * "Requested app has no stats": the game has no achievements, or this
-         * account has never started it. Which of the two is for the schema to say.
+         * "Requested app has no stats". Measured of a tool, which has no
+         * achievements, and said of it while the profile was private too. It
+         * is not what a game the account never started gets: that one was
+         * answered with its whole list and nothing achieved. Whether the game
+         * has achievements is for the schema to say.
          */
         NO_STATS,
         /** No profile of that name. [resolveVanity] only. */

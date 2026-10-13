@@ -218,23 +218,23 @@ class IntegrationClientsTest {
         val refusal: SteamAccountClient.Refusal?
     )
 
-    // What Steam answers with and what it is. The first three bodies are as
-    // Steam sent them on 2026-10-13, to a wrong key and to no key. The two
-    // marked "believed" are not measured yet: a profile that is not public and a
-    // game with no stats, each given at the status it is thought to come with
-    // and at 200, since what names them is the body.
+    // What Steam answers with and what it is. The rows marked "measured" are as
+    // Steam sent them on 2026-10-13, status and body: to a wrong key, to no key,
+    // to an account whose game details were private, and about a tool, which
+    // has no stats. The last two are given at two other statuses as well, since
+    // what names them is the body.
     private val PLAYER_ROWS = listOf(
-        SteamRow("a wrong key", 403, "text/html", STEAM_FORBIDDEN, SteamAccountClient.Refusal.KEY_REFUSED),
-        SteamRow("a wrong key, as the library call refuses it", 401, "text/html", STEAM_UNAUTHORIZED,
+        SteamRow("measured: a wrong key", 403, "text/html", STEAM_FORBIDDEN, SteamAccountClient.Refusal.KEY_REFUSED),
+        SteamRow("measured: a wrong key, as the library call refuses it", 401, "text/html", STEAM_UNAUTHORIZED,
                  SteamAccountClient.Refusal.KEY_REFUSED),
-        SteamRow("no key", 400, "text/html", STEAM_NO_KEY, SteamAccountClient.Refusal.KEY_REFUSED),
-        SteamRow("a profile that is not public (believed)", 403, "application/json", STEAM_NOT_PUBLIC,
+        SteamRow("measured: no key", 400, "text/html", STEAM_NO_KEY, SteamAccountClient.Refusal.KEY_REFUSED),
+        SteamRow("measured: a profile that is not public", 403, "application/json", STEAM_NOT_PUBLIC,
                  SteamAccountClient.Refusal.PRIVATE),
         SteamRow("a profile that is not public, at 200", 200, "application/json", STEAM_NOT_PUBLIC,
                  SteamAccountClient.Refusal.PRIVATE),
         SteamRow("a profile that is not public, at 401", 401, "application/json", STEAM_NOT_PUBLIC,
                  SteamAccountClient.Refusal.PRIVATE),
-        SteamRow("a game with no stats (believed)", 400, "application/json", STEAM_NO_STATS,
+        SteamRow("measured: a tool, which has no stats", 400, "application/json", STEAM_NO_STATS,
                  SteamAccountClient.Refusal.NO_STATS),
         SteamRow("a game with no stats, at 200", 200, "application/json", STEAM_NO_STATS,
                  SteamAccountClient.Refusal.NO_STATS),
@@ -277,6 +277,59 @@ class IntegrationClientsTest {
                 assertEquals(row.refusal, e.refusal, row.name)
                 assertFalse(SafeUrl.leaks(e.message.orEmpty(), STEAM_KEY), "${row.name}: ${e.message}")
             }
+        }
+    }
+
+    // Team Fortress 2, never started, on a public profile: HTTP 200 and all 520
+    // of its achievements, each with `achieved` 0. It is an answer and not "no
+    // stats", and nothing in it is unlocked. Asked with a language, each entry
+    // has a `name` and a `description` beside its `apiname`.
+    @Test fun `measured - a game never started is an answer that lists everything and unlocks nothing`() {
+        val entries = (1..520).joinToString(",") {
+            """{"apiname":"TF_ACH_$it","achieved":0,"unlocktime":0,"name":"Shown name $it","description":"How it is earned"}"""
+        }
+        withSteam { server ->
+            server.enqueue(steamAnswer(200, "application/json",
+                """{"playerstats":{"steamID":"76561198000000000","gameName":"Team Fortress 2","achievements":[$entries],"success":true}}"""))
+            val stats = SteamAccountClient.playerAchievements(steamCreds, 440, "italian").getOrThrow()
+            assertEquals("Team Fortress 2", stats.gameName)
+            assertEquals(520, stats.achievements.size)
+            assertTrue(stats.achievements.none { it.unlocked || it.unlockedAt != 0L })
+            // The id is the apiname, with the shown name beside it or without.
+            assertEquals("TF_ACH_1", stats.achievements.first().apiName)
+        }
+    }
+
+    // What Steam sent for the schema of a tool: HTTP 200 and a game with nothing in it.
+    @Test fun `measured - the schema of a tool is an empty game, read as a schema that lists nothing`() {
+        withSteam { server ->
+            server.enqueue(steamAnswer(200, "application/json", """{"game":{}}"""))
+            val schema = SteamAccountClient.schemaFor(STEAM_KEY, 1493710).getOrThrow()
+            assertEquals("", schema.gameName)
+            assertEquals(emptyList(), schema.achievements)
+        }
+    }
+
+    // A schema entry as Steam lists it. A hidden one comes with no description:
+    // 24 of Hollow Knight's 63 did.
+    @Test fun `measured - a schema entry has both pictures, and a hidden one no description`() {
+        withSteam { server ->
+            server.enqueue(steamAnswer(200, "application/json", """{"game":{"gameName":"Hollow Knight","gameVersion":"36",
+                "availableGameStats":{"achievements":[
+                  {"name":"CHARMED","defaultvalue":0,"displayName":"Incantato","hidden":0,"description":"Ottieni un amuleto",
+                   "icon":"https://cdn.example/a.jpg","icongray":"https://cdn.example/a_gray.jpg"},
+                  {"name":"ENDING","defaultvalue":0,"displayName":"Il finale","hidden":1,
+                   "icon":"https://cdn.example/b.jpg","icongray":"https://cdn.example/b_gray.jpg"}]}}}"""))
+            val schema = SteamAccountClient.schemaFor(STEAM_KEY, 367520, "italian").getOrThrow()
+            assertEquals("Hollow Knight", schema.gameName)
+            val (shown, hidden) = schema.achievements
+            assertEquals(listOf("CHARMED", "Incantato", "Ottieni un amuleto"),
+                         listOf(shown.apiName, shown.displayName, shown.description))
+            assertEquals("https://cdn.example/a.jpg" to "https://cdn.example/a_gray.jpg", shown.iconUrl to shown.iconGrayUrl)
+            assertFalse(shown.hidden)
+            assertTrue(hidden.hidden)
+            assertEquals("", hidden.description)
+            assertEquals("Il finale", hidden.displayName)
         }
     }
 
@@ -493,7 +546,9 @@ class IntegrationClientsTest {
             "<html><head><title>Bad Request</title></head><body><h1>Bad Request</h1>" +
             "Required parameter 'key' is missing</body></html>"
 
-        // Believed, not measured.
+        // As Steam sent them the same day: the first with HTTP 403 to an account
+        // whose game details were private, the second with HTTP 400 about a tool,
+        // whether that account's details were private or public.
         const val STEAM_NOT_PUBLIC = """{"playerstats":{"error":"Profile is not public","success":false}}"""
         const val STEAM_NO_STATS = """{"playerstats":{"error":"Requested app has no stats","success":false}}"""
 

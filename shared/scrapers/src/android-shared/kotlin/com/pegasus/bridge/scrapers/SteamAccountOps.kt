@@ -461,8 +461,8 @@ object SteamAccountOps {
      *
      * [noStats] is Steam having said that it has no stats for this game and
      * this account. Then [unlocks] is empty and [total] is the schema's count:
-     * nothing when the game has no achievements, all of them when it has and
-     * the account has never started it.
+     * nothing when the game has no achievements, and all of them when the
+     * schema lists some all the same.
      */
     private class ProgressRecord(
         val appId: Int,
@@ -543,12 +543,13 @@ object SteamAccountOps {
      * A fresh file is answered from whatever [halt] says, since it costs no
      * call. Past that, a [halt] that has been reached answers `skipped`.
      *
-     * "No stats" from the player call is not yet "no achievements". Steam says
-     * it of a game that has none and of a game this account has never
-     * started, and only the schema tells the two apart: with none listed
-     * there the state is `no_achievements`, with some it is `ok` and none of
-     * them unlocked. An answer that lists no achievement at all is read the
-     * same way.
+     * "No stats" from the player call is not yet "no achievements". It was
+     * measured of a tool, whose schema lists nothing, and that is the state
+     * `no_achievements`. Should Steam say it of a game whose schema lists
+     * some, the state is `ok` with none of them unlocked: the schema decides,
+     * not the sentence. An answer that lists no achievement at all is read
+     * the same way. A game the account never started needs none of this:
+     * Steam answers with its whole list and nothing achieved.
      */
     private fun progressOf(
         account: SteamAccountClient.Credentials,

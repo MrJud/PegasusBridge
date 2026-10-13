@@ -13,6 +13,7 @@ import com.pegasus.bridge.ra.RaMatcher
 import com.pegasus.bridge.ra.RaSync
 import com.pegasus.bridge.scrapers.ScrapeSourceDispatcher
 import com.pegasus.bridge.scrapers.ScreenScraperClient
+import com.pegasus.bridge.scrapers.SteamAccountOps
 import com.pegasus.bridge.video.SearchCallback
 import com.pegasus.bridge.video.TrailerDownloader
 import com.pegasus.bridge.video.VideoRequest
@@ -253,6 +254,8 @@ class BridgeRouter(
     private fun credentialsClear(req: Request): Response {
         val block = req.param("block") ?: return Response.badRequest("missing block")
         if (!config.clearBlock(block)) return Response.badRequest("unknown block '$block'")
+        // An account that is forgotten leaves no library of its games behind.
+        if (block == "steam") SteamAccountOps.forget(paths.cache(SteamAccountOps.DIR))
         return Response.json(JSONObject()
             .put("schemaVersion", SchemaVersion.CURRENT)
             .put("status", "ok")
@@ -382,6 +385,11 @@ class BridgeRouter(
             rommToken        = fields["rommToken"],
             spotifyClientId  = fields["spotifyClientId"]
         )
+        // What is kept of a Steam account is named by its SteamID and answered
+        // from without Steam being asked. Left in place, it would answer for
+        // the key that was there before this one.
+        if (!fields["steamApiKey"].isNullOrBlank() || !fields["steamId"].isNullOrBlank())
+            SteamAccountOps.forget(paths.cache(SteamAccountOps.DIR))
         // Report which blocks changed, never the values.
         val updated = JSONArray().apply {
             if (!fields["user"].isNullOrBlank() || !fields["apiKey"].isNullOrBlank()) put("ra")

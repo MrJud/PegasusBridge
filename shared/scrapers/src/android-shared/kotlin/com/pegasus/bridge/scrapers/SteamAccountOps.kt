@@ -48,6 +48,10 @@ import java.util.Locale
  * `staleState`. It is not served after "private" or a refused key, which are
  * about the account as it is now.
  *
+ * What is kept of an account is named by its SteamID and not by its key, so
+ * a key written over another is answered from the same files. [forget] is
+ * for whoever writes or clears the two.
+ *
  * A name on disk is made of a number parsed here, a language out of
  * [LANGUAGES] and a SteamID held to seventeen digits. No parameter is ever
  * part of a path as it came in, and the key is in no file and no name.
@@ -96,6 +100,9 @@ object SteamAccountOps {
     private const val CLOCK_SLACK_SECONDS = 60L
 
     private const val TAG = "SteamAccountOps"
+
+    /** A progress file's name, or that of one a write was stopped in the middle of. */
+    private val KEPT_PROGRESS = Regex("[0-9]{1,10}\\.json(\\.tmp)?")
 
     /**
      * The clock, in milliseconds. A var as [BridgeLog.current] is: nothing
@@ -231,6 +238,40 @@ object SteamAccountOps {
         }
     }
 
+    /**
+     * Drops what is kept of every account under [cacheDir]: the libraries and
+     * the unlock lists. The schemas stay, being every account's.
+     *
+     * For when the key or the SteamID is written, or the two are cleared. A
+     * file here is named by the SteamID and is answered from for ten minutes
+     * without Steam being asked: a key typed wrong over one that worked would
+     * be "ok" until the file went old, and that is the answer a settings
+     * screen shows for the key just saved. And an account that was cleared
+     * would leave its games on disk.
+     *
+     * Only the files this writes are deleted, by their names, in folders
+     * named as a SteamID is. Nothing else is touched, and a folder goes only
+     * when that leaves it empty.
+     */
+    fun forget(cacheDir: File?) {
+        if (cacheDir == null) return
+        synchronized(lock) {
+            for (account in cacheDir.listFiles().orEmpty()) {
+                if (!isSteamId(account.name) || !account.isDirectory) continue
+                File(account, "library.json").delete()
+                File(account, "library.json.tmp").delete()
+                val progress = File(account, "progress")
+                for (f in progress.listFiles().orEmpty())
+                    if (KEPT_PROGRESS.matches(f.name)) f.delete()
+                progress.delete()
+                account.delete()
+            }
+        }
+    }
+
+    // Spelled out, and not `\d`: on Android that takes the digits of every script.
+    private fun isSteamId(s: String): Boolean = s.length == 17 && s.all { it in '0'..'9' }
+
     private fun refreshOf(params: Map<String, String>): Boolean =
         params["refresh"].let { it == "1" || it == "true" }
 
@@ -255,8 +296,7 @@ object SteamAccountOps {
     private fun accountOf(c: SteamAccountClient.Credentials?): SteamAccountClient.Credentials? {
         if (c == null || c.apiKey.isBlank()) return null
         val steamId = c.steamId.trim()
-        // Spelled out, and not `\d`: on Android that takes the digits of every script.
-        if (steamId.length != 17 || !steamId.all { it in '0'..'9' }) return null
+        if (!isSteamId(steamId)) return null
         return SteamAccountClient.Credentials(c.apiKey.trim(), steamId)
     }
 

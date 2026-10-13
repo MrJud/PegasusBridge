@@ -250,6 +250,36 @@ class BridgeRouterTest {
         assertFalse(File(dataRoot, "cache/steam").exists(), "something was kept of a request Steam never saw")
     }
 
+    // What the Steam account's source keeps is named by the SteamID and is
+    // answered from without Steam being asked. A key written over another was
+    // answered for from what the first had fetched, and a settings screen
+    // that asks for the library after a save showed the old key's "ok".
+    @Test fun `writing or clearing the steam credentials drops what was kept of the account, and no other write does`() {
+        val steam = File(dataRoot, "cache/steam")
+        val all = listOf("76561198000000000/library.json", "76561198000000000/progress/440.json",
+                         "schema/440.english.json")
+        val schemaOnly = listOf("schema/440.english.json")
+        fun keep() = all.forEach { File(steam, it).apply { parentFile.mkdirs() }.writeText("{}") }
+        fun kept() = steam.walkTopDown().filter { it.isFile }
+            .map { it.relativeTo(steam).invariantSeparatorsPath }.sorted().toList()
+
+        keep()
+        get("/credentials?sgdbKey=K").use { r -> assertEquals(200, r.code) }
+        get("/credentials/clear?block=ra").use { r -> assertEquals(200, r.code) }
+        assertEquals(all, kept(), "another source's credentials dropped the Steam account's files")
+
+        get("/credentials?steamApiKey=SENTINEL-STEAM-KEY").use { r -> assertEquals(200, r.code) }
+        assertEquals(schemaOnly, kept(), "a new key is answered for from what the old one fetched")
+
+        keep()
+        post("/credentials", """{"steamId":"76561198000000001"}""").use { r -> assertEquals(200, r.code) }
+        assertEquals(schemaOnly, kept(), "a new SteamID left the old account's files")
+
+        keep()
+        get("/credentials/clear?block=steam").use { r -> assertEquals(200, r.code) }
+        assertEquals(schemaOnly, kept(), "an account that was cleared left its games on disk")
+    }
+
     // ── ra ──────────────────────────────────────────────────────────────────
 
     @Test fun `ra endpoints validate their parameters`() {

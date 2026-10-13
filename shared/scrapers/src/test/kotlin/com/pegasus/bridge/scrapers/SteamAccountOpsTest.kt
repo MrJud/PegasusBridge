@@ -1049,6 +1049,56 @@ class SteamAccountOpsTest {
         assertEquals("https://cdn.example/367520/b_gray.jpg", hidden.getString("iconLockedUrl"))
     }
 
+    // ── A key or an account that changes ────────────────────────────────────
+
+    // What is kept is named by the SteamID. A key typed wrong over one that
+    // worked found the library of ten minutes ago and was "ok".
+    @Test fun `what is kept of an account is dropped on request, and the schemas are not`() {
+        ask("library")
+        ask("achievements", "appId" to "440")
+        ask("progress", "appIds" to "570")
+        assertEquals(listOf(libraryFile, progressFile(440), progressFile(570), schemaFile(440, "english")), files())
+
+        // The key is another now, and Steam does not take it.
+        owned = { html(UNAUTHORIZED, 401) }
+        player[440] = { html(FORBIDDEN, 403) }
+        assertEquals("ok", ask("library").getString("state"), "the file is fresh: this is what forget() is for")
+
+        SteamAccountOps.forget(cacheDir)
+        assertEquals(listOf(schemaFile(440, "english")), files())
+        assertEquals(listOf("schema"), cacheDir.list()?.toList(), "an account's empty folders were left behind")
+        assertEquals("key_refused", ask("library").getString("state"))
+        assertEquals("key_refused", ask("achievements", "appId" to "440").getString("state"))
+        assertTrue(ask("library").games().isEmpty())
+    }
+
+    @Test fun `forgetting takes this source's files by their names and nothing else`() {
+        ask("library")
+        ask("achievements", "appId" to "440")
+        val account = File(cacheDir, STEAM_ID)
+        // Not this source's: a file beside the library, one among the lists, a folder that is no SteamID.
+        File(account, "notes.txt").writeText("mine")
+        File(account, "progress/readme").writeText("mine")
+        File(account, "progress/440.json.bak").writeText("mine")
+        File(cacheDir, "not-an-account").mkdirs()
+        File(cacheDir, "not-an-account/library.json").writeText("{}")
+        File(sandbox, "library.json").writeText("{}")
+
+        SteamAccountOps.forget(cacheDir)
+
+        assertEquals(listOf("../library.json",
+                            "cache/steam/$STEAM_ID/notes.txt",
+                            "cache/steam/$STEAM_ID/progress/440.json.bak",
+                            "cache/steam/$STEAM_ID/progress/readme",
+                            "cache/steam/not-an-account/library.json",
+                            schemaFile(440, "english")), files())
+
+        // Nothing kept, no data root, a folder that is not there: nothing to do, and nothing made.
+        SteamAccountOps.forget(null)
+        SteamAccountOps.forget(File(sandbox, "nowhere"))
+        assertFalse(File(sandbox, "nowhere").exists())
+    }
+
     // ── resolve, and requests that are wrong in themselves ──────────────────
 
     @Test fun `resolve answers with the id alone and fails as it always has`() {

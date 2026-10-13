@@ -526,6 +526,11 @@ is `stale` with the schema call's `staleState`, and `cached: false`. A
 first such; its `state` stays the one that ended the request, so after `offline`
 it reads `state: "offline"`, `stale: true`, and the old counts in `items`.
 
+What is kept of an account, its library and its unlock lists, is dropped when a
+Steam key or SteamID is written through `/credentials` and when the `steam`
+block is cleared. The files are named by the SteamID, and would otherwise answer
+for a key that is no longer the one in use. The schemas stay.
+
 `/ra/match` is the one worth knowing about. Ask it *which RetroAchievements game
 this is*, with the path of the game's file, and it answers with what the scan
 found for that very file: its game, or that it has none and why. A file the

@@ -1482,15 +1482,20 @@ from, asking nobody, reports against `<dir>/baseline.tsv` with no file
 allowed to differ (`--allow N` for a change that is meant to move some) and
 no more than a tenth more read, prints the time and the verdict, and ends
 with the report's status. `--accept` makes a table the baseline, this run's
-or, given alone, the last run's. Each run leaves its table, its report and a
-line in `<dir>/history.tsv`: the date, the commit, the recipe, the files,
-the files hashed, the bytes read, the scan's milliseconds by the clock and
-in the hasher, the files that differ and the verdict. That file is the
-benchmark there is: one library on one machine, a line for each build.
-**`<dir>` is outside the repository**, baseline and history with it: a table
-names every file of the library it is of. Not held by any test: the script
-itself, which was run by hand on generated files; the report it calls has
-its tests.
+or, given alone, the last run's. Each run leaves its table, its report, what
+the audit printed and a line in `<dir>/history.tsv`: the table's name, the
+date, the commit, the recipe, the files, the files hashed, the bytes read,
+the scan's milliseconds by the clock and in the hasher, the files that
+differ and the verdict. That file is the benchmark there is: one library on
+one machine, a line for each build. **`<dir>` is outside the repository**,
+baseline and history with it: a table names every file of the library it is
+of, and the script refuses a folder inside the checkout. It also refuses,
+before it scans anything, a `--baseline` that names no file and an `--allow`
+that is no number: a library takes hours, and a baseline's name mistyped
+would have ended them with `no baseline` and status 0. `hash_check_test.py`
+holds the script around a stand-in for the audit, and CI runs it. Not held
+by any test: the script with the audit itself, which was run by hand on
+generated files.
 
 ---
 

@@ -18,11 +18,13 @@
 # Everything it writes goes to <dir>, which is to be OUTSIDE the repository:
 # a table names every file of the library it is of. There it keeps
 #
-#     <date>-<commit>[-dirty].tsv      the table of each run, and its .report
+#     <date>-<commit>[-dirty].tsv      the table of each run, with its .report
+#                                      and, as .log, what the audit printed
 #     baseline.tsv                     the table the next run is held against
-#     history.tsv                      a line a run: date, commit, recipe,
-#                                      files, files hashed, bytes read, wall
-#                                      ms, hash ms, files differing, verdict
+#     history.tsv                      a line a run: the table's name, date,
+#                                      commit, recipe, files, files hashed,
+#                                      bytes read, wall ms, hash ms, files
+#                                      differing, verdict
 #
 # With no baseline the run writes its table and says so. --accept makes a
 # table the baseline: this run's when a library is given, and only if its scan
@@ -30,6 +32,9 @@
 # run in the history, so that a scan of hours is not made twice to be kept.
 # The history is the benchmark: the same library on the same machine, a line
 # for each build it was scanned with. Time is in it to be read, not judged.
+#
+# tools/hash_check_test.py tests it, with a stand-in for the audit: what is
+# held there is everything here but the scan.
 set -euo pipefail
 
 here=$(cd "$(dirname "$0")" && pwd)
@@ -50,6 +55,15 @@ done
 [ -n "$keep" ] || { echo "hash_check: give --keep-in <dir>, a folder outside the repository" >&2; exit 2; }
 mkdir -p "$keep"
 keep=$(cd "$keep" && pwd)
+# Held, and not only asked: a table kept in the checkout is one `git add`
+# from being committed with every name of the library in it, and marks every
+# run after it -dirty.
+top=$(git -C "$here" rev-parse --show-toplevel 2>/dev/null || true)
+if [ -n "$top" ]; then
+    case "$(cd "$keep" && pwd -P)/" in
+        "$top"/*) echo "hash_check: $keep is inside the repository; keep the tables in a folder outside it" >&2; exit 2 ;;
+    esac
+fi
 history="$keep/history.tsv"
 
 if [ -z "$library" ]; then
@@ -63,6 +77,15 @@ if [ -z "$library" ]; then
     exit 0
 fi
 
+# Said now and not when the library has been scanned, which may be hours
+# later. A baseline named and not there would end the run as a first run
+# ends, with no baseline and status 0, and that is no answer to a name
+# mistyped; a limit that is no number would leave a table and no report.
+case "$allow" in
+    ''|*[!0-9]*) echo "hash_check: --allow takes a number of files, not '$allow'" >&2; exit 2 ;;
+esac
+[ -z "$baseline" ] || [ -f "$baseline" ] || { echo "hash_check: no table at $baseline to be the baseline" >&2; exit 2; }
+
 # The audit starts from shared/, so a path that is not absolute is made one
 # from where the caller stands.
 absolute() { case "$1" in /*|[A-Za-z]:*) printf %s "$1" ;; *) printf %s "$PWD/$1" ;; esac; }
@@ -73,7 +96,7 @@ for root in "${given[@]}"; do roots="${roots:+$roots|}$(absolute "$root")"; done
 [ -n "$baseline" ] || baseline="$keep/baseline.tsv"
 
 commit=$(git -C "$here" rev-parse --short HEAD 2>/dev/null || echo unknown)
-[ -z "$(git -C "$here" status --porcelain)" ] || commit="$commit-dirty"
+[ -z "$(git -C "$here" status --porcelain 2>/dev/null)" ] || commit="$commit-dirty"
 name="$(date -u +%Y%m%dT%H%M%SZ)-$commit"
 table="$keep/$name.tsv"
 

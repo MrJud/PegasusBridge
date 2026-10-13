@@ -117,6 +117,13 @@ jobs:
         working-directory: shared
         run: ./tools/audit_report_test.py
 
+      # The one command around the audit and that report, hash_check.sh, with
+      # a `gradlew` the tests write standing for the audit: no library is
+      # scanned here and nothing is built.
+      - name: The check of a library against its baseline passes its own tests
+        working-directory: shared
+        run: ./tools/hash_check_test.py
+
       # The comparison of our hasher with RetroAchievements' own program is
       # run by hand, where that program has been built. Here only its tests
       # run, on two programs they write themselves: nothing is downloaded.

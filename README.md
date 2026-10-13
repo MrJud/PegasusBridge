@@ -575,7 +575,8 @@ differ from the baseline`, with status 0 only when no file differs (or no
 more than `--allow N`) and the scan read no more than a tenth above what
 the baseline read for the same files. It also prints where the scan's time
 went and keeps a line of each run in `history.tsv`, in that folder. The
-folder is not in the repository because the tables name the library's files.
+folder is not in the repository because the tables name the library's files,
+and the script refuses one that is.
 
 ### One copy of what both shells run
 

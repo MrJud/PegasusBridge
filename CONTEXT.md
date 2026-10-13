@@ -171,24 +171,33 @@ failure that is kept, and not a hash.
 
 A `.chd` is a disc of its collection's console, and is hashed as that disc by
 rcheevos' own code through the library's reader of tracks (`pb_chd.c`), loose,
-out of an archive, or as the first file a playlist names. That holds for nine
-consoles (`ConsoleChoice.CHD_CONSOLES`): PlayStation, PlayStation 2, PSP,
-Saturn, Sega CD, Dreamcast, PC Engine CD, 3DO and Neo Geo CD, for each of which
-a synthetic disc hashes alike from a `.chd` and from a cue sheet, a `.gdi` or
-an `.iso`. The console is the one the collection's row gives a `.chd`, else the
-one it gives a `.cue`, else the collection's own: under `megadrive` a `.chd` is
-a Sega CD disc, under `pcengine` a PC Engine CD game. In a collection of any
-other console the file is `UNSUPPORTED_FORMAT` and not read (`a .chd is read as
-a disc of nine consoles, and console 7 is not one of them`): a cartridge
-console would hash the container's bytes, and the PC-FX and the Jaguar CD ask
-for tracks in ways nothing has held against a disc. In a collection nothing is
-known of, rcheevos tries the `.chd` as each console it knows one of, and a hash
-it gives under a console outside the nine is a failure that is kept
-(`rcheevos takes this .chd for console 49, ...`). A folder of Neo Geo CD
-games has a row (`neogeocd`, and `neogeocdjp` as ES-DE keeps the Japanese
-one), which is the console and not the arcade board of `neogeo`, and so has
-one of Jaguar CD games (`jaguarcd`, `atarijaguarcd`), whose `.chd` is turned
-away by its name like any other outside the nine. What the
+out of an archive, or as the first file a playlist names. That holds for ten
+consoles (`ConsoleChoice.CHD_CONSOLES`). For nine of them, PlayStation,
+PlayStation 2, PSP, Saturn, Sega CD, Dreamcast, PC Engine CD, 3DO and Neo Geo
+CD, a synthetic disc hashes alike from a `.chd` and from a cue sheet, a `.gdi`
+or an `.iso`. The tenth is the PC-FX, whose hash asks for a disc's largest
+track: there the answer is the one RetroAchievements' own hasher gives for the
+image, which is the cue sheet's for a disc with its data in the second track
+or the last and is not for every disc (see "The `.chd` reader"). The console
+is the one the collection's row gives a `.chd`, else the one it gives a
+`.cue`, else the collection's own: under `megadrive` a `.chd` is a Sega CD
+disc, under `pcengine` a PC Engine CD game. In a collection of any other
+console the file is `UNSUPPORTED_FORMAT` and not read (`a .chd is read as a
+disc of ten consoles, and console 7 is not one of them`): a cartridge console
+would hash the container's bytes, and no synthetic Jaguar CD is hashed from a
+`.chd` by either program, so there is nothing to hold that console's answer
+to. In a collection nothing is known of, rcheevos tries the `.chd` as each
+console it knows one of, the PC-FX last, and a hash it gave under a console
+outside the ten would be a failure that is kept (`rcheevos takes this .chd for
+console 77, ...`); none on its list is outside them today but the PlayStation
+3, which is held back. A folder of Neo Geo CD games has a row (`neogeocd`, and
+`neogeocdjp` as ES-DE keeps the Japanese one), which is the console and not
+the arcade board of `neogeo`, and so has one of Jaguar CD games (`jaguarcd`,
+`atarijaguarcd`), whose `.chd` is turned away by its name like any other
+outside the ten. A verdict an earlier build kept in the words of nine consoles
+for a PC-FX `.chd` is taken again once: the file turned away by its name
+(`ScanLedger.LEFT_BY_NINE`), and the hash that came of a guess and was not
+kept (`ScanLedger.GUESSED_BY_NINE`). What the
 reader refuses in a collection that is known is `UNHASHABLE` with the reader's
 reason in its detail, which begins `CHD:`: a version before 5, a difference
 against a parent image, a hunk that cannot be read (the image is cut short or
@@ -1201,14 +1210,20 @@ each pregap counted to the track before it, and such an image is hashed like
 its cue sheet, the program in the last track too; of the same cue sheet
 without those two lines, a CD's tracks with the audio tracks' pregaps in the
 image, and that one is refused. What an older chdman wrote is not known here.
-A request for the largest track (PC-FX) is refused when that track is not the
-last, where RetroAchievements' hasher reads it. A track's first sector is
-numbered as that hasher numbers it, by the frames of the tracks before it.
+A request for the largest track, which the PC-FX's hash alone makes, is
+answered with the read RetroAchievements' hasher makes and with no other: the
+kind and the length of the largest track that is not audio, at the first
+sector and that hasher's own frame of the LAST track, with nothing asked of
+where that lies (`choose`). When the console's name is not found there
+rcheevos opens track 2 by its number, which is placed and refused as any
+numbered track is. A track's first sector is numbered as that hasher numbers
+it, by the frames of the tracks before it.
 
 What is shown: `native_repro_test.py` hashes the same synthetic disc as a cue
 sheet, a `.gdi` or an `.iso` and as a `.chd` for nine consoles (PlayStation,
 PlayStation 2 as a CD, a DVD and a DVD in a CD's frames, PSP, Saturn, Sega
-CD, Dreamcast, PC Engine CD, 3DO, Neo Geo CD), with every compressor; fourteen
+CD, Dreamcast, PC Engine CD, 3DO, Neo Geo CD), with every compressor, and for
+the PC-FX holds nine images to what RAHasher 1.8.4 gave for each; fourteen
 of the images, in `shared/tests/chd/`, were written by chdman 0.289 from
 those discs (a DVD with each compressor, CDs, a cue sheet with a pregap, a
 `.gdi`, a GD-ROM's cue sheet with and without the lines that name its
@@ -1232,7 +1247,14 @@ than the reader: reading a directory of a disc whose sector numbers have
 their top bit set, it shifts a byte into the sign of a number
 (`hash_disc.c`), which is undefined as well and reported the same way, from
 a `.chd` as from an `.iso`; it is left, since a patch there is another
-patch level and with it every verdict taken again. The file a scan has in the hasher is
+patch level and with it every verdict taken again. A third is rcheevos' own
+too, in the PC-FX's hash (`rc_hash_pcfx_cd`): it hashes its buffer once for
+every sector the disc says its program has, whether or not the sector came.
+A disc cut off before its program is so hashed from what lay in memory:
+another hash at every run and none of the disc's, from a cue sheet as from
+a `.chd`, and from RAHasher as from this library. Neither sanitizer reports
+it. It comes to a miss in the list each time, and is left for the same
+reason. The file a scan has in the hasher is
 written down
 (`cache/scan-inflight.jsonl`), which is what covers a file that ends the
 process inside a decoder.
@@ -1260,14 +1282,14 @@ f1417fbf2236936e8334533628b2948dfa4a46d0; gcc 16.2.1, which refuses the
 bundled zlib without the two additions to `CC`), and ours with
 `./native/build.sh <a folder outside the checkout> --tools=<dir>`.
 
-49 images: the 14 chdman wrote and 35 of `chd_fixture.py`'s, the ones made
-to be damaged left out. 41 are `AGREE`: both programs give the same hash,
-which is the disc's. Among them are 13 of chdman's 14, with the two that
-were in doubt: `chdman-gd-cue.chd`, a GD-ROM from a cue sheet whose last
-track has a pregap, and `chdman-pce-cd.chd`, an audio track and then a data
-track with a pregap. No line is `VERSION`: the newer rcheevos inside
-RAHasher hashes each of the ten plain discs as ours does. The other eight
-lines, `-` being no hash:
+57 images: the 14 chdman wrote and 43 of `chd_fixture.py`'s, the ones made
+to be damaged left out. 48 are `AGREE`: both programs give the same hash for
+the image. Among them are 13 of chdman's 14, with the two that were in
+doubt: `chdman-gd-cue.chd`, a GD-ROM from a cue sheet whose last track has a
+pregap, and `chdman-pce-cd.chd`, an audio track and then a data track with a
+pregap. No line is `VERSION`: the newer rcheevos inside RAHasher hashes each
+of the fifteen plain discs as ours does. No line is one where we refuse and
+RAHasher does not. The other nine lines, `-` being no hash:
 
 | image | console | ours | RAHasher | the disc | class |
 |---|---|---|---|---|---|
@@ -1277,7 +1299,8 @@ lines, `-` being no hash:
 | `dreamcast-last-pregap.chd` | 40 | - | - | c24ded9a… | BOTH-REFUSE |
 | `pce-unstored-pregap.chd` | 76 | - | - | 8c88cff9… | BOTH-REFUSE |
 | `jaguar.chd` | 77 | - | - | none expected | BOTH-REFUSE |
-| `pce-largest-first.chd` | 49 | - | 8c88cff9… | 8c88cff9… | WE-REFUSE-THEIRS-IS-THE-DISC'S |
+| `pcfx-first.chd` | 49 | - | - | fbae25f1… | BOTH-REFUSE |
+| `pcfx-kind-of-largest.chd` | 49 | - | - | fbae25f1… | BOTH-REFUSE |
 | `dreamcast-last-first.chd` | 40 | c24ded9a… | 96ab8781… | c24ded9a… | DIFFER |
 
 What it says, line by line.
@@ -1289,11 +1312,11 @@ What it says, line by line.
   give up no hash RAHasher would have given.
 - `dreamcast-last-pregap.chd`, which the reader opens and then finds no
   program in, RAHasher ends the same way ("Could not read boot executable").
-- `pce-largest-first.chd`: asked for the largest track of an image whose
-  largest is the first, RAHasher gives the hash both programs give for a cue
-  sheet of the same two tracks. The reader refuses that image on the ground
-  that RetroAchievements' hasher reads the largest track where the last one
-  lies; for this image at least, 1.8.4 does not.
+- `pcfx-first.chd`, a PC-FX disc whose data track is the first of two, and
+  `pcfx-kind-of-largest.chd`, one whose data track is the last, behind a
+  track of raw sectors as long: neither program hashes either image ("Not a
+  PC-FX CD"), and both hash the cue sheet of the same tracks. See the
+  largest track, below.
 - `dreamcast-last-first.chd`, a GD-ROM whose program begins its fourth
   track, in the very sector after the third: ours gives the disc's hash,
   which is also what both programs give for a `.gdi` sheet of the same four
@@ -1311,10 +1334,86 @@ emulators players earn achievements in read a `.chd` with. So "RAHasher
 gives nothing" does not make a refusal free, and the choice for the images
 `place` refuses is among three, **none taken here**: keep refusing; follow
 RAHasher, which for these gives nothing; or hash the disc where chdman put
-it, which is the hash of the cue sheet. The same holds for the largest
-track that is not the last, where RAHasher now gives the disc's. `pb_chd.c`
-is as it was. A real multi-track image and the lists would settle one case;
+it, which is the hash of the cue sheet. For those images `pb_chd.c` is as it
+was. A real multi-track image and the lists would settle one case;
 `--also <console>:<file>` adds a file of one's own to the table.
+
+**The largest track.** Console 49 asks a disc for its largest track, and the
+choice above was taken for it: the reader follows RAHasher. An earlier run of
+this comparison had one image under that console, `pce-largest-first.chd`,
+which the reader refused on the ground that RetroAchievements' hasher reads
+the largest track where the last one lies, and for which RAHasher gave the
+disc's hash; it was read here as "for this image at least, 1.8.4 does not".
+That reading was wrong. The image is two PC Engine tracks. RAHasher does read
+the larger where the smaller lies, finds no PC-FX there, and the hash comes
+from track 2 through the PC Engine header rcheevos tries last under this
+console. The belief was right, and what did not follow from it is the
+refusal: on a disc shaped as real ones are, with audio around the data, the
+odd read finds nothing and rcheevos hashes track 2. So the reader makes the
+same read (`choose` in `pb_chd.c`) and rcheevos does the rest. The nine
+images under console 49, each beside a cue sheet of the same tracks where one
+was written:
+
+| image | tracks | ours and RAHasher | the cue sheet |
+|---|---|---|---|
+| `pcfx-middle.chd` | audio, DATA, audio | the disc's | - |
+| `pcfx-last.chd` | audio, DATA | the disc's | - |
+| `pcfx-last-misplaced.chd` | audio, DATA with its pregap in the image, audio with one, larger unmarked data | the disc's | the disc's |
+| `pcfx-largest-outside.chd` | audio, DATA, larger unmarked data said to follow a pregap longer than the image | the disc's | - |
+| `pce-largest-first.chd` | PC Engine data, its first 8 sectors | the PC Engine disc's | the same |
+| `pcfx-first.chd` | DATA, audio | none | the disc's |
+| `pcfx-two.chd` | larger DATA, smaller DATA, both marked | the smaller's (fbae25f1…) | the larger's (3c574bd6…) |
+| `pcfx-kind-of-largest.chd` | audio, unmarked data in raw sectors, DATA as long in plain ones | none | the disc's |
+| `pcfx-length-of-largest.chd` | longer unmarked data, DATA cut off inside its program | 16a77d8e… | 2192faf7… |
+
+The third and fourth are the largest track being the last and lying where
+the two ways of placing a track differ, or past the end of the image:
+nothing is asked of where the read lands, RAHasher's frame of it has nothing
+of the console, and track 2 answers. The last two hold that the kind and the
+length read by are the largest track's and not the last one's, and that of
+two tracks as long the first is the largest: in the eighth the console's own
+track is read as raw sectors are, 16 bytes in, and its name is not found; in
+the ninth the program's second sector lies past the last track, in the
+filling after it, and is read because the largest is that long.
+
+Three of these are not the disc's hash, and are kept as RAHasher's:
+- A disc whose data track is the first, with tracks after it, **gets no hash
+  from a `.chd`**, though its cue sheet is hashed. RetroArch, which is what
+  computes the hash when a `.chd` is played, opens the true largest track
+  that is not audio at its own place (libretro-common,
+  `streams/chd_stream.c`, as read in its source and not run here), so for
+  such a disc RetroArch and the cue sheet agree on a hash that neither
+  RAHasher nor this reader gives. How many PC-FX discs are laid out so is
+  not known here.
+- An image with two tracks that carry the console's name, the larger not the
+  last, hashes as the last. The cue sheet and RetroArch hash the larger.
+- A disc whose data track is the last and not the second, behind a track
+  that is not audio, is as long or longer and has another kind of sector,
+  gets no hash from a `.chd` either, though its cue sheet is hashed: the
+  last track is read by the other's kind, and the name is not where that
+  kind has it.
+
+The ninth image is no disc anybody has: a program that runs past its track.
+From the image both programs hash the filling after the track, and from the
+cue sheet the sector before it a second time.
+
+Track 2 is still placed and refused as any numbered track is, and there the
+two programs can part. Beside the nine images, 5,903 layouts were made up
+once, by a script that is not kept, from the same tracks in every order up
+to four and at random up to six, with pregaps in the image, not in it and
+absent, and each was hashed by both programs. On 5,902 they answered alike,
+and no other console's answer for any of them was another than the reader's
+before this. On one the reader gives no hash where RAHasher gives one: a
+first track with a pregap that is not in the image and a second with one
+that is, so that the two ways of placing track 2 differ and the reader
+refuses it, while RAHasher's frame of it happened to be the first of a
+later track with the console's name, whose hash it gave. That is the hash
+of neither the disc nor its cue sheet.
+
+Following RetroArch instead would take a third attempt inside rcheevos'
+`rc_hash_pcfx_cd`, which is a patch to rcheevos and so another engine name
+and another number for every file of every library. A real disc of the
+first layout and RetroAchievements' list would say whether that is worth it.
 
 The decoders' `assert()` is compiled out of all three libraries (`NDEBUG`, in
 `build.sh` and in `CMakeLists.txt`), so a stream made to mislead one ends in

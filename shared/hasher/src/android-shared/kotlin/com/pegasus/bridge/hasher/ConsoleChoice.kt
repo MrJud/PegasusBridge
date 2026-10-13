@@ -16,7 +16,7 @@ import java.util.Locale
  *
  * Two packed formats are read by readers of our own that the library has
  * beside rcheevos ([HashRecipe.READERS]): a `.wbfs` as a Wii disc, and a
- * `.chd` as a disc of one of nine consoles ([CHD_CONSOLES]).
+ * `.chd` as a disc of one of ten consoles ([CHD_CONSOLES]).
  *
  * It is a pure function and takes no file: the row of the collection (see
  * [RcConsoles.resolve]), the extension, the size, and whether the file came
@@ -48,17 +48,21 @@ object ConsoleChoice {
 
     /**
      * The consoles a `.chd` is read as a disc of: PlayStation, PlayStation
-     * 2, PSP, Saturn, Sega CD, Dreamcast, PC Engine CD, 3DO and Neo Geo
-     * CD. For each of them the same disc has been seen to hash alike from
-     * a `.chd` and from a cue sheet, a `.gdi` or an `.iso`. Two more would
-     * open one, the PC-FX, which is on the list rcheevos tries a `.chd` as
-     * when it is left to guess, and the Jaguar CD, which is not: they ask
-     * the reader for tracks in ways nothing here has held against a disc.
-     * The PlayStation 3 is on that list too and is held back
+     * 2, PSP, Saturn, Sega CD, Dreamcast, PC Engine CD, 3DO, Neo Geo CD
+     * and PC-FX. For the first nine the same disc has been seen to hash
+     * alike from a `.chd` and from a cue sheet, a `.gdi` or an `.iso`. The
+     * PC-FX asks for a disc's largest track, and for that the reader
+     * answers as RetroAchievements' own hasher does, which is the hash of
+     * the cue sheet for a disc with its data in the second track or the
+     * last, and not for every disc (`pb_chd.c`, `choose`). One more
+     * console would open a `.chd` and is left out, the Jaguar CD: no disc
+     * made here is hashed from one by either program, so there is nothing
+     * to hold its answer to. The PlayStation 3 is on the list rcheevos
+     * tries a `.chd` as when it is left to guess and is held back
      * ([RcConsoles.HELD_BACK]). Any other console would hash the bytes of
      * the container.
      */
-    val CHD_CONSOLES: Set<Int> = setOf(9, 12, 21, 39, 40, 41, 43, 56, 76)
+    val CHD_CONSOLES: Set<Int> = setOf(9, 12, 21, 39, 40, 41, 43, 49, 56, 76)
 
     /**
      * Files that are no game whatever folder they lie in: what an archive
@@ -215,12 +219,12 @@ object ConsoleChoice {
         // whole file hashes those.
         if ((ext == "cue" || ext == "gdi") && RcConsoles.console(console)?.algorithm != RcConsoles.Algorithm.DISC)
             return Plan.UnsupportedFormat("a .$ext describes a disc, and console $console is not hashed as one")
-        // A .chd is read as a disc, by a reader that has been held to nine
+        // A .chd is read as a disc, by a reader that has been held to ten
         // consoles. As a console that hashes the whole file it would be the
         // hash of the container, and as one of the other disc consoles a
         // hash nothing here has seen to be the disc's.
         if (ext == PACKED_DISC && console !in CHD_CONSOLES)
-            return Plan.UnsupportedFormat("a .chd is read as a disc of nine consoles, and console $console is not one of them")
+            return Plan.UnsupportedFormat("a .chd is read as a disc of ten consoles, and console $console is not one of them")
         // A PC Engine CD game is hashed from its descriptor or from a .chd:
         // for any other file rcheevos has no case, and says so only after
         // reading it.
@@ -242,12 +246,13 @@ object ConsoleChoice {
      * again: the file was read, and will be taken for the same at the next
      * scan.
      *
-     * For a `.chd` the list also has the PC-FX on it, which is none of the
-     * consoles a `.chd` is read as ([CHD_CONSOLES]): a known collection of
-     * that console is turned away before the file is read, and a hash that
-     * came of a guess is turned away here, for the same reason and as
-     * lastingly. [extension] is the file's, in any case and without the
-     * dot.
+     * For a `.chd` every other console on the list is one a `.chd` is
+     * read as ([CHD_CONSOLES]), the PC-FX among them, which is tried last.
+     * A hash under a console outside them is turned away here all the
+     * same, as lastingly as a known collection of such a console is
+     * turned away before the file is read: the list is rcheevos' own, and
+     * what it comes to have on it is not to be kept unseen. [extension]
+     * is the file's, in any case and without the dot.
      */
     fun guessed(outcome: HashOutcome, extension: String = ""): HashOutcome {
         val console = (outcome as? HashOutcome.Ok)?.result?.consoleId ?: return outcome
@@ -258,7 +263,7 @@ object ConsoleChoice {
         }
         if (extension.lowercase(Locale.ROOT) == PACKED_DISC && console !in CHD_CONSOLES)
             return HashOutcome.Failed("rcheevos takes this .chd for console $console, " +
-                                      "which is not one of the nine a .chd is read as", retryable = false)
+                                      "which is not one of the ten a .chd is read as", retryable = false)
         return outcome
     }
 }

@@ -29,7 +29,7 @@ import kotlin.test.fail
  * a scan's hasher goes ([ArchiveAwareHasher]), which plans for the file by
  * its collection first: a `.chd` out of an archive and one a playlist names,
  * a file that is called `.chd` and is none, one that is not there, and a
- * disc of a console a `.chd` is not read as.
+ * disc of the console that asks for a disc's largest track.
  */
 class ChdHashTest {
 
@@ -209,14 +209,13 @@ class ChdHashTest {
 
     // Where nothing is known of the collection rcheevos tries a .chd as
     // each console it knows one of, and the first that finds its disc in
-    // the image answers. A PlayStation 2 disc is one of the nine a .chd is
-    // read as, and its hash is kept. The list goes on to the PC-FX, which
-    // is none of them: the reader answers for it, as this image shows by
-    // getting a hash from the library, and nothing here has held that hash
-    // against a disc. It is not kept, in a folder nothing is known of as
-    // in a collection of that console, where the file is not even read.
+    // the image answers. A PlayStation 2 disc is one of the ten a .chd is
+    // read as, and its hash is kept. The list ends with the PC-FX, which is
+    // one of them too: its hash is kept left to guess, and in a collection
+    // of that console the file is read and hashed, where it was turned away
+    // by its name.
     @Test
-    fun `left to guess, a chd of one of the nine consoles keeps its hash and one of another does not`() {
+    fun `left to guess, a chd of one of the ten consoles keeps its hash, a PC-FX disc among them`() {
         val program = noise(7000, seed = 27)
         val known = file("Known.chd", ChdImage.dvd(playStation2Disc("SLUS_200.27", program)))
         val kept = (planning.hashDetailed(known.path, "attic") as? HashOutcome.Ok ?: fail("no hash")).result
@@ -224,20 +223,74 @@ class ChdHashTest {
 
         // A PC-FX disc as rcheevos knows one: the marker in the first
         // sector, and in the second where the program lies and how long
-        // it is.
+        // it is. The hash is of the first 128 bytes of the second sector
+        // and then the program's sectors.
         val track = rawTrack(32)
         ascii("PC-FX:Hu_CD-ROM").copyInto(track, 16)
         byteArrayOf(2, 0, 0, 0, 1, 0, 0, 0).copyInto(track, 2352 + 16 + 32)
+        val expected = md5(track.copyOfRange(2352 + 16, 2352 + 16 + 128) +
+                           track.copyOfRange(2 * 2352 + 16, 2 * 2352 + 16 + 2048)) to PC_FX
         val other = file("Other.chd", ChdImage.cd(listOf(ChdImage.Track("MODE1_RAW", track.chunked(2352)))))
         val guess = native.hashForConsole(other.path, 0) as? HashOutcome.Ok ?: fail("the library gave no hash")
-        assertEquals(PC_FX, guess.result.consoleId, "the console the library settles on")
+        assertEquals(expected, guess.result.hash to guess.result.consoleId, "the console the library settles on")
 
-        assertEquals(HashOutcome.Failed("the hasher could not read Other.chd: rcheevos takes this .chd for " +
-                                        "console 49, which is not one of the nine a .chd is read as", retryable = false),
-                     planning.hashDetailed(other.path, "attic"))
-        assertEquals(HashOutcome.UnsupportedFormat("a .chd is read as a disc of nine consoles, " +
-                                                   "and console 49 is not one of them"),
-                     planning.hashDetailed(other.path, "pcfx"))
+        for (collection in listOf("attic", "pcfx")) {
+            val result = (planning.hashDetailed(other.path, collection) as? HashOutcome.Ok
+                ?: fail("no hash in $collection")).result
+            assertEquals(expected, result.hash to result.consoleId, collection)
+        }
+    }
+
+    // The PC-FX's hash asks for the largest track of a disc, and
+    // RetroAchievements' hasher reads that where the last track lies. On a
+    // disc with its data between tracks of audio it finds no PC-FX there,
+    // rcheevos goes on to track 2, and the disc is hashed as from its cue
+    // sheet. That is the library's own way through the reader, on every
+    // system that loads it.
+    @Test
+    fun `a PC-FX disc whose data track lies between two of audio hashes from a chd as from its cue sheet`() {
+        val (data, hash) = pcFxTrack()
+        val audio = noise(30 * 2352, seed = 29)
+        file("Fx-1.bin", audio); file("Fx-2.bin", data); file("Fx-3.bin", audio)
+        val sheet = file("Fx.cue", ascii("FILE \"Fx-1.bin\" BINARY\r\n  TRACK 01 AUDIO\r\n    INDEX 01 00:00:00\r\n" +
+                                         "FILE \"Fx-2.bin\" BINARY\r\n  TRACK 02 MODE1/2048\r\n    INDEX 01 00:00:00\r\n" +
+                                         "FILE \"Fx-3.bin\" BINARY\r\n  TRACK 03 AUDIO\r\n    INDEX 01 00:00:00\r\n"))
+        val expected = HashOutcome.Ok(HashResult(hash, PC_FX))
+        assertEquals(expected, native.hashForConsole(sheet.path, PC_FX), "the rule, as the cue sheet is hashed")
+
+        val image = file("Fx.chd", ChdImage.cd(listOf(ChdImage.Track("AUDIO", audio.chunked(2352)),
+                                                      ChdImage.Track("MODE1", data.chunked(2048)),
+                                                      ChdImage.Track("AUDIO", audio.chunked(2352)))))
+
+        assertEquals(expected, native.hashForConsole(image.path, PC_FX))
+        val scanned = (planning.hashDetailed(image.path, "pcfx") as? HashOutcome.Ok ?: fail("no hash")).result
+        assertEquals(hash to PC_FX, scanned.hash to scanned.consoleId)
+    }
+
+    // With the data track first and audio after it the same read lands on
+    // the audio, and track 2 is audio as well. RetroAchievements' hasher
+    // gives no hash for such an image, and neither does the reader, though
+    // the cue sheet of the same disc is hashed: the answer is that
+    // hasher's, kept where it is not the disc's.
+    @Test
+    fun `a PC-FX disc whose data track is the first gets no hash from a chd, as from RetroAchievements' hasher`() {
+        val (data, hash) = pcFxTrack()
+        val audio = noise(30 * 2352, seed = 30)
+        file("First-1.bin", data); file("First-2.bin", audio)
+        val sheet = file("First.cue",
+                         ascii("FILE \"First-1.bin\" BINARY\r\n  TRACK 01 MODE1/2048\r\n    INDEX 01 00:00:00\r\n" +
+                               "FILE \"First-2.bin\" BINARY\r\n  TRACK 02 AUDIO\r\n    INDEX 01 00:00:00\r\n"))
+        assertEquals(HashOutcome.Ok(HashResult(hash, PC_FX)), native.hashForConsole(sheet.path, PC_FX),
+                     "the cue sheet of the same disc")
+
+        val image = file("First.chd", ChdImage.cd(listOf(ChdImage.Track("MODE1", data.chunked(2048)),
+                                                         ChdImage.Track("AUDIO", audio.chunked(2352)))))
+
+        val failed = native.hashForConsole(image.path, PC_FX) as? HashOutcome.Failed
+            ?: fail("a hash for a disc RetroAchievements' hasher gives none for")
+        assertTrue("Not a PC-FX CD" in failed.reason, failed.reason)
+        assertEquals(HashOutcome.Failed("the hasher could not read First.chd: Not a PC-FX CD", retryable = false),
+                     planning.hashDetailed(image.path, "pcfx"))
     }
 
     // What the reader refuses is a verdict to keep where the collection
@@ -280,6 +333,24 @@ class ChdHashTest {
         ascii("SEGADISCSYSTEM  CHDTEST    ").copyInto(track, 16)
         ascii("SEGA MEGA DRIVE ").copyInto(track, 16 + 0x100)
         return track
+    }
+
+    /**
+     * A PC-FX data track of 24 plain sectors of 2048 bytes, and what a disc
+     * made of it hashes to: the console's name opens sector 0, sector 1
+     * says after 32 bytes of title that the program begins at sector 4 and
+     * is two sectors long, and sector 16 opens as a volume descriptor
+     * does, which is what rcheevos tells the size of a sheet's sectors by.
+     */
+    private fun pcFxTrack(): Pair<ByteArray, String> {
+        val track = ByteArray(24 * 2048)
+        val program = noise(2 * 2048, seed = 31)
+        ascii("PC-FX:Hu_CD-ROM").copyInto(track, 0)
+        ascii("CHD TEST").copyInto(track, 2048)
+        byteArrayOf(4, 0, 0, 0, 2, 0, 0, 0).copyInto(track, 2048 + 32)
+        program.copyInto(track, 4 * 2048)
+        (byteArrayOf(1) + ascii("CD001") + byteArrayOf(1)).copyInto(track, 16 * 2048)
+        return track to md5(track.copyOfRange(2048, 2048 + 128) + program)
     }
 
     /** Raw sectors of 2352 bytes, each with its sync pattern, its address and mode 1, and noise for its data. */

@@ -508,6 +508,82 @@ class ScanLedgerTest {
         assertEquals(kept.map { it.third }, kept.map { read.entry(it.first)?.detail })
     }
 
+    // The builds that read a .chd as a disc of nine consoles turned one in
+    // a PC-FX collection away unread, and said so in one sentence. This
+    // build reads it. A loose file is under the reader's new number; an
+    // archive's entry and a playlist's first file are under numbers no
+    // reader is in, and are known by that sentence at the end of the
+    // detail. The same words of another console are still true, in the
+    // number they are said with today, and stand.
+    @Test fun `a PC-FX chd turned away inside an archive or a playlist is taken again once`() {
+        val file = File(paths.cache, ScanLedger.FILE_NAME).apply { parentFile.mkdirs() }
+        val pcfx = CollectionRef.inferred("pcfx")
+        val unsupported = ScanLedger.State.UNSUPPORTED_FORMAT
+        fun nine(console: Int) = "a .chd is read as a disc of nine consoles, and console $console is not one of them"
+        assertEquals(nine(49), ScanLedger.LEFT_BY_NINE)
+        val kept = listOf(
+            Triple("/roms/pcfx/Packed.zip", unsupported, "'Packed.chd' in the archive: ${nine(49)}"),
+            Triple("/roms/pcfx/Listed.m3u", unsupported, "Disc 1.chd, the first file the playlist names: ${nine(49)}"),
+            Triple("/roms/pcfx/Loose.chd", unsupported, nine(49)),
+            // Another console, the words this build writes, the old words
+            // with others after them, and the old words under another state.
+            Triple("/roms/pcfx/Cartridge.zip", unsupported, "'Cartridge.chd' in the archive: ${nine(7)}"),
+            Triple("/roms/pcfx/Jaguar.zip", unsupported,
+                   "'Jaguar.chd' in the archive: a .chd is read as a disc of ten consoles, and console 77 is not one of them"),
+            Triple("/roms/pcfx/Quoted.zip", unsupported, "'${nine(49)}.txt' in the archive: a .txt file is not a game"),
+            Triple("/roms/pcfx/Named.zip", ScanLedger.State.NO_PLAYABLE_ENTRY,
+                   "nothing in the archive is a game of this collection: ${nine(49)}"))
+        ScanLedger(file).apply {
+            for ((path, state, detail) in kept) record(path, pcfx, state, 10, 20, now = 1000, detail = detail)
+            save { f, text -> BridgePaths.writeAtomic(f, text) }
+        }
+
+        val read = ScanLedger(file)
+        assertEquals(listOf(false, false, false, true, true, true, true),
+                     kept.map { (path, _, _) -> read.canSkip(path, pcfx, 10, 20, now = 1001) != null },
+                     "which of them stand: " + kept.map { it.first.substringAfterLast('/') })
+        assertEquals(kept.map { it.third }, kept.map { read.entry(it.first)?.detail })
+        // Once: what the scan then records of the file is this build's
+        // words, and stands as any verdict does.
+        read.record("/roms/pcfx/Packed.zip", pcfx, ScanLedger.State.NOT_FOUND, 10, 20, now = 1002, detail = "")
+        assertEquals(ScanLedger.State.NOT_FOUND, read.canSkip("/roms/pcfx/Packed.zip", pcfx, 10, 20, now = 1003)?.state)
+    }
+
+    // The other thing those builds said of a PC-FX .chd: in a folder nothing
+    // is known of rcheevos is left to guess, came to a hash under console
+    // 49, and the hash was not kept. That failure is one that is kept, for
+    // a month, and for an archive's entry and a playlist's first file under
+    // a number no reader is in. This build keeps the hash, so the failure
+    // goes, once, by its sentence and its state.
+    @Test fun `a chd an earlier build guessed to be a PC-FX disc and did not keep is taken again once`() {
+        val file = File(paths.cache, ScanLedger.FILE_NAME).apply { parentFile.mkdirs() }
+        val attic = CollectionRef.inferred("attic")
+        val unhashable = ScanLedger.State.UNHASHABLE
+        fun nine(console: Int) = "rcheevos takes this .chd for console $console, which is not one of the nine a .chd is read as"
+        assertEquals(nine(49), ScanLedger.GUESSED_BY_NINE)
+        val kept = listOf(
+            Triple("/roms/attic/Packed.zip", unhashable, "the hasher could not read 'Packed.chd': ${nine(49)}"),
+            Triple("/roms/attic/Listed.m3u", unhashable, "the hasher could not read Disc 1.chd: ${nine(49)}"),
+            // Another console, the words this build writes, the old words
+            // with others after them, and the old words under another state.
+            Triple("/roms/attic/Other.zip", unhashable, "the hasher could not read 'Other.chd': ${nine(77)}"),
+            Triple("/roms/attic/Jaguar.zip", unhashable, "the hasher could not read 'Jaguar.chd': rcheevos takes " +
+                   "this .chd for console 77, which is not one of the ten a .chd is read as"),
+            Triple("/roms/attic/Longer.zip", unhashable, "the hasher could not read 'Longer.chd': ${nine(49)}; as console 9: no"),
+            Triple("/roms/attic/Named.zip", ScanLedger.State.UNSUPPORTED_FORMAT, "'x' in the archive: ${nine(49)}"))
+        ScanLedger(file).apply {
+            for ((path, state, detail) in kept) record(path, attic, state, 10, 20, now = 1000, detail = detail)
+            save { f, text -> BridgePaths.writeAtomic(f, text) }
+        }
+
+        val read = ScanLedger(file)
+        assertEquals(listOf(false, false, true, true, true, true),
+                     kept.map { (path, _, _) -> read.canSkip(path, attic, 10, 20, now = 1001) != null },
+                     "which of them stand: " + kept.map { it.first.substringAfterLast('/') })
+        read.record("/roms/attic/Packed.zip", attic, ScanLedger.State.NOT_FOUND, 10, 20, now = 1002, detail = "")
+        assertEquals(ScanLedger.State.NOT_FOUND, read.canSkip("/roms/attic/Packed.zip", attic, 10, 20, now = 1003)?.state)
+    }
+
     // Kept for thirty days, as a file the hasher cannot hash is, and not
     // tried again at every scan as a file that failed is.
     @Test fun `an archive with no game in it is a verdict kept for a month`() {

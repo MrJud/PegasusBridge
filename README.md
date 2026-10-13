@@ -9,8 +9,8 @@ local API, so a theme stays a renderer:
 - **RetroAchievements** — profile, per-game progress, and identifying which RA
   game a library entry is, by ROM hash (rcheevos) with a fuzzy fallback. A Wii
   disc is hashed from a `.wbfs`, split or whole, as well as from an `.iso`, and
-  a disc of nine consoles from a `.chd` (PlayStation, PlayStation 2, PSP,
-  Saturn, Sega CD, Dreamcast, PC Engine CD, 3DO, Neo Geo CD).
+  a disc of ten consoles from a `.chd` (PlayStation, PlayStation 2, PSP,
+  Saturn, Sega CD, Dreamcast, PC Engine CD, 3DO, Neo Geo CD, PC-FX).
 - **Scraping** — SteamGridDB, IGDB, IGN and Steam.
 - **Trailers** — YouTube search, stream resolution and download.
 

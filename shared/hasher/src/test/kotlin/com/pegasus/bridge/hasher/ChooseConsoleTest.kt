@@ -103,7 +103,7 @@ class ChooseConsoleTest {
             Case("psx", "x.m3u", Plan.ResolvePlaylist),
             Case("gba", "x.m3u", Plan.ResolvePlaylist),
             Case("ps2", "x.iso", hash(21)),
-            // A .chd is a disc of its collection's console, for the nine
+            // A .chd is a disc of its collection's console, for the ten
             // consoles the reader has been held to, loose or out of an
             // archive.
             Case("ps2", "x.chd", hash(21)),
@@ -120,13 +120,16 @@ class ChooseConsoleTest {
             Case("neogeocdjp", "x.chd", hash(56)),
             Case("neogeocdjp", "x.cue", hash(56)),
             Case("neogeocd", "x.iso", hash(56)),
+            // The PC-FX asks for a disc's largest track, which the reader
+            // answers as RetroAchievements' hasher does.
+            Case("pcfx", "x.chd", hash(49)),
+            Case("pcfx", "x.cue", hash(49)),
             // And of no other: a cartridge console would hash the bytes of
-            // the container, and the PC-FX and the Jaguar CD ask for tracks
-            // in ways the reader has not been held to.
+            // the container, and no Jaguar CD made here is hashed from a
+            // .chd by anybody.
             Case("nes", "x.chd", UNSUPPORTED_FORMAT),
             Case("gc", "x.chd", UNSUPPORTED_FORMAT),
             Case("wii", "x.chd", UNSUPPORTED_FORMAT),
-            Case("pcfx", "x.chd", UNSUPPORTED_FORMAT),
             Case("atarijaguar", "x.chd", UNSUPPORTED_FORMAT),
             // A folder of Jaguar CD games is that console for its sheets,
             // and its .chd is turned away as under `jaguar`.
@@ -244,9 +247,9 @@ class ChooseConsoleTest {
             (ConsoleChoice.choose(RcConsoles.row(collection), extension, 1, insideArchive) as Plan.UnsupportedFormat).reason
         assertEquals("a .txt file is not a game", words("psx", "txt"))
         assertEquals(".cso is a format rcheevos does not read", words("psp", "CSO"))
-        assertEquals("a .chd is read as a disc of nine consoles, and console 7 is not one of them", words("nes", "chd"))
-        assertEquals("a .chd is read as a disc of nine consoles, and console 49 is not one of them", words("pcfx", "CHD"))
-        assertEquals("a .chd is read as a disc of nine consoles, and console 77 is not one of them",
+        assertEquals("a .chd is read as a disc of ten consoles, and console 7 is not one of them", words("nes", "chd"))
+        assertEquals(Plan.Hash(49), ConsoleChoice.choose(RcConsoles.row("pcfx"), "CHD", 1, false))
+        assertEquals("a .chd is read as a disc of ten consoles, and console 77 is not one of them",
                      words("atarijaguar", "chd"))
         assertEquals(words("atarijaguar", "chd"), words("atarijaguarcd", "chd"))
         assertEquals("an arcade set is a .zip or a .7z, and this is a .bin", words("arcade", "bin"))
@@ -338,11 +341,12 @@ class ChooseConsoleTest {
     }
 
     /**
-     * For a .chd that list has the PC-FX on it as well, which is none of
-     * the consoles a .chd is read as. In a collection of that console the
-     * file is turned away by its name; where nothing is known of the
-     * collection the hash has been made by the time anybody can tell, and
-     * is not kept. The same console is a good answer for any other file.
+     * For a .chd that list has the PC-FX on it as well, which is one of
+     * the consoles a .chd is read as, so its hash is kept. A console that
+     * is none of them is not on the list today; were one to come onto it,
+     * the hash would have been made by the time anybody can tell, and is
+     * not kept. In a collection of such a console the file is turned away
+     * by its name. The same console is a good answer for any other file.
      */
     @Test fun `a guess that takes a chd for a console it is not read as is a failure, kept`() {
         fun answered(console: Int) = HashOutcome.Ok(HashResult("0123456789abcdef0123456789abcdef", console))
@@ -352,21 +356,21 @@ class ChooseConsoleTest {
             assertTrue(ConsoleChoice.guessed(ok, "chd") === ok, "console $console")
         }
         for (extension in listOf("chd", "CHD")) {
-            assertEquals(HashOutcome.Failed("rcheevos takes this .chd for console 49, " +
-                                            "which is not one of the nine a .chd is read as", retryable = false),
-                         ConsoleChoice.guessed(answered(49), extension))
+            assertEquals(HashOutcome.Failed("rcheevos takes this .chd for console 77, " +
+                                            "which is not one of the ten a .chd is read as", retryable = false),
+                         ConsoleChoice.guessed(answered(77), extension))
         }
-        val pcfx = answered(49)
-        assertTrue(ConsoleChoice.guessed(pcfx, "cue") === pcfx, "a cue sheet of the same console")
-        assertTrue(ConsoleChoice.guessed(pcfx) === pcfx, "a caller that names no extension")
+        val jaguar = answered(77)
+        assertTrue(ConsoleChoice.guessed(jaguar, "cue") === jaguar, "a cue sheet of the same console")
+        assertTrue(ConsoleChoice.guessed(jaguar) === jaguar, "a caller that names no extension")
         // Held back comes first, and is said in its own words.
         assertEquals(HashOutcome.Failed("rcheevos takes it for a file of RC_CONSOLE_PLAYSTATION_3 (id 82), which is held back",
                                         retryable = false), ConsoleChoice.guessed(answered(82), "chd"))
         val unread = HashOutcome.Failed("Could not open file")
         assertTrue(ConsoleChoice.guessed(unread, "chd") === unread)
-        assertEquals(setOf(9, 12, 21, 39, 40, 41, 43, 56, 76), ConsoleChoice.CHD_CONSOLES)
+        assertEquals(setOf(9, 12, 21, 39, 40, 41, 43, 49, 56, 76), ConsoleChoice.CHD_CONSOLES)
         assertTrue(ConsoleChoice.CHD_CONSOLES.all { RcConsoles.console(it)?.algorithm == RcConsoles.Algorithm.DISC },
-                   "a console of the nine is not hashed as a disc")
+                   "a console of the ten is not hashed as a disc")
     }
 
     @Test fun `the three lists of extensions that are never hashed`() {

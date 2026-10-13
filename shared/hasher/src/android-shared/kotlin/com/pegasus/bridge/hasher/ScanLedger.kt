@@ -300,7 +300,12 @@ class ScanLedger(private val file: File, private val recipe: HashRecipe = HashRe
      * and as the first file of a playlist, and that was kept for the
      * archive and for the playlist, whose numbers no reader is in: it
      * would stand for its season, and the disc go unread for ninety days
-     * under a build that reads it. Nothing else is taken again by this.
+     * under a build that reads it. The same goes for a `.chd` turned away
+     * as a PC-FX disc by the build before the one that reads those
+     * ([LEFT_BY_NINE]), and for one such a build hashed as a PC-FX disc
+     * when left to guess and did not keep the hash of
+     * ([GUESSED_BY_NINE]), which is [State.UNHASHABLE] and would stand a
+     * month. Nothing else is taken again by this.
      */
     fun canSkip(path: String, collection: CollectionRef, size: Long, modified: Long, now: Long,
                 extension: String = File(path).extension): Entry? {
@@ -324,11 +329,17 @@ class ScanLedger(private val file: File, private val recipe: HashRecipe = HashRe
      * before it, the name of an archive's entry or of a playlist's first
      * file. What this build writes of a file it will not hash ends
      * otherwise, of a `.wbfs` inside an archive too, so a file is taken
-     * again by this once.
+     * again by this once. The two sentences of the builds that read a
+     * `.chd` as a disc of nine consoles are known the same way, each
+     * under the state it was kept in.
      */
-    private fun leftForAReader(e: Entry): Boolean =
-        e.state == State.UNSUPPORTED_FORMAT &&
-        HashRecipe.READERS.keys.any { e.detail.endsWith(HashRecipe.noReaderFor(it)) }
+    private fun leftForAReader(e: Entry): Boolean = when (e.state) {
+        State.UNSUPPORTED_FORMAT ->
+            HashRecipe.READERS.keys.any { e.detail.endsWith(HashRecipe.noReaderFor(it)) } ||
+            e.detail.endsWith(LEFT_BY_NINE)
+        State.UNHASHABLE -> e.detail.endsWith(GUESSED_BY_NINE)
+        else -> false
+    }
 
     /**
      * What is held for [path] as it was recorded, or null. For a reader that
@@ -478,6 +489,29 @@ class ScanLedger(private val file: File, private val recipe: HashRecipe = HashRe
         private const val TAG = "ScanLedger"
         const val FILE_NAME = "scan-ledger.json"
         const val SCHEMA_VERSION = 1
+
+        /**
+         * What the builds that read a `.chd` as a disc of nine consoles
+         * said of one in a PC-FX collection, which they turned away
+         * unread. This build reads it, and never writes this sentence: it
+         * says "ten", and of other consoles. So an entry that ends in it
+         * is taken again once ([canSkip]): an archive's entry and a
+         * playlist's first file, whose numbers no reader is in, and a
+         * loose file a build that had the reader's new number and still
+         * the nine consoles turned away under it.
+         */
+        const val LEFT_BY_NINE = "a .chd is read as a disc of nine consoles, and console 49 is not one of them"
+
+        /**
+         * What the same builds said of a `.chd` in a folder nothing is
+         * known of, which rcheevos, left to guess, had hashed as a PC-FX
+         * disc: the hash was not kept, and the failure was, for a month.
+         * This build keeps such a hash and never writes this sentence, so
+         * an entry that ends in it is taken again once ([canSkip]). A
+         * loose file is under the reader's new number already; this is for
+         * an archive's entry and a playlist's first file.
+         */
+        const val GUESSED_BY_NINE = "rcheevos takes this .chd for console 49, which is not one of the nine a .chd is read as"
 
         /**
          * The rule of [forget], for a path: whether a scan of [roots] that

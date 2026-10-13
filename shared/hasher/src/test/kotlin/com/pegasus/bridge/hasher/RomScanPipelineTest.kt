@@ -1015,8 +1015,36 @@ class RomScanPipelineTest {
                          h.consoles.toMap())
             assertEquals(emptyList(), h.guessed.toList(), "files left to rcheevos' guess")
             assertEquals(mapOf(ScanLedger.State.NOT_FOUND to 3, ScanLedger.State.UNSUPPORTED_FORMAT to 1), s.states)
-            assertEquals("a .chd is read as a disc of nine consoles, and console 77 is not one of them",
+            assertEquals("a .chd is read as a disc of ten consoles, and console 77 is not one of them",
                          ledgerEntry(refused).getString("detail"))
+        } finally {
+            tmp.deleteRecursively()
+        }
+    }
+
+    // A .chd in a PC-FX collection was turned away by its name while a .chd
+    // was read as a disc of nine consoles. It is handed to the hasher as
+    // console 49 now, and its hash is asked about in that console's list.
+    @Test fun `a chd in a PC-FX collection is hashed and looked up as console 49`(): Unit = runBlocking {
+        class Told : RomHasher {
+            val consoles = java.util.concurrent.ConcurrentHashMap<String, Int>()
+            override fun hash(path: String): HashResult? = throw AssertionError("${File(path).name} was left to a guess")
+            override fun hashForConsole(path: String, consoleId: Int): HashOutcome {
+                consoles[File(path).name] = consoleId
+                return HashOutcome.Ok(HashResult("hash-of-" + File(path).name, consoleId))
+            }
+        }
+        val disc = rom("pcfx", "Glass Harbour (Japan).chd", "x")
+        val tmp = Files.createTempDirectory("hasher-tmp").toFile()
+        try {
+            val h = Told()
+            val lookup = ToldConsoles()
+            val s = RomScanPipeline(paths, ArchiveAwareHasher(h, tmp), lookup, throttleMs = { 0L })
+                .scan(listOf(romRoot.absolutePath))
+
+            assertEquals(mapOf(disc.name to 49), h.consoles.toMap())
+            assertEquals(listOf("hash-of-${disc.name}" to listOf(49)), lookup.asked.toList())
+            assertEquals(mapOf(ScanLedger.State.NOT_FOUND to 1), s.states)
         } finally {
             tmp.deleteRecursively()
         }
@@ -1168,7 +1196,7 @@ class RomScanPipelineTest {
         val unsupportedFormat = mapOf(
             rom("gc", "x.rvz", "never read") to ".rvz is a format rcheevos does not read",
             rom("nes", "x.chd", "never read")
-                to "a .chd is read as a disc of nine consoles, and console 7 is not one of them",
+                to "a .chd is read as a disc of ten consoles, and console 7 is not one of them",
             rom("psp", "x.cso", "never read") to ".cso is a format rcheevos does not read",
             rom("arcade", "chip.bin", "never read") to "an arcade set is a .zip or a .7z, and this is a .bin",
             rom("psx", "README.md", "never read") to "a .md file in this collection is not a Mega Drive cartridge")
@@ -1638,7 +1666,7 @@ class RomScanPipelineTest {
                          ledgerEntry(f).let { it.getString("state") to it.getString("detail") }, f.path)
         }
         assertEquals(listOf(".cso is a format rcheevos does not read",
-                            "a .chd is read as a disc of nine consoles, and console 7 is not one of them",
+                            "a .chd is read as a disc of ten consoles, and console 7 is not one of them",
                             "a .cfg file is not a game"),
                      (images + notes).map { ledgerEntry(it).getString("detail") })
 

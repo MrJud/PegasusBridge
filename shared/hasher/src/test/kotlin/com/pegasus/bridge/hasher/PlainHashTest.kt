@@ -741,12 +741,12 @@ class PlainHashTest {
         val packed = zip("Disc.zip", "Disc.isz" to "abc".toByteArray(), "readme.txt" to "abc".toByteArray())
         assertEquals(HashOutcome.UnsupportedFormat("'Disc.isz' in the archive: .isz is a format rcheevos does not read"),
                      hasher.hashDetailed(packed.absolutePath, "ps2"))
-        // A .chd is a disc of nine consoles, and in a collection of
+        // A .chd is a disc of ten consoles, and in a collection of
         // another it is turned away by its name as well, not copied out.
         val stray = zip("Stray.zip", "Stray.chd" to "abc".toByteArray())
         assertEquals(HashOutcome.UnsupportedFormat("'Stray.chd' in the archive: a .chd is read as a disc of " +
-                                                   "nine consoles, and console 49 is not one of them"),
-                     hasher.hashDetailed(stray.absolutePath, "pcfx"))
+                                                   "ten consoles, and console 77 is not one of them"),
+                     hasher.hashDetailed(stray.absolutePath, "atarijaguarcd"))
         val converted = zip("Other.zip", "Other.cso" to "abc".toByteArray())
         assertEquals(HashOutcome.UnsupportedFormat("'Other.cso' in the archive: .cso is a format rcheevos does not read"),
                      hasher.hashDetailed(converted.absolutePath, "psp"))
@@ -763,7 +763,7 @@ class PlainHashTest {
         val hasher = ArchiveAwareHasher(native, tempDir)
         val wrong = listOf(
             Triple("psp", "Disc.cso", ".cso is a format rcheevos does not read"),
-            Triple("nes", "Disc.chd", "a .chd is read as a disc of nine consoles, and console 7 is not one of them"),
+            Triple("nes", "Disc.chd", "a .chd is read as a disc of ten consoles, and console 7 is not one of them"),
             Triple("arcade", "chip.bin", "an arcade set is a .zip or a .7z, and this is a .bin"),
             Triple("switch", "Game.zip", "RetroAchievements has no console for switch"),
             Triple("amiga", "Disk.adf", "rcheevos has no hashing algorithm for RC_CONSOLE_AMIGA (id 35)")

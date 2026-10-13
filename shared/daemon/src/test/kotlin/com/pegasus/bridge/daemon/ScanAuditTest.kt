@@ -31,6 +31,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
+import org.json.JSONObject
 import org.junit.jupiter.api.Assumptions.assumeTrue
 
 private const val NUL = "\u0000"
@@ -465,6 +466,8 @@ class ScanAuditTest {
                      listOf("state", "hash", "asked").map { row.getValue(it) })
         assertEquals("the scan did not finish", comments()["# stopped"])
         assertEquals("? found, 1 rows", comments()["# files"])
+        // No summary came back, and the time of a scan is taken from one.
+        assertNull(comments()["# metrics"])
         assertEquals(listOf("audit.tsv"), out.parentFile.list()!!.toList())
     }
 
@@ -671,6 +674,33 @@ class ScanAuditTest {
         val process = said.getValue("# read")
         assertTrue(process.endsWith(" bytes by the process during the scan"), process)
         assertTrue(process.substringBefore(' ').toLong() >= cost.values.sum(), process)
+    }
+
+    // The table had what each file cost and nothing of the scan as a whole:
+    // not how long it took, nor how much of that was the walk or the writes.
+    // The line is the object a daemon publishes, so its phases add up to the
+    // whole here as they do there, and it names its files by full path.
+    @Test fun `the table says where the scan's time went`() {
+        val first = rom("snes/First.sfc")
+        val second = rom("snes/Second.sfc")
+
+        assertEquals(0, audit())
+
+        val lines = out.readLines().filter { it.startsWith("#") }.map { it.substringBefore('\t') }
+        assertEquals(1, lines.count { it == "# metrics" }, "$lines")
+        assertTrue(lines.indexOf("# metrics") > lines.indexOf("# hasher"), "$lines")
+        assertTrue(lines.indexOf("# metrics") < lines.indexOf("# written"), "$lines")
+        val metrics = JSONObject(unescaped(said("# metrics").single()))
+        assertEquals(setOf("wallMs", "phaseMs", "busyMs", "hashWorkers", "lookupWorkers", "filesHashed",
+                           "lookups", "slowest"), metrics.keySet() - "bytesRead")
+        val phases = metrics.getJSONObject("phaseMs")
+        assertEquals(setOf("walk", "prepare", "scan", "finish"), phases.keySet())
+        assertEquals(metrics.getLong("wallMs"), phases.keySet().sumOf { phases.getLong(it) })
+        assertEquals(setOf("hash", "lookup", "throttle", "write"), metrics.getJSONObject("busyMs").keySet())
+        assertEquals(2, metrics.getInt("filesHashed"))
+        val slowest = metrics.getJSONArray("slowest")
+        assertEquals(setOf(first.canonicalPath, second.canonicalPath),
+                     (0 until slowest.length()).map { slowest.getJSONObject(it).getString("file") }.toSet())
     }
 
     // The second read a scan no longer makes, seen where it is measured. A

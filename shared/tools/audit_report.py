@@ -9,7 +9,7 @@ build wrote for the same library:
 
     ./tools/audit_report.py TABLE [--baseline TABLE] [--oracle ANSWERS]
                             [--min-identified N] [--max-junk N] [--max-changed N]
-                            [--all]
+                            [--max-read-growth PCT] [--all]
 
 It is how a change to hashing is judged on real files: the table before the
 change is kept, the table after it is compared, and every file that differs is
@@ -73,7 +73,28 @@ own `# hasher` and `# read` lines and adds the column up by collection, beside
 the size of the files it is of: a file read twice shows as twice its size, and
 one the hash needed the start of as less than it. They are bytes asked for,
 whether the disk or the memory gave them, and say nothing of time. The column
-is never compared: what a file costs to read is what a change is made to move.
+is never compared as the verdicts are: what a file costs to read is what a
+change is made to move, and a row whose `read` alone moved has not changed.
+
+What is held instead, when --max-read-growth PCT asks for it, is the sum. The
+files counted are the ones both tables have, with the same `size` and a `read`
+in each: a file added to the library since the baseline is not growth, and
+neither is one the baseline's scan was never handed. Their `read` is added up
+in each table, and the report fails when this table's sum is more than PCT
+percent above the baseline's. It needs only the column, so it judges a table
+against one of a build from before the `# metrics` line below. Where no file
+can be counted, a baseline of a system that counts nothing or of a rescan,
+there is nothing to judge and the report says so without failing. One row of
+a run carries what the process read to get hashing started, some 300 KB, so
+two tables of a few small files can differ by more than a real library's do.
+
+TIME. A table of a build that measures it has a `# metrics` line: one JSON
+object, the one a daemon puts in the record a scan ends on, with how long the
+scan took by the clock, the four phases that follow one another and add up to
+that, and four sums of time added up over the workers, which can be more than
+the scan took (CONTEXT.md, "Where a scan's time went"). The report prints
+them, and beside them the baseline's and the ratio when the baseline has the
+line. Time is shown and never judged: no two runs take the same.
 
 ORACLE. A file of answers already known: hash, game id, then date, source and
 title, with tabs between (the format `--oracle=` of the audit reads). With it,
@@ -81,14 +102,30 @@ a file counts as identified when the scan matched it or when its hash is in
 the oracle under a real game id, and with a baseline as well the files whose
 hash was in the oracle then are checked for still having that hash now.
 
+VERDICT. The last line of every report, for a person who reads one line and
+for a script that reads the last:
+
+    VERDICT: same as the baseline
+    VERDICT: N files differ from the baseline
+    VERDICT: no baseline
+    VERDICT: failed: <each reason, with "; " between>
+
+The first two are of a comparison; the second is said whether or not
+--max-changed allows the N, and the exit status tells which. `failed` is for
+a limit other than that one: too few identified, too much junk, too much
+read. tools/hash_check.sh runs an audit and this report in one command and
+keeps a line of each run.
+
 Exit status 0, or 1 when fewer files are identified than --min-identified,
-more are junk than --max-junk, or more differ from the baseline than
---max-changed; 2 when a table cannot be read. Each list is cut at 20 lines
-unless --all is given. tools/audit_report_test.py tests it.
+more are junk than --max-junk, more differ from the baseline than
+--max-changed, or more was read than --max-read-growth allows; 2 when a table
+cannot be read. Each list is cut at 20 lines unless --all is given.
+tools/audit_report_test.py tests it.
 """
 
 import argparse
 import hashlib
+import json
 import sys
 from collections import Counter, OrderedDict
 from pathlib import PurePosixPath, PureWindowsPath
@@ -373,6 +410,74 @@ def print_read(rows, roots, comments):
     print(f"{'TOTAL':<{width}}{total[0]:>7}{total[1]:>16}{total[2]:>16}")
 
 
+def metrics_of(comments, path):
+    """The object of a table's `# metrics` line, or None for a table of a
+    build from before the line and for one whose scan threw."""
+    lines = said(comments, "metrics")
+    if not lines:
+        return None
+    try:
+        metrics = json.loads(lines[0])
+    except ValueError:
+        metrics = None
+    if not isinstance(metrics, dict):
+        raise Unreadable(f"{path}: the # metrics line is not a JSON object")
+    return metrics
+
+
+# The lines of the TIME section: what a line is called, and where its number
+# is in the object. The phases are indented under the whole they add up to.
+TIME_LINES = [("wall", ("wallMs",)),
+              ("  walk", ("phaseMs", "walk")), ("  prepare", ("phaseMs", "prepare")),
+              ("  scan", ("phaseMs", "scan")), ("  finish", ("phaseMs", "finish")),
+              ("busy: hash", ("busyMs", "hash")), ("busy: lookup", ("busyMs", "lookup")),
+              ("busy: throttle", ("busyMs", "throttle")), ("busy: write", ("busyMs", "write")),
+              ("files hashed", ("filesHashed",))]
+
+
+def number_at(metrics, keys):
+    """The number a TIME line is of, or None where the object has none."""
+    for key in keys:
+        metrics = metrics.get(key) if isinstance(metrics, dict) else None
+    return metrics if isinstance(metrics, (int, float)) and not isinstance(metrics, bool) else None
+
+
+def print_time(here, there):
+    """Where the scan's time went, and where the baseline's did when it says."""
+    workers = ", ".join(f"{here[key]} {name}" for key, name in
+                        (("hashWorkers", "hashing"), ("lookupWorkers", "looking up")) if key in here)
+    print("time, in ms (shown, never judged; a busy line is a sum over the workers"
+          + (f": {workers}" if workers else "") + ")")
+    width = max(len(name) for name, _ in TIME_LINES) + 2
+    if there is not None:
+        print(f"{'':<{width}}{'there':>12}{'here':>12}{'ratio':>8}")
+    for name, keys in TIME_LINES:
+        now = number_at(here, keys)
+        line = f"{name:<{width}}"
+        if there is not None:
+            then = number_at(there, keys)
+            ratio = f"{now / then:.2f}" if now is not None and then else "-"
+            line += f"{'-' if then is None else then:>12}{'-' if now is None else now:>12}{ratio:>8}"
+        else:
+            line += f"{'-' if now is None else now:>12}"
+        print(line)
+
+
+def read_growth(baseline, rows):
+    """(files, there, here): the bytes each table says were read for the
+    files both have, with one size and a count in each."""
+    old = {r["path"]: r for r in baseline}
+    files = there = here = 0
+    for r in rows:
+        o = old.get(r["path"])
+        if o is None or not r.get("read", "") or not o.get("read", "") or r.get("size", "") != o.get("size", ""):
+            continue
+        files += 1
+        there += int(o["read"])
+        here += int(r["read"])
+    return files, there, here
+
+
 def said(comments, name):
     """Every value the `#` lines give for one name, in an order two tables share."""
     return sorted(value for key, value in comments if key == name)
@@ -395,6 +500,7 @@ def main(argv):
     parser.add_argument("--min-identified", type=int, metavar="N")
     parser.add_argument("--max-junk", type=int, metavar="N")
     parser.add_argument("--max-changed", type=int, metavar="N")
+    parser.add_argument("--max-read-growth", type=float, metavar="PCT")
     parser.add_argument("--all", action="store_true", help="cut no list short")
     try:
         args = parser.parse_args(argv[1:])
@@ -405,14 +511,22 @@ def main(argv):
         comments, rows = read_table(args.table)
         told, baseline = read_table(args.baseline) if args.baseline else (None, None)
         oracle = read_oracle(args.oracle) if args.oracle else None
+        timed = metrics_of(comments, args.table)
+        timed_then = metrics_of(told, args.baseline) if told is not None else None
     except Unreadable as e:
         print(e, file=sys.stderr)
         return 2
     if args.max_changed is not None and baseline is None:
         print("--max-changed needs a --baseline to count changes from", file=sys.stderr)
         return 2
+    if args.max_read_growth is not None and baseline is None:
+        print("--max-read-growth needs a --baseline to grow from", file=sys.stderr)
+        return 2
 
-    failed = []
+    # What a limit was broken by. The limit on changes is kept apart: over
+    # it, the verdict is still the count of files that differ.
+    failed, over_changed = [], []
+    differing = None
     roots = [value for name, value in comments if name == "root"]
     print(f"{args.table}: {len(rows)} files")
     for name, value in comments:
@@ -432,6 +546,10 @@ def main(argv):
         print()
         print("bytes read")
         print_read(rows, roots, comments)
+
+    if timed is not None:
+        print()
+        print_time(timed, timed_then)
 
     matched = sum(1 for r in rows if r["state"] == "MATCHED")
     identified = sum(1 for r in rows if r["state"] == "MATCHED" or known(r))
@@ -503,14 +621,33 @@ def main(argv):
                   "whose hash was in the oracle still have that hash")
             print_list(sorted(lost), args.all)
         if args.max_changed is not None and differing > args.max_changed:
-            failed.append(f"{differing} files differ from the baseline, more than {args.max_changed}")
+            over_changed.append(f"{differing} files differ from the baseline, more than {args.max_changed}")
+        if args.max_read_growth is not None:
+            files, there, here = read_growth(baseline, rows)
+            if not files:
+                print("  read: no file has a count in both tables at one size, so nothing to judge")
+            else:
+                grown = (here - there) * 100.0 / there if there else (100.0 if here else 0.0)
+                print(f"  read for the {files} files hashed in both at one size: "
+                      f"{there} bytes there, {here} here ({grown:+.1f}%)")
+                # Held as whole numbers, so that a limit of 10 lets through
+                # exactly a tenth more and not what a rounding makes of it.
+                if here * 100 > there * (100 + args.max_read_growth):
+                    failed.append(f"{here} bytes read where the baseline read {there}, "
+                                  f"more than {args.max_read_growth:g}% above it")
 
+    print()
+    for why in failed + over_changed:
+        print(f"FAILED: {why}")
     if failed:
-        print()
-        for why in failed:
-            print(f"FAILED: {why}")
-        return 1
-    return 0
+        print("VERDICT: failed: " + "; ".join(failed + over_changed))
+    elif differing is None:
+        print("VERDICT: no baseline")
+    elif differing:
+        print(f"VERDICT: {differing} files differ from the baseline")
+    else:
+        print("VERDICT: same as the baseline")
+    return 1 if failed or over_changed else 0
 
 
 if __name__ == "__main__":

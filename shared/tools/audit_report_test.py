@@ -680,5 +680,157 @@ class ReportTest(Tables):
         self.assertEqual(self.run_report(table, "--no-such-flag")[0], 2)
 
 
+def metrics(wall, phases, busy, hashed, **more):
+    """A `# metrics` line as ScanAudit writes one: the four phases add up to
+    the whole, and the four busy sums need not."""
+    out = {"wallMs": wall, "phaseMs": dict(zip(("walk", "prepare", "scan", "finish"), phases)),
+           "busyMs": dict(zip(("hash", "lookup", "throttle", "write"), busy)),
+           "hashWorkers": 4, "lookupWorkers": 2, "filesHashed": hashed, "lookups": hashed, "slowest": []}
+    out.update(more)
+    return report.json.dumps(out, separators=(",", ":"))
+
+
+class VerdictTest(Tables):
+
+    ROWS = [
+        row("gba/A.gba", hash=md5("a"), size="1000", read="2000"),
+        row("gba/B.gba", hash=md5("b"), size="500", read="1000"),
+        row("psx/Disc.bin", hash=md5("d"), size="700000000", read="2048"),
+    ]
+
+    def pair(self, after, *more, before=None, said_after=(), said_before=()):
+        return self.run_report(
+            self.table("after.tsv", after, comments=(("root", ROOT), *said_after)), "--baseline",
+            self.table("before.tsv", before or self.ROWS, comments=(("root", ROOT), *said_before)), *more)
+
+    def time_block(self, out):
+        return next(b for b in out.split("\n\n") if b.startswith("time, in ms")).splitlines()
+
+    def test_where_the_time_went_is_shown_beside_the_baselines_and_never_judged(self):
+        then = ("metrics", metrics(1000, (100, 50, 800, 50), (3000, 400, 0, 20), 3))
+        # Ten times as long, with every limit there is set to nothing: time is
+        # no limit, and the verdict is of the rows.
+        now = ("metrics", metrics(10000, (150, 50, 9700, 100), (36000, 200, 0, 0), 3, bytesRead=5048))
+        status, out, _ = self.pair(self.ROWS, "--max-changed", "0", "--max-read-growth", "0",
+                                   said_after=(now,), said_before=(then,))
+        self.assertEqual(status, 0, out)
+        block = self.time_block(out)
+        self.assertIn("4 hashing, 2 looking up", block[0])
+        self.assertEqual([line.split() for line in block[1:]], [
+            ["there", "here", "ratio"],
+            ["wall", "1000", "10000", "10.00"],
+            ["walk", "100", "150", "1.50"],
+            ["prepare", "50", "50", "1.00"],
+            ["scan", "800", "9700", "12.12"],
+            ["finish", "50", "100", "2.00"],
+            ["busy:", "hash", "3000", "36000", "12.00"],
+            ["busy:", "lookup", "400", "200", "0.50"],
+            # Nothing there to be a ratio of.
+            ["busy:", "throttle", "0", "0", "-"],
+            ["busy:", "write", "20", "0", "0.00"],
+            ["files", "hashed", "3", "3", "1.00"],
+        ])
+        self.assertEqual(out.splitlines()[-1], "VERDICT: same as the baseline")
+
+        # A baseline from before the line, and no baseline: this table's alone.
+        for argv in ((self.table("old.tsv", self.ROWS),), ()):
+            table = self.table("now.tsv", self.ROWS, comments=(("root", ROOT), now))
+            status, out, _ = self.run_report(table, *(("--baseline", argv[0]) if argv else ()))
+            self.assertEqual(status, 0, out)
+            block = self.time_block(out)
+            self.assertEqual([line.split() for line in block[1:3]], [["wall", "10000"], ["walk", "150"]])
+            self.assertEqual(len(block), 11)
+
+    def test_a_table_with_no_metrics_says_nothing_of_time_and_one_that_is_not_json_is_refused(self):
+        # The baseline has the line and this table has not: nothing to show.
+        then = ("metrics", metrics(1000, (100, 50, 800, 50), (3000, 400, 0, 20), 3))
+        status, out, _ = self.pair(self.ROWS, said_before=(then,))
+        self.assertEqual(status, 0, out)
+        self.assertNotIn("time, in ms", out)
+
+        # A line of a later build with a number gone is shown with a gap.
+        table = self.table("later.tsv", self.ROWS, comments=(("root", ROOT), ("metrics", '{"wallMs":7}')))
+        status, out, _ = self.run_report(table)
+        self.assertEqual(status, 0, out)
+        self.assertEqual([line.split() for line in self.time_block(out)[1:3]], [["wall", "7"], ["walk", "-"]])
+
+        for text in ("not json", "[1, 2]", ""):
+            broken = self.table("broken.tsv", self.ROWS, comments=(("root", ROOT), ("metrics", text)))
+            for argv in ((broken,), (self.table("ok.tsv", self.ROWS), "--baseline", broken)):
+                status, _, err = self.run_report(*argv)
+                self.assertEqual(status, 2, text)
+                self.assertIn("the # metrics line is not a JSON object", err)
+
+    def test_a_file_read_twice_trips_the_limit_on_what_is_read(self):
+        def read(**by_name):
+            return [dict(r, read=by_name.get(r["path"].rpartition("/")[2], r["read"])) for r in self.ROWS]
+
+        # The disc read whole where its start was enough.
+        status, out, _ = self.pair(read(**{"Disc.bin": "700000000"}), "--max-read-growth", "10")
+        self.assertEqual(status, 1, out)
+        self.assertIn("  read for the 3 files hashed in both at one size: 5048 bytes there, 700003000 here", out)
+        self.assertIn("FAILED: 700003000 bytes read where the baseline read 5048, more than 10% above it", out)
+        self.assertEqual(out.splitlines()[-1], "VERDICT: failed: 700003000 bytes read where the "
+                                               "baseline read 5048, more than 10% above it")
+
+        # A tenth more is let through, one byte beyond it is not, and less is
+        # what a change is made for. The baseline has no # metrics line: the
+        # limit is held from the column alone.
+        for last, expected in (("2552", 0), ("2553", 1), ("0", 0)):
+            status, out, _ = self.pair(read(**{"Disc.bin": last}), "--max-read-growth", "10")
+            self.assertEqual(status, expected, f"{last}\n{out}")
+        self.assertIn("(-40.6%)", out)
+
+        # Not growth: a file the library gained, one whose size is another,
+        # and one either scan was never handed. With the three out, the two
+        # that are left read what they read.
+        after = read(**{"Disc.bin": "700000000"}) + [row("gba/New.gba", hash=md5("n"), size="9", read="900000")]
+        after[2]["size"] = "700000001"
+        after[1]["read"] = ""
+        status, out, _ = self.pair(after, "--max-read-growth", "10")
+        self.assertEqual(status, 0, out)
+        self.assertIn("read for the 1 files hashed in both at one size: 2000 bytes there, 2000 here (+0.0%)", out)
+
+        # A baseline of a system that counts nothing: said, and not a failure.
+        nothing = [dict(r, read="") for r in self.ROWS]
+        status, out, _ = self.pair(self.ROWS, "--max-read-growth", "10", before=nothing)
+        self.assertEqual(status, 0, out)
+        self.assertIn("  read: no file has a count in both tables at one size, so nothing to judge", out)
+
+        status, _, err = self.run_report(self.table("t.tsv", self.ROWS), "--max-read-growth", "10")
+        self.assertEqual(status, 2)
+        self.assertIn("--max-read-growth needs a --baseline", err)
+
+    def test_the_last_line_is_the_verdict(self):
+        table = self.table("t.tsv", self.ROWS)
+        status, out, _ = self.run_report(table)
+        self.assertEqual((status, out.splitlines()[-1]), (0, "VERDICT: no baseline"))
+        # A limit that needs no baseline, broken.
+        status, out, _ = self.run_report(table, "--min-identified", "1")
+        self.assertEqual((status, out.splitlines()[-1]),
+                         (1, "VERDICT: failed: 0 identified, fewer than 1"))
+
+        status, out, _ = self.pair(self.ROWS, "--max-changed", "0")
+        self.assertEqual((status, out.splitlines()[-1]), (0, "VERDICT: same as the baseline"))
+        self.assertNotIn("FAILED", out)
+
+        # One file whose hash moved: the count is the verdict whether a limit
+        # lets it through or not, and the status says which.
+        moved = [dict(r) for r in self.ROWS]
+        moved[0]["hash"] = md5("another")
+        for more, expected in (((), 0), (("--max-changed", "1"), 0), (("--max-changed", "0"), 1)):
+            status, out, _ = self.pair(moved, *more)
+            self.assertEqual((status, out.splitlines()[-1]),
+                             (expected, "VERDICT: 1 files differ from the baseline"), more)
+        self.assertIn("FAILED: 1 files differ from the baseline, more than 0", out)
+
+        # With another limit broken as well it is a failure, every reason given.
+        status, out, _ = self.pair(moved, "--max-changed", "0", "--min-identified", "1")
+        self.assertEqual((status, out.splitlines()[-1]),
+                         (1, "VERDICT: failed: 0 identified, fewer than 1; "
+                             "1 files differ from the baseline, more than 0"))
+        self.assertEqual(sum(1 for line in out.splitlines() if line.startswith("VERDICT")), 1)
+
+
 if __name__ == "__main__":
     unittest.main()

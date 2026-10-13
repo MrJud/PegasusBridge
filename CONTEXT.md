@@ -1383,6 +1383,35 @@ in a collection that has no algorithm, a Game Boy hash for a file that is not
 one). It is how a change to hashing is judged on a real library before it is
 merged.
 
+The table also has the scan's own account of its time, in a `# metrics`
+line: the object a daemon puts in the record a scan ends on ("Where a scan's
+time went", above), written by the same function. The report prints it,
+beside the baseline's when that table has the line, and judges nothing by
+it. What it can hold is what was read: `--max-read-growth <percent>` adds up
+the `read` column over the files both tables have at one size and fails when
+this table's sum is that much above the baseline's. It needs no `# metrics`
+line, so it judges a table against one of an older build, and a file the
+library gained since is not counted as growth. The report's last line is
+always a verdict: `VERDICT: same as the baseline`, `VERDICT: N files differ
+from the baseline`, `VERDICT: no baseline`, or `VERDICT: failed:` with the
+reasons.
+
+`shared/tools/hash_check.sh --library '<root>[|<root>...]' --keep-in <dir>` is
+the two made one command: it audits the library with the build it is run
+from, asking nobody, reports against `<dir>/baseline.tsv` with no file
+allowed to differ (`--allow N` for a change that is meant to move some) and
+no more than a tenth more read, prints the time and the verdict, and ends
+with the report's status. `--accept` makes a table the baseline, this run's
+or, given alone, the last run's. Each run leaves its table, its report and a
+line in `<dir>/history.tsv`: the date, the commit, the recipe, the files,
+the files hashed, the bytes read, the scan's milliseconds by the clock and
+in the hasher, the files that differ and the verdict. That file is the
+benchmark there is: one library on one machine, a line for each build.
+**`<dir>` is outside the repository**, baseline and history with it: a table
+names every file of the library it is of. Not held by any test: the script
+itself, which was run by hand on generated files; the report it calls has
+its tests.
+
 ---
 
 

@@ -555,6 +555,21 @@ and run again a scan that resumes. A scan run by the daemon or the tablet
 says where its own time went in the record it ends on: see `metrics` under
 "Where a scan's time went" in `CONTEXT.md`.
 
+One command does both and ends in a verdict:
+
+```bash
+./tools/hash_check.sh --library '<library folder>' --keep-in <a folder outside the repository>
+```
+
+The first run writes its table and says there is no baseline; `--accept`
+makes a table the baseline. Every run after that is held against it and
+ends in one line, `VERDICT: same as the baseline` or `VERDICT: N files
+differ from the baseline`, with status 0 only when no file differs (or no
+more than `--allow N`) and the scan read no more than a tenth above what
+the baseline read for the same files. It also prints where the scan's time
+went and keeps a line of each run in `history.tsv`, in that folder. The
+folder is not in the repository because the tables name the library's files.
+
 ### One copy of what both shells run
 
 These are two Gradle builds, and neither includes the other. Code that both

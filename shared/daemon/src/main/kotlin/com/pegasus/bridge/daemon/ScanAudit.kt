@@ -89,6 +89,12 @@ import java.util.concurrent.atomic.AtomicInteger
  * scan hands to the hasher, the very first when it hashes one at a time, is
  * charged with what the process reads to get hashing started, some 300 KB
  * in the runs made so far, whatever the size of the file.
+ *
+ * `# metrics` is where the scan's time went, as one line of JSON: the object
+ * a daemon puts under `metrics` in the record a scan ends on
+ * ([com.pegasus.bridge.hasher.ScanMetrics.Snapshot.toJson]), written by the
+ * same function. The report prints it beside the baseline's and judges
+ * nothing by it: no two runs take the same time.
  */
 object ScanAudit {
 
@@ -391,6 +397,10 @@ object ScanAudit {
             if (seen.isNotEmpty() && counted.isEmpty()) "bytes not counted on this system"
             else "${counted.sum()} bytes read for them")
         readByProcess?.let { head += listOf("# read", "$it bytes by the process during the scan") }
+        // Where the scan's time went, as the scan itself measured it: the
+        // object a daemon puts in the record its scan ends on. A scan that
+        // threw has no summary and so no such line.
+        summary?.metrics?.let { head += listOf("# metrics", it.toJson().toString()) }
         request.keep?.let { head += listOf("# keep", canonical(it)) }
         if (summary == null) head += listOf("# stopped", "the scan did not finish")
         else if (summary.aborted) head += listOf("# stopped", summary.reason)

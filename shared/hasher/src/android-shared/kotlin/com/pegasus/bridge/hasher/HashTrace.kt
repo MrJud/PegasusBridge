@@ -22,6 +22,7 @@ import java.util.concurrent.atomic.AtomicInteger
  * One JSON object to a line, so that any character of a path is safe:
  *
  *     {"begin":"<path>","n":7,"size":S,"modified":M,"alone":false}
+ *     {"begin":"<path>","n":7,"size":S,"modified":M,"alone":false,"by":"<process>","at":T}
  *     {"end":7}
  *     {"suspect":"<path>","size":S,"modified":M}
  *     {"convicted":"<path>","size":S,"modified":M,"despite":T}
@@ -32,7 +33,11 @@ import java.util.concurrent.atomic.AtomicInteger
  * names its begin by the number, when the hasher has answered, whatever it
  * answered. The other four are what [start] and [finish] make of those two;
  * `despite` is there for a conviction of a file that had been set aside
- * before, and [start] says what it is.
+ * before, and [start] says what it is. A begin has `by` and `at` when the
+ * shell handed the scan a [ProcessEnds]: the name that gives the running
+ * process, and the time of the begin by the system's clock, in milliseconds.
+ * A build that knows nothing of the two reads such a line as it reads the
+ * first.
  *
  * Each line is one write to a [FileOutputStream] opened for appending, with
  * nothing between the two that keeps bytes back and nothing forced to disk. A
@@ -61,8 +66,22 @@ import java.util.concurrent.atomic.AtomicInteger
  * A JVM that stops in order runs its shutdown hooks, and one that a signal
  * from inside the hasher ended does not. So while a scan holds the trace a
  * hook writes `stopped`, and the begins above that line are nobody's fault: a
- * service told to stop, Ctrl-C, the machine going down. Android runs no hook
- * for a process it kills, so there a kill and a crash still look alike.
+ * service told to stop, Ctrl-C, the machine going down.
+ *
+ * Android runs no hook for a process it kills, and keeps a record of why
+ * each of its processes ended. There the shell hands the scan a
+ * [ProcessEnds], and the begins a process left are nobody's fault either
+ * when all of this holds: every one of them names one process and a time;
+ * that process is not the running one; the shell says it was ended from
+ * outside, and when; and no begin is later than that end, or more than
+ * [LONG_IN_HAND_MS] before it. The first of the two times keeps a record
+ * left by an earlier process of the same name from speaking for this one.
+ * The second is for a file that hangs the hasher: the only way a user ends
+ * that is to stop the app, which is an end from outside, and a file that had
+ * been in the hasher that long when the app was stopped stays a suspect and
+ * can be convicted, as it was before the record was read. Whatever fails of
+ * this, no shell, a begin with no name, no record, a reason that is a
+ * crash's, the begins are suspects as they always were.
  *
  * One trace to a process. A scan that starts while another is still going,
  * which Android allows for as long as a cancelled scan waits for its hashes,
@@ -72,7 +91,12 @@ import java.util.concurrent.atomic.AtomicInteger
  * that starts when the first has ended and the second has not is no more
  * alone than the second was.
  */
-class HashTrace private constructor(private val file: File, private val inert: Boolean) {
+class HashTrace private constructor(
+    private val file: File,
+    private val inert: Boolean,
+    private val ends: ProcessEnds? = null,
+    private val clock: () -> Long = System::currentTimeMillis
+) {
 
     /**
      * What a file was when it was begun: it is the same file only while both
@@ -90,6 +114,11 @@ class HashTrace private constructor(private val file: File, private val inert: B
     private var stopped = false
     private var finished = false
     private var hook: Thread? = null
+
+    // The running process as the shell names it, asked once. A shell that
+    // cannot say is one that was not given: no begin is marked, and none is
+    // let off.
+    private val process: String? = ends?.let { runCatching { it.current }.getOrNull() }
 
     /**
      * The files in the hasher when an earlier scan died that no scan has
@@ -142,8 +171,10 @@ class HashTrace private constructor(private val file: File, private val inert: B
     fun begin(path: String, size: Long, modified: Long, alone: Boolean): Long = synchronized(lock) {
         if (inert) return 0
         val n = ++sequence
-        write(JSONObject().put("begin", path).put("n", n).put("size", size)
-                  .put("modified", modified).put("alone", alone))
+        val line = JSONObject().put("begin", path).put("n", n).put("size", size)
+            .put("modified", modified).put("alone", alone)
+        if (process != null) line.put("by", process).put("at", clock())
+        write(line)
         n
     }
 
@@ -289,7 +320,32 @@ class HashTrace private constructor(private val file: File, private val inert: B
         JSONObject().put(key, path).put("size", mark.size).put("modified", mark.modified)
             .also { if (mark.despite != null) it.put("despite", mark.despite) }
 
-    private class Begun(val path: String, val mark: Mark, val alone: Boolean)
+    private class Begun(val path: String, val mark: Mark, val alone: Boolean, val by: String?, val at: Long?)
+
+    // Whether the begins a process left are the doing of whatever ended it
+    // from outside, and of no file: the class comment has the rule. Every
+    // number is the trace's or the shell's and is held to the other, so a
+    // line that was written wrongly, or by somebody else, lets nothing off.
+    private fun endedFromOutside(begun: Collection<Begun>): Boolean {
+        val ends = ends ?: return false
+        val by = begun.firstOrNull()?.by ?: return false
+        if (process == null || by == process) return false
+        if (begun.any { it.by != by || it.at == null }) return false
+        val end = runCatching { ends.endedFromOutside(by) }.getOrNull() ?: return false
+        // Counted from the end, which is a time of the system's: taken from
+        // a begin's own number, a line with a senseless one could wrap.
+        val earliest = end - LONG_IN_HAND_MS
+        if (earliest > end) return false
+        val inTime = begun.all { it.at != null && it.at in earliest..end }
+        if (inTime) {
+            BridgeLog.i(TAG, "process $by was ended from outside with ${begun.size} file(s) in the hasher, " +
+                             "none of them for longer than ${LONG_IN_HAND_MS / 1000} s: none is a suspect for it")
+        } else {
+            BridgeLog.i(TAG, "process $by was ended from outside, and not within ${LONG_IN_HAND_MS / 1000} s " +
+                             "after every file it had in the hasher was begun: they are suspects as before")
+        }
+        return inTime
+    }
 
     // What the file says of the scans before this one. Anything that is not
     // one of the six lines, whole, is passed over. Answers the path of the
@@ -304,7 +360,12 @@ class HashTrace private constructor(private val file: File, private val inert: B
                 line.has("begin") -> {
                     val mark = mark() ?: return@forEachLine
                     if (!line.has("n")) return@forEachLine
-                    begun[line.optLong("n")] = Begun(line.optString("begin"), mark, line.optBoolean("alone"))
+                    begun[line.optLong("n")] = Begun(
+                        line.optString("begin"), mark, line.optBoolean("alone"),
+                        by = (line.opt("by") as? String)?.takeIf { it.isNotEmpty() },
+                        // A whole number and nothing else: a time written as
+                        // text or with a fraction is no time of ours.
+                        at = (line.opt("at") as? Number)?.takeIf { it is Int || it is Long }?.toLong())
                 }
                 line.has("end") -> begun.remove(line.optLong("end"))
                 line.has("suspect") -> mark()?.let { carried[line.optString("suspect")] = it }
@@ -318,6 +379,9 @@ class HashTrace private constructor(private val file: File, private val inert: B
                 line.has("stopped") -> begun.clear()
             }
         }
+        // An end the system brought about, as it says itself: the hashes in
+        // flight are let off as an orderly stop lets them off.
+        if (begun.isNotEmpty() && endedFromOutside(begun.values)) begun.clear()
         val only = begun.values.singleOrNull()
         if (only != null && only.alone) {
             carried.remove(only.path)
@@ -358,6 +422,15 @@ class HashTrace private constructor(private val file: File, private val inert: B
          */
         const val MAX_BYTES = 16L * 1024 * 1024
 
+        /**
+         * How long a file may have been in the hasher when its process was
+         * ended from outside, and still be let off for it: two minutes. The
+         * slowest good file measured takes under ten seconds. A file that
+         * has been in hand longer than this has likely hung the hasher, and
+         * whoever stopped the app stopped it for that.
+         */
+        const val LONG_IN_HAND_MS = 120_000L
+
         // The scans of this process that have started and not finished,
         // those given a trace that does nothing among them.
         private val scans = AtomicInteger(0)
@@ -384,13 +457,20 @@ class HashTrace private constructor(private val file: File, private val inert: B
          * already, by the time it was made, and only an entry of another
          * time drops it: the one the scan that sets the file aside again
          * will record.
+         *
+         * [ends] is the shell's word on how its processes ended, or null
+         * for a shell that has none, and [clock] the time a begin is
+         * marked with, the system's unless a test hands in its own. With
+         * no [ends] the trace is written and read as it was before there
+         * was one.
          */
-        fun start(file: File, ledger: ScanLedger): HashTrace {
+        fun start(file: File, ledger: ScanLedger, ends: ProcessEnds? = null,
+                  clock: () -> Long = System::currentTimeMillis): HashTrace {
             if (scans.getAndIncrement() != 0) {
                 BridgeLog.i(TAG, "another scan is going in this process: this one keeps no trace")
                 return HashTrace(file, inert = true)
             }
-            val trace = HashTrace(file, inert = false)
+            val trace = HashTrace(file, inert = false, ends = ends, clock = clock)
             synchronized(trace.lock) {
                 try {
                     if (file.isFile) {

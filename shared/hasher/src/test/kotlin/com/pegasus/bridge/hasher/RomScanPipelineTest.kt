@@ -2829,6 +2829,34 @@ class RomScanPipelineTest {
         assertFalse(traceFile.exists(), "left behind: ${traceOnDisk()}")
     }
 
+    // The same three files in hand, and the shell says the process that
+    // had them was ended from outside a second after the last was begun:
+    // the user stopped the app. None is a suspect, so none is tried first
+    // or alone, and what this scan begins names the process it runs in.
+    @Test fun `files left in hand by a process ended from outside are hashed as any others`(): Unit = runBlocking {
+        val files = "abcdef".map { rom("nes", "$it.nes", "hash-$it") }
+        fun by(line: JSONObject, at: Long) = line.put("by", "4711").put("at", at)
+        leftByADeadScan(by(inHand(files[4], 1), 7_000), by(inHand(files[0], 2), 8_000), by(inHand(files[2], 3), 9_000),
+                        JSONObject().put("end", 2))
+        val shell = object : ProcessEnds {
+            override val current = "4802"
+            override fun endedFromOutside(process: String): Long? = if (process == "4711") 10_000L else null
+        }
+        val begun = java.util.Collections.synchronizedList(mutableListOf<JSONObject>())
+        val h = Watched(slowMs = 40) { begun += JSONObject(traceFile.readText().trim().lines().last { "begin" in it }) }
+
+        val s = RomScanPipeline(paths, h, MixedLookup(), throttleMs = { 0L }, processEnds = shell)
+            .scan(listOf(romRoot.absolutePath))
+
+        assertEquals(6, h.handed.size)
+        assertEquals(emptyList(), begun.filter { it.getBoolean("alone") }.map { File(it.getString("begin")).name },
+                     "files begun alone")
+        assertEquals(setOf("4802"), begun.map { it.getString("by") }.toSet())
+        assertTrue(begun.all { it.has("at") }, "$begun")
+        assertEquals(6, s.unmatched)
+        assertFalse(traceFile.exists(), "left behind: ${traceOnDisk()}")
+    }
+
     // The second death, with nothing else in the hasher to blame. The file
     // is not handed over a third time, or every scan from here on would end
     // where this one would have.

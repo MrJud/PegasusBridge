@@ -68,7 +68,14 @@ class RomScanPipeline(
      * wherever it likes. The system's unless a test hands in one that only
      * it moves, to read exact numbers back.
      */
-    private val nanoTime: () -> Long = System::nanoTime
+    private val nanoTime: () -> Long = System::nanoTime,
+    /**
+     * What the shell can say of how its processes ended, for the trace of
+     * the files in the hasher ([HashTrace]). Android hands one in; a shell
+     * whose processes say it themselves when they stop in order, as the
+     * daemon's JVM does, hands none.
+     */
+    private val processEnds: ProcessEnds? = null
 ) {
 
     // Refused here rather than discovered mid-scan. With no hash workers nothing
@@ -293,7 +300,7 @@ class RomScanPipeline(
         // is another: whatever ends the process then, ends it on a file
         // that was alone. A library with none of the three is scanned as
         // it always was.
-        val trace = HashTrace.start(File(paths.cache, HashTrace.FILE_NAME), ledger)
+        val trace = HashTrace.start(File(paths.cache, HashTrace.FILE_NAME), ledger, processEnds)
         val oneAtATime = trace.suspects + trace.convicted + ledger.setAside()
         val (first, rest) =
             if (oneAtATime.isEmpty()) emptyList<RomScanner.ScannedFile>() to files

@@ -630,11 +630,53 @@ What is not a death of a file's making, and how far that is known:
 - **An orderly stop of the JVM** (the service stopped or restarted, Ctrl-C,
   the machine going down) runs a shutdown hook that writes `{"stopped":true}`
   as the trace's last line, and the begins above it make no suspect and no
-  conviction. This is the desktop's: **Android runs no hook for a process it
-  kills**, so there a kill and a crash still look alike, a swipe-away and an
-  uncaught exception elsewhere in the app among them. The files in hand are
-  then suspects, tried alone, and get their verdicts; a good file is set aside
-  only by a second such end during the short time it is alone in the hasher.
+  conviction. This is the desktop's, which hands the scan no `ProcessEnds`
+  and writes and reads the trace as it did before there was one.
+- **On Android, an end the system says came from outside.** Android runs no
+  hook for a process it kills, and from Android 11 keeps a record of why each
+  process of an app ended (`ActivityManager.getHistoricalProcessExitReasons`).
+  The service hands the scan a `ProcessEnds` (`AndroidProcessEnds`, in
+  `hasher/…/ProcessExit.kt`), and every begin then carries `"by"`, the pid of
+  the process that wrote it, and `"at"`, the time by the system's clock. The
+  begins a process left make no suspect and no conviction, as above a
+  `stopped`, when all of this holds: every one names the same pid and a time;
+  that pid is not the running process's; the newest record the system has of
+  that pid is of that pid and its reason is one of the eight below; no begin
+  is later than the record's time; and none is more than two minutes before
+  it (`HashTrace.LONG_IN_HAND_MS`). Suspects and convictions carried from
+  earlier scans stay.
+
+  | ends from outside: no suspect | may be a file's doing: suspects as before |
+  |---|---|
+  | `REASON_PERMISSION_CHANGE` (8) | `REASON_CRASH_NATIVE` (5), `REASON_CRASH` (4) |
+  | `REASON_USER_REQUESTED` (10): a force stop, a swipe out of the recent apps, before Android 14 an update too | `REASON_SIGNALED` (2), whatever the signal: a native crash may first show as this |
+  | `REASON_USER_STOPPED` (11) | `REASON_LOW_MEMORY` (3), which not every device reports; it is then `REASON_SIGNALED` |
+  | `REASON_DEPENDENCY_DIED` (12) | `REASON_ANR` (6) |
+  | `REASON_OTHER` (13): the system's own housekeeping | `REASON_EXCESSIVE_RESOURCE_USAGE` (9) |
+  | `REASON_FREEZER` (14) | `REASON_EXIT_SELF` (1), `REASON_INITIALIZATION_FAILURE` (7) |
+  | `REASON_PACKAGE_STATE_CHANGE` (15) | `REASON_UNKNOWN` (0), and any number a later Android adds |
+  | `REASON_PACKAGE_UPDATED` (16) | no record of that pid at all |
+
+  What stays as it was, the files in hand suspects, tried alone, a good one
+  set aside only by a second such end while it is alone in the hasher:
+  - **No record.** A reboot, a power cut and a restart of the system's own
+    server leave none; the list is a short one and an old end falls off it;
+    Android 8 to 10 have no list and are not asked.
+  - **A kill for memory.** A file that drives the hasher to take all the
+    memory there is ends so, and nothing tells that from the system making
+    room.
+  - **The same pid as the running process**, which the system can hand out
+    again: the record may be the old process's or nobody's.
+  - **A record older than a begin**: some earlier process had that pid.
+  - **A file more than two minutes in the hasher when the app was stopped.**
+    The slowest good file measured takes under ten seconds. The only way a
+    user ends a file that hangs the hasher is to stop the app, and two such
+    stops, the second with the file alone, still set it aside.
+
+  `ExitReasonsTest` (the Android module's first unit test, on a JVM) holds
+  each constant to its number and its side; `HashTraceTest` holds the rule.
+  Not shown: no app has been stopped on a device to see the record Android
+  writes for it.
 - **A power cut does leave suspects**: a begin written long enough before it
   is on disk. The last lines may be missing or cut short, and a line that does
   not parse is passed over.
@@ -647,8 +689,11 @@ What is not a death of a file's making, and how far that is known:
   scan: its lines would be read with those the next process writes after
   them, as if all were of one.
 
-Not done: a file that hangs the hasher, which this does not help. There is no
-child process for hashing and no time limit for a file.
+Not done: a file that hangs the hasher is not ended by anything here. There
+is no child process for hashing and no time limit for a file. What ends it is
+the user stopping the app, on Android, and after two such stops, each with
+the file more than two minutes in the hasher and the second with it alone
+there, it is set aside as a file the process died on is.
 
 ### When `/sdcard` is full or read-only
 

@@ -629,7 +629,7 @@ It looks at one module, the `android-shared` directory that module adds
 included.
 
 That job also runs the unit tests of the Android modules that have any
-(`./gradlew testDebugUnitTest`, today `:core` and `:pegasus`), and holds the
+(`./gradlew testDebugUnitTest`, today `:core`, `:hasher` and `:pegasus`), and holds the
 native library, as it lies in the debug APK, to a layout for pages of 16 KB.
 It builds with the NDK the Android Gradle plugin asks for when the build
 names none, 27.0.12077973, and CMake 3.22.1, and fails if the build found

@@ -255,6 +255,203 @@ class HashTraceTest {
         assertEquals(emptySet(), alone.suspects + alone.convicted)
     }
 
+    // ---- a process the system says it ended from outside
+
+    /** A shell whose record says [ended] for the process [of], and nothing of any other. */
+    private class Shell(override val current: String, val of: String? = null, val ended: Long? = null) : ProcessEnds {
+        val asked = mutableListOf<String>()
+        override fun endedFromOutside(process: String): Long? {
+            asked += process
+            return ended.takeIf { process == of }
+        }
+    }
+
+    private fun start(shell: ProcessEnds, clock: () -> Long = { 0L }) =
+        HashTrace.start(file, ledger, shell, clock).also { opened += it }
+
+    private fun begin(path: String, n: Int, by: String?, at: Any?, alone: Boolean = false): String =
+        JSONObject(begin(path, n, alone)).also { if (by != null) it.put("by", by); if (at != null) it.put("at", at) }
+            .toString()
+
+    // Android kills a process without running its hooks, so no `stopped` is
+    // written, and says afterwards why. The user stopped the app a second
+    // after the last file was begun: the files in hand had nothing to do
+    // with it.
+    @Test fun `a trace left by a process ended from outside names no suspect`() {
+        left(begin("/roms/a", 1, by = "4711", at = 5_000L), begin("/roms/b", 2, by = "4711", at = 7_000L),
+             begin("/roms/c", 3, by = "4711", at = 9_000L), end(2))
+        val shell = Shell(current = "4802", of = "4711", ended = 10_000L)
+
+        val trace = start(shell)
+
+        assertEquals(emptySet(), trace.suspects)
+        assertEquals(emptySet(), trace.convicted)
+        assertEquals(listOf("4711"), shell.asked)
+        assertFalse(file.exists(), "nothing is left to carry")
+    }
+
+    @Test fun `and convicts no file begun alone`() {
+        left(suspect("/roms/a"), begin("/roms/a", 1, by = "4711", at = 9_000L, alone = true))
+
+        val trace = start(Shell(current = "4802", of = "4711", ended = 10_000L))
+
+        assertEquals(emptySet(), trace.convicted)
+        assertNull(trace.convicted("/roms/a", 10, 20))
+        // Still to be tried alone: it was a suspect before this process
+        // began it, and the process was ended before it had answered.
+        assertEquals(setOf("/roms/a"), trace.suspects)
+        assertEquals(listOf("suspect /roms/a"), onDisk())
+    }
+
+    // The same lines, and the system has no record of that process, or one
+    // whose reason is a crash's, which the shell answers alike: null.
+    @Test fun `a process that crashed leaves its suspects as before`() {
+        left(begin("/roms/a", 1, by = "4711", at = 5_000L), begin("/roms/b", 2, by = "4711", at = 7_000L))
+        val shell = Shell(current = "4802")
+
+        val trace = start(shell)
+
+        assertEquals(setOf("/roms/a", "/roms/b"), trace.suspects)
+        assertEquals(listOf("4711"), shell.asked)
+        trace.finish(ledger)
+
+        left(begin("/roms/c", 1, by = "4711", at = 5_000L, alone = true))
+        val again = start(Shell(current = "4802"))
+        assertEquals(setOf("/roms/c"), again.convicted)
+    }
+
+    // A file that hangs the hasher is ended by the user stopping the app,
+    // which is an end from outside. It had been in hand for longer than any
+    // good file takes, and stays what it was: a suspect, and begun alone a
+    // conviction. To the millisecond on both sides of the two minutes.
+    @Test fun `a file more than two minutes in the hasher when the app was stopped is a suspect as before`() {
+        val limit = HashTrace.LONG_IN_HAND_MS
+        assertEquals(120_000L, limit)
+        left(begin("/roms/quick", 1, by = "4711", at = 500_000L), begin("/roms/hung", 2, by = "4711", at = 400_000L - 1))
+        val stopped = Shell(current = "4802", of = "4711", ended = 400_000L + limit)
+        val trace = start(stopped)
+        // One of the two was there too long, and nothing says the stop was
+        // not for it: neither is let off. The quick one hashes and is cleared.
+        assertEquals(setOf("/roms/quick", "/roms/hung"), trace.suspects)
+        trace.finish(ledger)
+
+        left(begin("/roms/hung", 1, by = "4711", at = 400_000L - 1, alone = true))
+        assertEquals(setOf("/roms/hung"), start(stopped).convicted)
+        opened.last().finish(ledger)
+        file.delete()
+
+        left(begin("/roms/slow", 1, by = "4711", at = 400_000L, alone = true))
+        val onTheLine = start(stopped)
+        assertEquals(emptySet(), onTheLine.convicted)
+        assertEquals(emptySet(), onTheLine.suspects)
+    }
+
+    // Pids come round again, and a reboot, which leaves no record, starts
+    // them low. A record of an end before a begin was written is of some
+    // earlier process that had the name.
+    @Test fun `a record older than a begin is not this process's`() {
+        left(begin("/roms/a", 1, by = "4711", at = 5_000L), begin("/roms/b", 2, by = "4711", at = 10_001L))
+
+        val trace = start(Shell(current = "4802", of = "4711", ended = 10_000L))
+
+        assertEquals(setOf("/roms/a", "/roms/b"), trace.suspects)
+    }
+
+    // A trace an older build left, or a shell that handed none in when it
+    // was written; one begin among several without the name; a time that is
+    // no whole number, or so far off that taking it from the end would wrap.
+    @Test fun `a begin with no process named is a suspect whatever the shell says`() {
+        val shell = Shell(current = "4802", of = "4711", ended = 10_000L)
+        val cases = listOf(
+            listOf(begin("/roms/a", 1), begin("/roms/b", 2)),
+            listOf(begin("/roms/a", 1, by = "4711", at = 9_000L), begin("/roms/b", 2)),
+            listOf(begin("/roms/a", 1, by = "4711", at = 9_000L), begin("/roms/b", 2, by = "4712", at = 9_000L)),
+            listOf(begin("/roms/a", 1, by = "4711", at = 9_000L), begin("/roms/b", 2, by = "4711", at = null)),
+            listOf(begin("/roms/a", 1, by = "4711", at = "9000"), begin("/roms/b", 2, by = "4711", at = 9_000L)),
+            listOf(begin("/roms/a", 1, by = "4711", at = 9000.5), begin("/roms/b", 2, by = "4711", at = 9_000L)),
+            listOf(begin("/roms/a", 1, by = "4711", at = Long.MIN_VALUE), begin("/roms/b", 2, by = "4711", at = 9_000L)),
+            listOf(begin("/roms/a", 1, by = "", at = 9_000L), begin("/roms/b", 2, by = "", at = 9_000L)))
+        for (lines in cases) {
+            left(*lines.toTypedArray())
+            val trace = start(shell)
+            assertEquals(setOf("/roms/a", "/roms/b"), trace.suspects, lines.toString())
+            trace.finish(ledger)
+            file.delete()
+        }
+        // And with no shell at all, whatever the lines carry.
+        left(begin("/roms/a", 1, by = "4711", at = 9_000L), begin("/roms/b", 2, by = "4711", at = 9_000L))
+        assertEquals(setOf("/roms/a", "/roms/b"), start().suspects)
+    }
+
+    // The system gives a new process the pid of one that is gone. The
+    // record of that pid may then be the old one's or nobody's, and the
+    // begins are held as they were.
+    @Test fun `the running process is not asked about`() {
+        left(begin("/roms/a", 1, by = "4711", at = 9_000L), begin("/roms/b", 2, by = "4711", at = 9_500L))
+        val shell = Shell(current = "4711", of = "4711", ended = 10_000L)
+
+        val trace = start(shell)
+
+        assertEquals(setOf("/roms/a", "/roms/b"), trace.suspects)
+        assertEquals(emptyList(), shell.asked)
+    }
+
+    @Test fun `a shell that throws is one that does not know`() {
+        left(begin("/roms/a", 1, by = "4711", at = 9_000L, alone = true))
+        val throwing = object : ProcessEnds {
+            override val current = "4802"
+            override fun endedFromOutside(process: String): Long? = throw SecurityException("not for this caller")
+        }
+
+        assertEquals(setOf("/roms/a"), start(throwing).convicted)
+        opened.last().finish(ledger)
+        file.delete()
+
+        // One that cannot name the running process marks no begin, and the
+        // trace it writes is the one a scan with no shell writes.
+        val nameless = object : ProcessEnds {
+            override val current: String get() = throw IllegalStateException("no name")
+            override fun endedFromOutside(process: String): Long? = 10_000L
+        }
+        left(begin("/roms/b", 1, by = "4711", at = 9_000L, alone = true))
+        val trace = start(nameless)
+        assertEquals(setOf("/roms/b"), trace.convicted)
+        trace.begin("/roms/c", 10, 20, alone = false)
+        assertFalse(JSONObject(file.readLines().last()).let { it.has("by") || it.has("at") })
+    }
+
+    // What an earlier scan left as suspects is not this process's to let
+    // off: only the begins it left itself are.
+    @Test fun `suspects carried from an earlier scan stay`() {
+        left(suspect("/roms/old"), convicted("/roms/worse"),
+             begin("/roms/a", 1, by = "4711", at = 9_000L), begin("/roms/b", 2, by = "4711", at = 9_500L))
+
+        val trace = start(Shell(current = "4802", of = "4711", ended = 10_000L))
+
+        assertEquals(setOf("/roms/old"), trace.suspects)
+        assertEquals(setOf("/roms/worse"), trace.convicted)
+        assertEquals(listOf("suspect /roms/old", "convicted /roms/worse"), onDisk())
+    }
+
+    // What the trace writes with a shell, and that it writes what it always
+    // did with none: the two fields are the whole of the difference.
+    @Test fun `a begin carries the process and the time only when the shell names the process`() {
+        var now = 1_000L
+        val trace = start(Shell(current = "4802"), clock = { now })
+        trace.begin("/roms/a", 10, 20, alone = false)
+        now = 2_500L
+        trace.begin("/roms/b", 10, 20, alone = true)
+        val lines = file.readLines().map(::JSONObject)
+        assertEquals(listOf("4802" to 1_000L, "4802" to 2_500L), lines.map { it.getString("by") to it.getLong("at") })
+        assertEquals(setOf("begin", "n", "size", "modified", "alone", "by", "at"), lines[0].keySet())
+        trace.finish(ledger)
+        file.delete()
+
+        val plain = start()
+        plain.begin("/roms/a", 10, 20, alone = false)
+        assertEquals(setOf("begin", "n", "size", "modified", "alone"), JSONObject(file.readLines().single()).keySet())
+    }
+
     @Test fun `a second trace opened in the same process is inert and leaves the file alone`() {
         val owner = start()
         // What the owner might have written by now.

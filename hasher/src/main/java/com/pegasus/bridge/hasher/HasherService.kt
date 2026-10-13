@@ -251,7 +251,11 @@ class HasherService : Service() {
             // was written: told only of every hundredth result of a large
             // library, this could not write one in between however long the
             // hundred took.
-            reportStep    = { 1 }
+            reportStep    = { 1 },
+            // Android runs no shutdown hook for a process it kills, and
+            // says afterwards why it did: an app the user stopped is not
+            // to leave the files it was hashing as suspects.
+            processEnds   = AndroidProcessEnds(applicationContext)
         )
 
         // Told of every result, which is far more often than a record is

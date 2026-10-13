@@ -80,4 +80,6 @@ dependencies {
     // not fetch it and 7z archives using LZMA2 — most of them — fail at runtime
     // with NoClassDefFoundError rather than at build time.
     implementation("org.tukaani:xz:1.9")
+    // ExitReasonsTest, which holds Android's constants and needs no device.
+    testImplementation("junit:junit:4.13.2")
 }

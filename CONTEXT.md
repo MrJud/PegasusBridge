@@ -66,6 +66,10 @@ metadata/{gameId}.json      — per-game RA metadata (scan output)
 metadata/_index.json        — discovery index: { games[], byKey{} } (scan output)
 cache/scan-ledger.json      — what a scan settled about each file, misses included, so the
                                next one does not ask again (not read by themes)
+cache/scan-inflight.jsonl   — which files a scan has in the hasher, a line as each is begun
+                               and ended. A scan that ends in order removes it, or leaves in
+                               it only what it did not get to; what the next scan goes by
+                               when one did not end so (see §3; not read by themes)
 cache/ra-lists/{console}.tsv — RetroAchievements' list of one console's games and their
                                hashes, which a scan looks hashes up in (see §3; not read
                                by themes)
@@ -271,7 +275,7 @@ size, its date and its number are what they were:
 | `UNSUPPORTED_FORMAT` | the collection can be hashed and this file cannot: a format nobody reads or this build has no reader for (`.chd`; a `.wbfs` inside an archive), a file that is no game | `hashFailed` | 90 days, and decided again at every scan where the name says it |
 | `NO_PLAYABLE_ENTRY` | an archive that opened and holds no game of its collection | `hashFailed` | 30 days |
 | `AMBIGUOUS_ARCHIVE` | an archive in which several entries could each be the game | `hashFailed` | 7 days |
-| `UNHASHABLE` | the console of its collection read the file and refused it, or its archive or its disc's sheet is one nothing can be made of | `hashFailed` | 30 days |
+| `UNHASHABLE` | the console of its collection read the file and refused it, or its archive or its disc's sheet is one nothing can be made of. Also a file that was set aside, with a detail that begins `set aside:` (see "When the process dies in a scan") | `hashFailed` | 30 days |
 | `HASH_FAILED` | the file could not be read, or not this time | `hashFailed` | never kept |
 
 The four that come of a lookup are the first four, and a scan now ends a file
@@ -500,6 +504,90 @@ seconds of back-off, now ends there and is resumed by the next.
   when no network interface is up with an address other than a loopback or a
   link-local one. Anything else is online, a machine whose router has no line
   out included, and such a scan ends after 8 failed lookups as before.
+
+### When the process dies in a scan
+
+The hasher is C entered in the scan's own process, and a file made to mislead
+it can end that process. The ledger does not say which file was in hand, so
+the next scan came to the same file and died there again, and no file after it
+in the walk was reached. `HashTrace` (shared, so the same on both shells and
+in an audit) keeps `cache/scan-inflight.jsonl` for that: a line before the
+hasher is given a file and a line when it has answered, each one unbuffered
+write to a `java.io.FileOutputStream` opened for appending, with nothing
+forced to disk. A process that dies leaves its written lines with the system.
+
+What the next scan does with a trace that was left:
+
+- **A file begun and not ended is a suspect**, and nothing more: four files
+  are in the hasher at once, and a process is ended from outside far more
+  often than by a file. Suspects, and files already set aside, are taken out of
+  the queue and gone over first by one coroutine, one at a time, each begun as
+  `alone`; the usual producers start when it has finished. A good file gets
+  the verdict it would have had. A suspect outside the roots of the scan stays
+  in the trace for the scan that walks it.
+- **A file begun alone and not ended, with no other begun, is convicted**: the
+  process has ended twice with it in hand, the second time with nothing else
+  to blame. The scan that next comes to hash it, while its size and date are
+  the ones recorded, does not: it is `UNHASHABLE` with the detail
+  `set aside: the scan's process ended twice while this file was being hashed,
+  …`, for the 30 days of that state. A file of another size or date is another
+  file and is tried, alone. So is one whose 30 days are out, which costs a
+  real crasher one death a month and not two.
+- **A conviction is dropped by the ledger's state**, when the ledger holds the
+  file as set aside with the conviction's size and date and that ledger is on
+  disk; not by the scan having recorded it. A scan that dies between its save
+  and the end leaves both, and the scans after it skip the file on the ledger's
+  word and never come to the conviction, which left standing would set the file
+  aside again when its month is out. A scan whose save failed keeps it.
+  **Not by an entry the file was convicted in spite of.** When the 30 days are
+  out the entry is in the ledger still, with the file's size and date, and the
+  file is tried; a process that ends in that try leaves a conviction and that
+  old entry side by side. So a conviction made of a file the ledger already
+  holds as set aside takes note of when that entry was made (`despite`, on its
+  line), and only an entry of another time drops it: the one recorded by the
+  scan that sets the file aside again. Without that the conviction was dropped
+  at every start, and every scan ended on the file before it had come to any
+  other.
+- At a scan that got to its end, suspects and convictions go by the rule
+  `ScanLedger.forget` has for an entry: under a scanned root and not found, or
+  gone from disk.
+
+A scan that ends in order leaves no begin in the file, and so does one
+stopped with Cancel: the scope waits for the hashes in flight, and the lines
+are written around the interruptible call, by the coroutine, so an interrupted
+thread writes none. What it leaves is what a later scan has still to know, a
+suspect it did not get to or did not walk and a conviction no saved ledger
+answers yet, and no file when that is nothing, which is the usual end. A
+rescan that hashes nothing does not create it. One conviction can stay for as
+long as its file does: that of a file which now has a verdict that takes no
+hash (its collection is no longer one that can be hashed, or a metadata file
+vouches for it), since the scan never comes to set it aside. It costs
+nothing but the file being there and that one file being gone over first.
+
+What is not a death of a file's making, and how far that is known:
+
+- **An orderly stop of the JVM** (the service stopped or restarted, Ctrl-C,
+  the machine going down) runs a shutdown hook that writes `{"stopped":true}`
+  as the trace's last line, and the begins above it make no suspect and no
+  conviction. This is the desktop's: **Android runs no hook for a process it
+  kills**, so there a kill and a crash still look alike, a swipe-away and an
+  uncaught exception elsewhere in the app among them. The files in hand are
+  then suspects, tried alone, and get their verdicts; a good file is set aside
+  only by a second such end during the short time it is alone in the hasher.
+- **A power cut does leave suspects**: a begin written long enough before it
+  is on disk. The last lines may be missing or cut short, and a line that does
+  not parse is passed over.
+- **A second scan in one process** (Android lets a start request through while
+  a cancelled scan still waits for its hashes) is given a trace that reads and
+  writes nothing: with two scans hashing, no file is alone. So is any scan
+  that starts while another is going, whether or not that one keeps a trace.
+- A trace over 16 MiB, or one that cannot be read, is thrown away and logged.
+  So is one that could not be written again, at the start or the end of a
+  scan: its lines would be read with those the next process writes after
+  them, as if all were of one.
+
+Not done: a file that hangs the hasher, which this does not help. There is no
+child process for hashing and no time limit for a file.
 
 ### When `/sdcard` is full or read-only
 

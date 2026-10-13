@@ -270,6 +270,25 @@ class RomScanPipeline(
         val ledger = ScanLedger(File(paths.cache, ScanLedger.FILE_NAME), recipe)
         val now = BridgePaths.epochSeconds()
 
+        // What an earlier scan had in the hasher when its process died, if
+        // one did. Those files are hashed before the others and one at a
+        // time, so that a process that dies again says which of them it
+        // died of. With them the files that have been set aside, which
+        // reach the hasher again when their month is out or when the file
+        // is another: whatever ends the process then, ends it on a file
+        // that was alone. A library with none of the three is scanned as
+        // it always was.
+        val trace = HashTrace.start(File(paths.cache, HashTrace.FILE_NAME), ledger)
+        val oneAtATime = trace.suspects + trace.convicted + ledger.setAside()
+        val (first, rest) =
+            if (oneAtATime.isEmpty()) emptyList<RomScanner.ScannedFile>() to files
+            else files.partition { canonical(it.file) in oneAtATime }
+                .let { (named, others) -> named.sortedBy { canonical(it.file) } to others }
+        if (first.isNotEmpty()) {
+            BridgeLog.i(TAG, "${first.size} file(s) are hashed first and one at a time: an earlier scan's " +
+                             "process ended with them in the hasher, or they were set aside for that")
+        }
+
         val fileQueue    = Channel<RomScanner.ScannedFile>(capacity = 64)
         val hashQueue    = Channel<HashJob>(capacity = 32)
         val resultQueue  = Channel<ResultJob>(capacity = 128)
@@ -309,9 +328,20 @@ class RomScanPipeline(
                                   "(0 of $total processed)", AbortCause.KEY_REFUSED)
             }
             coroutineScope {
+                // One coroutine, so one file in the hasher. Each is gone
+                // over as any file is, by the ledger first, so one whose
+                // verdict stands is not read for having been a suspect.
+                val solo = launch(Dispatchers.Default) {
+                    for (scanned in first) {
+                        if (!isActive) break
+                        processFile(scanned, meta, walked, ledger, now, hashQueue, resultQueue, trace, alone = true)
+                        trace.cleared(canonical(scanned.file))
+                    }
+                }
+
                 val feeder = launch(Dispatchers.IO) {
                     try {
-                        for (f in files) fileQueue.send(f)
+                        for (f in rest) fileQueue.send(f)
                     } finally {
                         fileQueue.close()
                     }
@@ -319,9 +349,14 @@ class RomScanPipeline(
 
                 val producers = List(hashProducers(hashWorkers)) {
                     launch(Dispatchers.Default) {
+                        // Not before the last of the files above has left
+                        // the hasher, or none of them was alone in it. A
+                        // scan that is stopped meanwhile cancels this wait
+                        // with everything else in the scope.
+                        solo.join()
                         for (scanned in fileQueue) {
                             if (!isActive) break
-                            processFile(scanned, meta, walked, ledger, now, hashQueue, resultQueue)
+                            processFile(scanned, meta, walked, ledger, now, hashQueue, resultQueue, trace, alone = false)
                         }
                     }
                 }
@@ -401,6 +436,7 @@ class RomScanPipeline(
 
                 launch {
                     feeder.join()
+                    solo.join()
                     producers.forEach { it.join() }
                     hashQueue.close()
                     workers.forEach { it.join() }
@@ -612,6 +648,10 @@ class RomScanPipeline(
             runCatching { writeDiscoveryIndex(ledger) }
                 .onFailure { BridgeLog.w(TAG, "could not rebuild the index: ${it.message}") }
             ledger.save(writeLedger)
+            // After the save, which is what a conviction waits for. Nothing
+            // is dropped for a file that was not found: this scan did not
+            // get to its end, and forgets nothing either.
+            trace.finish(ledger)
             throw t
         } finally {
             // Cancel, not close: closing refuses new sends but leaves one already
@@ -634,8 +674,14 @@ class RomScanPipeline(
         // out. Such a scan only adds now. Nothing in between depends on the
         // order: the ledger is asked only about files the walk found, which are
         // never the ones dropped, and the counts are of this run.
-        ledger.forget(files.map { canonical(it.file) }.toSet(), roots.map { canonical(File(it)) })
+        val found = files.map { canonical(it.file) }.toSet()
+        val scannedRoots = roots.map { canonical(File(it)) }
+        ledger.forget(found, scannedRoots)
         ledger.save(writeLedger)
+        // Here and not after the index, whose write can throw: the trace is
+        // one to a process, and a scan that left without giving it back
+        // would leave every later scan of this process without one.
+        trace.finish(ledger, found, scannedRoots)
         // The index after the ledger, and not before it as it was. A write of
         // the index that fails is thrown from here, so that a scan whose index
         // is not on disk does not end as done, and nothing under it is reached.
@@ -667,7 +713,10 @@ class RomScanPipeline(
         ledger: ScanLedger,
         now: Long,
         hashQueue: Channel<HashJob>,
-        resultQueue: Channel<ResultJob>
+        resultQueue: Channel<ResultJob>,
+        trace: HashTrace,
+        /** Whether no other file is in the hasher while this one is gone over. */
+        alone: Boolean
     ) {
         val file        = scanned.file
         val collection  = scanned.collection
@@ -870,6 +919,23 @@ class RomScanPipeline(
             return
         }
 
+        // A file an earlier scan's process died on, alone in the hasher, and
+        // the same file still by its size and date. It is not handed over a
+        // third time. Kept as a file the hasher cannot hash, for the month
+        // such a verdict stands, with the reason where the ledger and an
+        // audit's table show it; the theme falls back to the file's name as
+        // it does for any of those. Here, after every verdict that needs no
+        // hash: a file that has one of those is not the hasher's to refuse.
+        trace.convicted(path, size, modified)?.let { reason ->
+            BridgeLog.w(TAG, "${file.name} is set aside: the process ended twice with it in the hasher")
+            ledger.record(path, collection, ScanLedger.State.UNHASHABLE, size, modified, now,
+                          detail = reason, extension = extension)
+            resultQueue.send(ResultJob(
+                HashJob(file, cacheKey, HashResult("", 0), collection, size, modified),
+                preRecorded = ScanLedger.State.UNHASHABLE))
+            return
+        }
+
         // Throwable: one file that cannot be read must cost that file, not the
         // scan. Cancellation still propagates.
         //
@@ -879,7 +945,18 @@ class RomScanPipeline(
         // flight before the scope could return; this interrupts the thread, so a
         // read that honours interrupts stops where it is. A java.io stream does
         // not, and a loop reading one has to look for the interrupt itself.
-        val outcome = try { runInterruptible(Dispatchers.IO) { hasher.hashDetailed(file.absolutePath, collection) } }
+        //
+        // The trace's begin and end are written out here, around the
+        // interruptible call and not inside it. That call does not come back
+        // before its block has, so the end is written when the hasher has
+        // let go of the file and not sooner; and it is written by this
+        // coroutine, whose thread nobody interrupts, where the block's
+        // thread comes back from a Cancel with its interrupt still set.
+        val outcome = try {
+                          trace.hashing(path, size, modified, alone) {
+                              runInterruptible(Dispatchers.IO) { hasher.hashDetailed(file.absolutePath, collection) }
+                          }
+                      }
                       catch (c: kotlinx.coroutines.CancellationException) { throw c }
                       catch (t: Throwable) {
                           // An interrupted read rarely says so: a file channel throws

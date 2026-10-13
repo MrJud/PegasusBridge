@@ -631,6 +631,13 @@ cat ~/.config/pegasus-frontend/bridge.json
 **Scanning does nothing.** The native hasher failed to load; `/health` says so.
 Scraping and RetroAchievements still work without it.
 
+**A file is "set aside" in the ledger.** `<dataRoot>/cache/scan-ledger.json`
+holds it as `UNHASHABLE` with a detail that begins `set aside:`. The Bridge
+ended twice while that file was being hashed, the second time with no other
+file in hand, so scans now leave it out and go through the rest of the
+library. It is tried again after 30 days, and at the next scan if the file
+changes: replace it, or `touch` it to have the same file tried once more.
+
 ---
 
 ## Licence

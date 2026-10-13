@@ -68,6 +68,11 @@ class ScanLedger(private val file: File, private val recipe: HashRecipe = HashRe
          * a cartridge cut short, a disc image with no game of that console
          * on it. The console will say the same at every scan, until the
          * file is another.
+         *
+         * And a file that is kept from the hasher: the scan's process ended
+         * twice with it in hand, the second time with no other, and its
+         * detail begins [HashTrace.SET_ASIDE]. Nothing was learnt of the
+         * file but that, so it is tried once more when the month is out.
          */
         UNHASHABLE,
         /**
@@ -429,18 +434,36 @@ class ScanLedger(private val file: File, private val recipe: HashRecipe = HashRe
      * the others again on every round.
      */
     fun forget(found: Set<String>, roots: List<String>) {
-        val under = roots.map { it.trimEnd('/', '\\') + File.separator }
-        synchronized(entries) {
-            entries.keys.removeIf { path ->
-                path !in found && (under.any { path.startsWith(it) } || !File(path).exists())
-            }
-        }
+        val stale = stale(found, roots)
+        synchronized(entries) { entries.keys.removeIf(stale) }
+    }
+
+    /**
+     * The files held as set aside, by path: [State.UNHASHABLE] with a detail
+     * that begins [HashTrace.SET_ASIDE], whether or not the entry still
+     * stands. A scan hashes these alone when it comes to hash them, a month
+     * on or when the file is another: the process has died of them before.
+     */
+    fun setAside(): Set<String> = synchronized(entries) {
+        entries.filter { it.value.state == State.UNHASHABLE && it.value.detail.startsWith(HashTrace.SET_ASIDE) }
+            .keys.toSet()
     }
 
     companion object {
         private const val TAG = "ScanLedger"
         const val FILE_NAME = "scan-ledger.json"
         const val SCHEMA_VERSION = 1
+
+        /**
+         * The rule of [forget], for a path: whether a scan of [roots] that
+         * found [found] has shown it to be stale. Here for the trace of what
+         * a scan is hashing, which drops what it holds of a file by the
+         * rule the ledger drops the file's entry by.
+         */
+        fun stale(found: Set<String>, roots: List<String>): (String) -> Boolean {
+            val under = roots.map { it.trimEnd('/', '\\') + File.separator }
+            return { path -> path !in found && (under.any { path.startsWith(it) } || !File(path).exists()) }
+        }
 
         // The number an entry carries as `algorithmVersion` is no longer a
         // constant kept here. It is worked out, for each collection, from

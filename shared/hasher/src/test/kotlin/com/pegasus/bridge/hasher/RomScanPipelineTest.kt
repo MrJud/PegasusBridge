@@ -6,7 +6,12 @@ import com.pegasus.bridge.core.FuzzyMatch
 import com.pegasus.bridge.core.NoopLog
 import com.pegasus.bridge.core.StderrLog
 import com.sun.net.httpserver.HttpServer
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
 import org.json.JSONObject
 import org.junit.jupiter.api.Assumptions.assumeTrue
 import java.io.File
@@ -2465,6 +2470,467 @@ class RomScanPipelineTest {
         // One save for each of the two results, and the one at the end.
         val ledger = "cache/${ScanLedger.FILE_NAME}"
         assertEquals(List(3) { listOf("file $ledger.tmp", "directory cache") }.flatten(), forced.toList())
+    }
+
+    // ── The trace of what is being hashed ──────────────────────
+    //
+    // The traces below are written by hand, as a scan whose process died
+    // would have left them. ScanDeathTest has processes that do die.
+
+    private val traceFile: File get() = File(paths.cache, HashTrace.FILE_NAME)
+
+    private fun inHand(f: File, n: Int, alone: Boolean = false) = JSONObject()
+        .put("begin", RomScanner.canonical(f)).put("n", n).put("size", f.length())
+        .put("modified", f.lastModified()).put("alone", alone)
+
+    /** A line the scan before carried over: "suspect" or "convicted". */
+    private fun carried(what: String, f: File) = JSONObject()
+        .put(what, RomScanner.canonical(f)).put("size", f.length()).put("modified", f.lastModified())
+
+    private fun leftByADeadScan(vararg lines: JSONObject) =
+        traceFile.writeText(lines.joinToString("") { "$it\n" })
+
+    /** The trace on disk, each line as the one thing it says and of which file, by its name. */
+    private fun traceOnDisk(): List<String> =
+        if (!traceFile.exists()) emptyList() else traceLines(traceFile.readText())
+
+    private fun traceLines(text: String): List<String> = text.lines().filter { it.isNotEmpty() }.map {
+        val j = JSONObject(it)
+        val key = listOf("begin", "end", "suspect", "convicted", "cleared", "stopped").first(j::has)
+        "$key ${File(j.get(key).toString()).name}"
+    }
+
+    /** A line as it comes back from the file: a number written as a Long is read as what holds it. */
+    private fun asRead(line: JSONObject): Map<String, Any> = JSONObject(line.toString()).toMap()
+
+    /**
+     * Hashes a file to its content, and keeps when it was handed each file
+     * and when it had answered: "> name" and "< name", in the order they
+     * happened. [slowMs] makes a hash long enough that another begun
+     * beside it would show between the two. [during] runs inside the call.
+     */
+    private class Watched(private val slowMs: Long = 0, private val during: (File) -> Unit = {}) : RomHasher {
+        val events: MutableList<String> = java.util.Collections.synchronizedList(mutableListOf())
+        val handed: List<String> get() = events.toList().filter { it.startsWith("> ") }.map { it.drop(2) }
+        override fun hash(path: String): HashResult? {
+            val f = File(path)
+            events += "> ${f.name}"
+            try {
+                during(f)
+                if (slowMs > 0) Thread.sleep(slowMs)
+                val text = f.readText().removeSuffix(NUL).trim()
+                return HashResult(text, 7, fileMd5 = "md5-$text", fileCrc32 = "crc-$text")
+            } finally {
+                events += "< ${f.name}"
+            }
+        }
+    }
+
+    private fun state(f: File): String = ledgerEntry(f).getString("state")
+
+    // The line has to be with the system before the hasher has the file: a
+    // process that dies inside the call writes nothing after.
+    @Test fun `the trace names a file before the hasher is given it`(): Unit = runBlocking {
+        val f = rom("nes", "Lantern Keep.nes", "hash-lantern")
+        var seen = ""
+        val h = Watched { seen = traceFile.readText() }
+
+        pipeline(h, MixedLookup()).scan(listOf(romRoot.absolutePath))
+
+        assertEquals(asRead(inHand(f, 1)), JSONObject(seen.trim()).toMap())
+        assertEquals("\n", seen.takeLast(1), "the line is not whole")
+    }
+
+    @Test fun `a scan nothing dies in leaves no trace`(): Unit = runBlocking {
+        repeat(6) { rom("nes", "Game$it.nes", "hash-$it") }
+        rom("nes", "Lantern Keep.nes", "hash-smb")
+        var during = emptyList<String>()
+        val h = Watched { if (it.name == "Game5.nes") during = traceOnDisk() }
+
+        val s = pipeline(h, MapLookup(catalogue)).scan(listOf(romRoot.absolutePath))
+
+        assertEquals(7, h.handed.size)
+        assertTrue("begin Game5.nes" in during, "the trace while the scan ran: $during")
+        assertFalse(traceFile.exists(), "left behind: ${traceOnDisk()}")
+        assertEquals(counts(new = 1, cached = 0, skipped = 0, unmatched = 6, incompatible = 0,
+                            hashFailed = 0, failedLookups = 0), s.counts())
+
+        // And a scan that hashes nothing does not so much as make the file.
+        val made = java.util.Collections.synchronizedList(mutableListOf<Boolean>())
+        val s2 = pipeline(Watched(), MapLookup(catalogue))
+            .scan(listOf(romRoot.absolutePath), onProgress = { made += traceFile.exists() })
+        assertEquals(counts(new = 0, cached = 1, skipped = 0, unmatched = 6, incompatible = 0,
+                            hashFailed = 0, failedLookups = 0), s2.counts())
+        assertFalse(made.isEmpty() || made.any { it }, "a scan that hashed nothing wrote a trace: $made")
+        assertFalse(traceFile.exists())
+    }
+
+    // One death proves nothing of a file: four are in the hasher at once,
+    // and a process is killed for reasons that are none of theirs. So the
+    // files it had in hand are tried before the others and one at a time.
+    // A good one hashes, and has the verdict it would have had.
+    @Test fun `a file left in hand by a scan that died is hashed first and alone`(): Unit = runBlocking {
+        val files = "abcdef".map { rom("nes", "$it.nes", "hash-$it") }
+        leftByADeadScan(inHand(files[4], 1), inHand(files[0], 2), inHand(files[2], 3),
+                        JSONObject().put("end", 2))
+        var during = ""
+        val h = Watched(slowMs = 40) { if (it.name == "e.nes") during = traceFile.readText() }
+
+        val s = pipeline(h, MixedLookup()).scan(listOf(romRoot.absolutePath))
+
+        assertEquals(listOf("> c.nes", "< c.nes", "> e.nes", "< e.nes"), h.events.take(4))
+        assertEquals(setOf("a.nes", "b.nes", "d.nes", "f.nes"), h.handed.drop(2).toSet())
+        // While the second was in hand: the first is cleared, and the second
+        // is begun as the only one, which is what a death then is held to.
+        // They are taken in the order of their paths, whatever order the
+        // dead scan had begun them in.
+        assertEquals(listOf("suspect e.nes", "suspect c.nes", "begin c.nes", "end 1", "cleared c.nes", "begin e.nes"),
+                     traceLines(during))
+        assertEquals(asRead(inHand(files[4], 2, alone = true)), JSONObject(during.trim().lines().last()).toMap())
+        assertEquals(6, s.unmatched)
+        assertEquals(List(6) { "NOT_FOUND" }, files.map(::state))
+        assertFalse(traceFile.exists(), "left behind: ${traceOnDisk()}")
+    }
+
+    // The second death, with nothing else in the hasher to blame. The file
+    // is not handed over a third time, or every scan from here on would end
+    // where this one would have.
+    @Test fun `a file the process died on alone is set aside with a reason and is not hashed`(): Unit = runBlocking {
+        val files = "abcd".map { rom("nes", "$it.nes", "hash-$it") }
+        leftByADeadScan(carried("suspect", files[1]), carried("suspect", files[2]),
+                        inHand(files[1], 1, alone = true), JSONObject().put("end", 1),
+                        JSONObject().put("cleared", RomScanner.canonical(files[1])),
+                        inHand(files[2], 2, alone = true))
+        val h = Watched(); val l = MixedLookup()
+
+        val s = pipeline(h, l).scan(listOf(romRoot.absolutePath))
+
+        assertEquals(setOf("a.nes", "b.nes", "d.nes"), h.handed.toSet())
+        assertEquals(listOf("NOT_FOUND", "NOT_FOUND", "UNHASHABLE", "NOT_FOUND"), files.map(::state))
+        val detail = ledgerEntry(files[2]).getString("detail")
+        assertTrue(detail.startsWith("set aside: "), detail)
+        assertEquals(HashTrace.SET_ASIDE_REASON, detail)
+        assertEquals(counts(new = 0, cached = 0, skipped = 0, unmatched = 3, incompatible = 0,
+                            hashFailed = 1, failedLookups = 0), s.counts())
+        // The ledger that says so is on disk, so the trace has no more to say.
+        assertFalse(traceFile.exists(), "left behind: ${traceOnDisk()}")
+
+        // It stands as any verdict of its kind does, and is counted as one.
+        val h2 = Watched()
+        val s2 = pipeline(h2, MixedLookup()).scan(listOf(romRoot.absolutePath))
+        assertEquals(emptyList(), h2.handed)
+        assertEquals(counts(new = 0, cached = 0, skipped = 0, unmatched = 3, incompatible = 0,
+                            hashFailed = 1, failedLookups = 0), s2.counts())
+    }
+
+    // Set aside under the number of the name the scan found the file by, as
+    // every verdict is: for a link called Disc.wbfs to a Disc.img that is
+    // the number with the reader in it, and the one the next scan asks by.
+    // Kept under the other, the verdict stood for no scan, and the file was
+    // handed over again by the one after.
+    @Test fun `a link that is set aside stays so at the next scan`(): Unit = runBlocking {
+        val store = Files.createTempDirectory("hasher-store").toFile()
+        try {
+            val lying = File(store, "Disc.img").apply { writeText(romText("hash-linked")) }
+            val link = File(File(romRoot, "wii").apply { mkdirs() }, "Disc.wbfs")
+            try {
+                Files.createSymbolicLink(link.toPath(), lying.toPath())
+            } catch (e: Exception) {
+                assumeTrue(false, "Symbolic links are unavailable: ${e.message}")
+            }
+            leftByADeadScan(inHand(link, 1, alone = true))
+
+            val h = Watched()
+            pipeline(h, MixedLookup()).scan(listOf(romRoot.absolutePath))
+
+            assertEquals(emptyList(), h.handed)
+            assertEquals("UNHASHABLE" to HashRecipe("none").versionFor(CollectionRef.inferred("wii"), "wbfs"),
+                         ledgerEntry(lying).let { it.getString("state") to it.getInt("algorithmVersion") })
+
+            val h2 = Watched()
+            val s2 = pipeline(h2, MixedLookup()).scan(listOf(romRoot.absolutePath))
+            assertEquals(emptyList(), h2.handed, "handed over by the scan after")
+            assertEquals(1, s2.hashFailed)
+            assertFalse(traceFile.exists(), "left behind: ${traceOnDisk()}")
+        } finally {
+            store.deleteRecursively()
+        }
+    }
+
+    // The way back for a file that was set aside: it is another file by its
+    // size or its date, as one that was replaced or touched is. Tried alone
+    // all the same, since the name is one the process has died under.
+    @Test fun `a set aside file that changed is hashed again`(): Unit = runBlocking {
+        val files = "abc".map { rom("nes", "$it.nes", "hash-$it") }
+        val killer = files[1]
+        leftByADeadScan(inHand(killer, 1, alone = true))
+        pipeline(Watched(), MixedLookup()).scan(listOf(romRoot.absolutePath))
+        assertEquals("UNHASHABLE", state(killer))
+
+        // Changed, with the conviction still in the trace as well, as it is
+        // when the scan that set the file aside died before it had done
+        // with the trace.
+        leftByADeadScan(carried("convicted", killer))
+        killer.writeText(romText("hash-b-fixed"))
+        val h = Watched(slowMs = 30); val l = MixedLookup()
+        pipeline(h, l).scan(listOf(romRoot.absolutePath))
+
+        assertEquals(listOf("> b.nes", "< b.nes"), h.events.toList())
+        assertEquals(listOf("hash-b-fixed"), l.asked.toList())
+        assertEquals("NOT_FOUND", state(killer))
+        assertEquals("", ledgerEntry(killer).optString("detail"))
+        assertFalse(traceFile.exists(), "left behind: ${traceOnDisk()}")
+
+        // And where the conviction is all there is, the ledger of the scan
+        // that set the file aside never having been saved. It is of the
+        // file as it was by its size and date, and this is another.
+        File(paths.cache, ScanLedger.FILE_NAME).delete()
+        leftByADeadScan(carried("convicted", killer))
+        killer.writeText(romText("hash-b-fixed-once-more"))
+        var during = ""
+        val h2 = Watched(slowMs = 30) { if (it.name == "b.nes") during = traceFile.readText() }
+        pipeline(h2, MixedLookup()).scan(listOf(romRoot.absolutePath))
+
+        assertEquals(listOf("> b.nes", "< b.nes"), h2.events.take(2))
+        assertEquals(asRead(inHand(killer, 1, alone = true)), JSONObject(during.trim().lines().last()).toMap(),
+                     "the trace while the file was in hand")
+        assertEquals(List(3) { "NOT_FOUND" }, files.map(::state))
+        assertFalse(traceFile.exists(), "left behind: ${traceOnDisk()}")
+    }
+
+    // A theme scans one collection at a time, and a scan of one says
+    // nothing of the files of another: what is known of those is kept as
+    // it is, for the scan that walks them.
+    @Test fun `a suspect outside the roots is kept for the scan that walks it`(): Unit = runBlocking {
+        val near = rom("nes", "Near.nes", "hash-near")
+        rom("nes", "Other.nes", "hash-other")
+        val elsewhere = Files.createTempDirectory("hasher-elsewhere").toFile()
+        try {
+            val far = File(File(elsewhere, "snes").apply { mkdirs() }, "Far.sfc").apply { writeText(romText("hash-far")) }
+            File(elsewhere, "snes/Beside.sfc").writeText(romText("hash-beside"))
+            leftByADeadScan(inHand(far, 1), inHand(near, 2))
+
+            val h = Watched(slowMs = 30)
+            pipeline(h, MixedLookup()).scan(listOf(romRoot.absolutePath))
+            assertEquals(listOf("> Near.nes", "< Near.nes"), h.events.take(2))
+            assertEquals(listOf("suspect Far.sfc"), traceOnDisk())
+
+            val h2 = Watched(slowMs = 30)
+            pipeline(h2, MixedLookup()).scan(listOf(elsewhere.absolutePath))
+            assertEquals(listOf("> Far.sfc", "< Far.sfc", "> Beside.sfc", "< Beside.sfc"), h2.events.toList())
+            assertFalse(traceFile.exists(), "left behind: ${traceOnDisk()}")
+        } finally {
+            elsewhere.deleteRecursively()
+        }
+    }
+
+    /**
+     * A ledger that holds [f] as set aside, the verdict reached [daysAgo]
+     * days back, and with the hasher of today unless it is [anotherHasher].
+     */
+    private fun setAsideInLedger(f: File, daysAgo: Long, anotherHasher: Boolean = false) {
+        val number = HashRecipe("none").versionFor(CollectionRef.inferred(f.parentFile.name))
+        File(paths.cache, ScanLedger.FILE_NAME).writeText(JSONObject()
+            .put("schemaVersion", ScanLedger.SCHEMA_VERSION)
+            .put("entries", JSONObject().put(RomScanner.canonical(f), JSONObject()
+                .put("state", "UNHASHABLE").put("checkedAt", BridgePaths.epochSeconds() - daysAgo * 24 * 60 * 60)
+                .put("fileSize", f.length()).put("lastModified", f.lastModified())
+                .put("algorithmVersion", if (anotherHasher) number + 1 else number)
+                .put("detail", HashTrace.SET_ASIDE_REASON)))
+            .toString())
+    }
+
+    // Set aside is for a month and not for good: nothing was learnt of the
+    // file but that the process ended. The scan that set it aside may have
+    // died after its ledger was saved and before the trace was put right,
+    // and then the conviction is still in the trace. Believed there, it
+    // would set the file aside again now, and every month after.
+    @Test fun `a set aside file whose month is out is tried alone`(): Unit = runBlocking {
+        val files = "abc".map { rom("nes", "$it.nes", "hash-$it") }
+        setAsideInLedger(files[1], daysAgo = 31)
+        leftByADeadScan(carried("convicted", files[1]))
+        var during = ""
+        val h = Watched(slowMs = 30) { if (it.name == "b.nes") during = traceFile.readText() }
+
+        pipeline(h, MixedLookup()).scan(listOf(romRoot.absolutePath))
+
+        assertEquals(listOf("> b.nes", "< b.nes"), h.events.take(2))
+        assertEquals(asRead(inHand(files[1], 1, alone = true)), JSONObject(during.trim()).toMap(),
+                     "the trace while the file was in hand")
+        assertEquals(List(3) { "NOT_FOUND" }, files.map(::state))
+        assertFalse(traceFile.exists(), "left behind: ${traceOnDisk()}")
+    }
+
+    // The try a month on is of a file that may end the process as it did,
+    // and the scan after that death finds two things: the file begun alone,
+    // and in the ledger the entry of a month ago, with the file's size and
+    // date. That entry has been acted on once already and stands no longer,
+    // which is why the file was tried. Taken for the word that the
+    // conviction has been acted on, it cleared the conviction at every
+    // start: the file was handed over again, first, and every scan from then
+    // on ended there. The same for an entry reached with another hasher,
+    // which a new build tries again without waiting for the month.
+    @Test fun `a file the process died on when its month was out is set aside again and not hashed`(): Unit =
+        runBlocking {
+            val files = "abc".map { rom("nes", "$it.nes", "hash-$it") }
+            for (monthOut in listOf(true, false)) {
+                setAsideInLedger(files[1], daysAgo = if (monthOut) 31 else 1, anotherHasher = !monthOut)
+                val was = ledgerEntry(files[1]).getLong("checkedAt")
+                leftByADeadScan(inHand(files[1], 1, alone = true))
+                val h = Watched()
+
+                val s = pipeline(h, MixedLookup()).scan(listOf(romRoot.absolutePath))
+
+                val said = if (monthOut) "the month was out" else "the hasher was another"
+                assertEquals(setOf("a.nes", "c.nes"), h.handed.toSet(), said)
+                assertEquals(1, s.hashFailed, said)
+                assertEquals("UNHASHABLE", state(files[1]), said)
+                assertEquals(HashTrace.SET_ASIDE_REASON, ledgerEntry(files[1]).getString("detail"), said)
+                // Set aside by this scan, for a month from now.
+                assertTrue(ledgerEntry(files[1]).getLong("checkedAt") > was, said)
+                assertFalse(traceFile.exists(), "$said, left behind: ${traceOnDisk()}")
+            }
+        }
+
+    // And at the end of a scan as at its start. One that is stopped before
+    // it comes to the file, here for want of a key, saves its ledger and has
+    // not acted on the conviction: the entry in that ledger is the old one.
+    @Test fun `a conviction is kept by a scan that ends before it comes to the file`(): Unit = runBlocking {
+        val files = "abc".map { rom("nes", "$it.nes", "hash-$it") }
+        setAsideInLedger(files[1], daysAgo = 31)
+        leftByADeadScan(inHand(files[1], 1, alone = true))
+
+        val s = pipeline(Watched(), NoKeyLookup()).scan(listOf(romRoot.absolutePath))
+
+        assertTrue(s.aborted)
+        assertEquals(listOf("convicted b.nes"), traceOnDisk())
+
+        val h = Watched()
+        pipeline(h, MixedLookup()).scan(listOf(romRoot.absolutePath))
+        assertEquals(setOf("a.nes", "c.nes"), h.handed.toSet())
+        assertEquals("UNHASHABLE", state(files[1]))
+        assertFalse(traceFile.exists(), "left behind: ${traceOnDisk()}")
+    }
+
+    // The Stop button. The scope waits for the hashes in flight, so each
+    // has its end, and the scan after this one has nobody to try alone.
+    @Test fun `a cancelled scan leaves no file in hand`(): Unit = runBlocking {
+        repeat(4) { rom("nes", "Game$it.nes", "hash-$it") }
+        rom("nes", "Hangs.nes", "hash-hangs")
+        val hanging = CompletableDeferred<Unit>()
+        val h = Watched { if (it.name == "Hangs.nes") { hanging.complete(Unit); Thread.sleep(15_000) } }
+
+        var whileHanging = emptyList<String>()
+        withTimeout(10_000) {
+            val scan = launch(Dispatchers.Default) { pipeline(h, MixedLookup()).scan(listOf(romRoot.absolutePath)) }
+            hanging.await()
+            whileHanging = traceOnDisk()
+            scan.cancelAndJoin()
+        }
+
+        assertTrue("begin Hangs.nes" in whileHanging, "$whileHanging")
+        assertFalse(traceFile.exists(), "left behind: ${traceOnDisk()}")
+    }
+
+    // A Cancel interrupts the thread a hash runs on, and the native hasher
+    // does not notice: it comes back when it is done, with the interrupt
+    // still set. Its end has to be written all the same. An end lost there,
+    // while a suspect is in hand alone, is a begin made alone with no end:
+    // a good file set aside for a month by a scan nobody killed.
+    @Test fun `a scan cancelled while a suspect is hashed alone sets nothing aside`(): Unit = runBlocking {
+        val files = "abc".map { rom("nes", "$it.nes", "hash-$it") }
+        leftByADeadScan(inHand(files[1], 1), inHand(files[0], 2), JSONObject().put("end", 2))
+        val entered = CompletableDeferred<Unit>()
+        val interrupted = CompletableDeferred<Unit>()
+        var cameBackInterrupted = false
+        val deaf = object : RomHasher {
+            override fun hash(path: String): HashResult? {
+                entered.complete(Unit)
+                var seen = false
+                val until = System.nanoTime() + 5_000_000_000
+                while (!seen && System.nanoTime() < until) {
+                    try { Thread.sleep(5) } catch (e: InterruptedException) { seen = true }
+                }
+                // Goes on with its work, as C that knows nothing of the
+                // interrupt does, and hands the flag back as it found it.
+                Thread.sleep(50)
+                interrupted.complete(Unit)
+                if (seen) Thread.currentThread().interrupt()
+                cameBackInterrupted = seen
+                return HashResult("hash-b", 7)
+            }
+        }
+
+        withTimeout(10_000) {
+            val scan = launch(Dispatchers.Default) { pipeline(deaf, MixedLookup()).scan(listOf(romRoot.absolutePath)) }
+            entered.await()
+            scan.cancel()
+            interrupted.await()
+            scan.join()
+        }
+
+        assertTrue(cameBackInterrupted, "the hasher was never interrupted, so this showed nothing")
+        // Not tried to its end, so still a suspect; and nothing begun.
+        assertEquals(listOf("suspect b.nes"), traceOnDisk())
+
+        val h = Watched(slowMs = 30)
+        pipeline(h, MixedLookup()).scan(listOf(romRoot.absolutePath))
+        assertEquals(listOf("> b.nes", "< b.nes"), h.events.take(2))
+        assertEquals(List(3) { "NOT_FOUND" }, files.map(::state))
+        assertFalse(traceFile.exists(), "left behind: ${traceOnDisk()}")
+    }
+
+    // The scan that set the file aside got its ledger saved, in one of the
+    // saves it makes as it goes, and died before it came to the trace. Every
+    // scan since skips the file on the ledger's word and never comes to the
+    // conviction. So the ledger is what a conviction is dropped by.
+    @Test fun `a conviction the ledger already carries is dropped by a scan that skips the file`(): Unit = runBlocking {
+        val files = "abc".map { rom("nes", "$it.nes", "hash-$it") }
+        setAsideInLedger(files[1], daysAgo = 1)
+        leftByADeadScan(carried("convicted", files[1]))
+        var during = listOf("never asked")
+        val h = Watched { during = traceOnDisk() }
+
+        val s = pipeline(h, MixedLookup()).scan(listOf(romRoot.absolutePath))
+
+        assertEquals(setOf("a.nes", "c.nes"), h.handed.toSet())
+        assertFalse("convicted b.nes" in during, "the trace while the scan ran: $during")
+        assertEquals(1, s.hashFailed)
+        assertEquals("UNHASHABLE", state(files[1]))
+        assertFalse(traceFile.exists(), "left behind: ${traceOnDisk()}")
+    }
+
+    // The other way about: the verdict is in memory and the ledger could
+    // not be written. Dropped now, the conviction would be nowhere, and the
+    // next scan would hand the file over a third time.
+    @Test fun `a conviction is kept when the ledger could not be saved`(): Unit = runBlocking {
+        val files = "abc".map { rom("nes", "$it.nes", "hash-$it") }
+        leftByADeadScan(inHand(files[1], 1, alone = true))
+        val ledger = File(paths.cache, ScanLedger.FILE_NAME)
+        BridgePaths.force = object : BridgePaths.Force() {
+            override fun file(file: File, fd: java.io.FileDescriptor) {
+                if (file.name.startsWith(ScanLedger.FILE_NAME)) throw java.io.IOException("no room")
+            }
+        }
+        val h = Watched()
+        val s = try {
+            pipeline(h, MixedLookup()).scan(listOf(romRoot.absolutePath))
+        } finally {
+            BridgePaths.force = BridgePaths.Force()
+        }
+
+        assertEquals(setOf("a.nes", "c.nes"), h.handed.toSet())
+        assertEquals(1, s.hashFailed)
+        assertFalse(ledger.exists(), "the ledger was written after all, and this showed nothing")
+        assertEquals(listOf("convicted b.nes"), traceOnDisk())
+
+        // With a ledger that can be written the file is set aside again,
+        // unread, and this time the trace is done with it.
+        val h2 = Watched()
+        pipeline(h2, MixedLookup()).scan(listOf(romRoot.absolutePath))
+        assertEquals(setOf("a.nes", "c.nes"), h2.handed.toSet())
+        assertEquals("UNHASHABLE", state(files[1]))
+        assertFalse(traceFile.exists(), "left behind: ${traceOnDisk()}")
     }
 
     private fun md5(text: String): String =

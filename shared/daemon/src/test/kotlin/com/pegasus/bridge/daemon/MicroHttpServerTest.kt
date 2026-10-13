@@ -625,6 +625,22 @@ class MicroHttpServerTest {
         assertEquals(0, reached.get())
     }
 
+    // The other line the server writes about a request, and the one answer it
+    // makes up itself: for a handler that threw. `/credentials` is handed the
+    // Steam key in its query, and neither is made of the query.
+    @Test fun `a handler that throws is logged by its path, and neither the line nor the answer holds the query`() {
+        val log = RecordingLog()
+        startWith { throw IllegalStateException("could not write") }
+        BridgeLog.current = log
+        get("/credentials?steamApiKey=SENTINEL-STEAM-KEY&steamId=76561198000000000").use { r ->
+            assertEquals(500, r.code)
+            val body = r.body!!.string()
+            assertTrue("could not write" in body, body)
+            assertFalse("SENTINEL" in body || "steamApiKey" in body || "7656" in body, body)
+        }
+        assertEquals(listOf("E handler threw for /credentials"), log.lines.toList())
+    }
+
     // A browser's request has a dozen headers that refuse it. The line names
     // the one that says most about where the request came from, and the same
     // one every time, which the order of a hash map would not give.

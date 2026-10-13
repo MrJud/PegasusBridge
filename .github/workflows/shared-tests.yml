@@ -317,11 +317,11 @@ jobs:
     # The other jobs run the classes and the library where Gradle keeps them.
     # What a user is handed is neither: it is the archive package.sh makes,
     # with a Java runtime cut down to the modules the jars were found to need,
-    # the library beside the jars and a launcher that names both. A module
-    # left out of the runtime, or a library the launcher's path does not
-    # reach, starts on no user's machine and fails no test above. So the
-    # archive is built here as a release builds it, and the daemon is started
-    # out of it.
+    # the library beside the jars and a launcher that names both. A runtime
+    # the daemon does not start on, or a library the launcher's path does
+    # not reach, is a bundle that works on no user's machine and fails no
+    # test above. So the archive is built here as a release builds it, and
+    # the daemon is started out of it.
     #
     # A job of its own because this one does write to the checkout:
     # installDist, which package.sh runs, builds the native library in place,
@@ -331,7 +331,11 @@ jobs:
     # the runner's temporary directory, so it has no credentials, its start
     # reads the configuration, and /health reads nothing else. That the
     # hasher in the bundle hashes a file is not held here, only that it
-    # loads; what it hashes is for the jobs above.
+    # loads; what it hashes is for the jobs above. Nor is every module of
+    # the runtime held, only those a start and /health load: a bundle made
+    # without java.net.http and the two security providers package.sh adds
+    # by hand, which a request to any service needs, passes this job as the
+    # whole one does.
     name: packaged daemon
     runs-on: ubuntu-latest
     timeout-minutes: 10

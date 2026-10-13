@@ -1548,9 +1548,11 @@ Three builds compile that list:
   library it refused: ninja leaves the output of a failed step in place, and
   with the option put back as it was would take that file for built;
   `shared/tests/page_size_check_test.py` holds that check to libraries made
-  to fail it, in CI's `native` job, since no job builds Android. **It has
-  been loaded on no device with 16 KB pages**: none is at hand, the tablet
-  has pages of 4 KB, and what is checked is what the file says of itself.
+  to fail it, in CI's `native` job: the job that builds Android
+  (`android.yml`) runs the check after each of its two links and, where all
+  is well, never sees it refuse. **It has been loaded on no device with
+  16 KB pages**: none is at hand, the tablet has pages of 4 KB, and what is
+  checked is what the file says of itself.
 - **Linux** — `shared/native/build.sh`, into `shared/native/out/librahasher.so`,
   which is **committed**, with `librahasher.manifest` beside it: the SHA-256 of
   the library and of every file it was compiled from, the flags and the

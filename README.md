@@ -577,8 +577,9 @@ Android `hasher/` module is what only Android has:
 - `ScanCollaborators` — where the service gets its hasher, its lookup and
   that reading of the connection.
 
-So a change under `android-shared` needs both checks, and CI runs only the
-first:
+So a change under `android-shared` needs both checks. CI runs the first in
+`shared-tests.yml` and the second in `android.yml`, on every push that changes
+more than Markdown:
 
 ```bash
 cd shared && ./gradlew test && ./tests/check_test_counts.py   # the shared tests
@@ -591,7 +592,7 @@ against API 35, so it notices a call the Android class library does not have at
 all. It says nothing of one that came after Android 8, which the app installs
 from (`minSdk` 26): `PowerManager.currentThermalStatus`, of Android 10, compiled
 for as long as only a `catch` stood around it. Lint is the check for `minSdk`,
-and CI does not run it either:
+and the same job of CI runs it:
 
 ```bash
 ./gradlew :hasher:lintDebug   # NewApi: a call newer than minSdk with no version asked first
@@ -599,6 +600,13 @@ and CI does not run it either:
 
 It looks at one module, the `android-shared` directory that module adds
 included.
+
+That job also runs the unit tests of the Android modules that have any
+(`./gradlew testDebugUnitTest`, today `:core` and `:pegasus`), and holds the
+native library, as it lies in the debug APK, to a layout for pages of 16 KB.
+It builds with the NDK the Android Gradle plugin asks for when the build
+names none, 27.0.12077973, and CMake 3.22.1, and fails if the build found
+others. The release APK is built by no job.
 
 ---
 

@@ -3,8 +3,10 @@
 # desktop with nothing in between. Beside them, once and with no JDK, the test of
 # install.sh, which points the Pegasus themes at the data root.
 #
-# Deliberately narrow: no Android build (it needs the SDK and NDK). That comes
-# later. The golden hashes in :hasher run native code, and in the `test` job it
+# Deliberately narrow: no Android build here. It needs the SDK and the NDK, and
+# is the workflow beside this one, android.yml, which says what it downloads
+# from Google's SDK repository. The golden hashes in :hasher run native code,
+# and in the `test` job it
 # is the librahasher.so committed in native/out, not a fresh build: the library
 # every checkout's tests load. It needs glibc 2.14 or newer, and on a system
 # where it will not load those tests fail and say so rather than skip. A check
@@ -149,9 +151,10 @@ jobs:
         working-directory: shared
         run: ./tests/native_checks_test.py "$RUNNER_TEMP/native-tools"
 
-      # No job builds Android, where this check runs after every link, so
-      # here is where the check itself is held: on libraries linked for
-      # pages of 4 KB and of 16 KB with the image's own gcc.
+      # The Android build, where this check runs after every link, is the
+      # job of android.yml, and a run where all is well there never sees it
+      # refuse. So here is where the check itself is held: on libraries
+      # linked for pages of 4 KB and of 16 KB with the image's own gcc.
       - name: The check of the Android library's page size passes its own tests
         working-directory: shared
         run: ./tests/page_size_check_test.py

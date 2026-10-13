@@ -1,0 +1,119 @@
+# The Android app, built on every push and pull request that changes more
+# than Markdown. The scan the tablet runs is compiled from
+# shared/hasher/src/android-shared, the same files the tests of shared/ run on
+# a JVM, and until now nothing but a build by hand said that they still compile
+# against Android, call nothing newer than the Android the app installs on,
+# and come out with a native library a device with pages of 16 KB can load.
+#
+# In a file of its own, and not a job of shared-tests.yml, for the first line
+# below: this is the slow job, and a push that only edits the README or
+# CONTEXT.md should not wait on it. A branch with a pull request open runs it
+# twice, once for the push and once for the request, as every job of the other
+# workflow is run twice.
+#
+# What it builds is the debug variant. Its library is compiled from the same C
+# with the same linker options as the release's, and the check after the link
+# runs for both, but the file checked here is the debug one: the release APK,
+# which is what a device gets, is still built and tried by hand.
+#
+# What it downloads: the Gradle distribution from services.gradle.org, held to
+# distributionSha256Sum in gradle/wrapper/gradle-wrapper.properties; the
+# Android Gradle plugin, the Kotlin plugin and every library from Google's
+# Maven repository, Maven Central and the Gradle plugin portal, and
+# NewPipeExtractor from JitPack, all held to the checksums in
+# gradle/verification-metadata.xml; and three packages of the Android SDK from
+# Google's SDK repository, which nothing here holds to a checksum but
+# sdkmanager itself: the NDK, CMake and the build tools named below.
+name: android app
+
+on:
+  push:
+    paths-ignore:
+      - '**.md'
+  pull_request:
+    paths-ignore:
+      - '**.md'
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Android app
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      # JDK 21 is what the README asks for and what the released APK is built
+      # with; the modules compile to the bytecode of 17 whatever runs Gradle.
+      #
+      # The cache is keyed on the files that decide what this build downloads
+      # and on no others. Left to itself the action keys it on every Gradle
+      # file of the repository, which is the key the jobs of shared-tests.yml
+      # save under: they finish first, their cache has no Android plugin in
+      # it, and this job would be handed it as its own and download everything
+      # again on every run.
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: gradle
+          cache-dependency-path: |
+            build.gradle.kts
+            settings.gradle.kts
+            */build.gradle.kts
+            gradle/wrapper/gradle-wrapper.properties
+            gradle/verification-metadata.xml
+
+      # The build names no NDK, and the Android Gradle plugin then wants the
+      # one it was released with, 27.0.12077973, which is the NDK the released
+      # library is compiled by. CMakeLists.txt asks for CMake 3.22.1. The image
+      # has newer ones of both and neither of these. The build tools are for
+      # the last step: zipalign learnt of 16 KB pages in 35. The licences are
+      # accepted on the image already; `yes` is there for the day one is not,
+      # and its end by a closed pipe fails nothing in the shell a step is
+      # given.
+      - name: The NDK and the CMake the build asks for
+        run: yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --install "ndk;27.0.12077973" "cmake;3.22.1" "build-tools;35.0.0" > /dev/null
+
+      # assembleDebug compiles the files under android-shared against Android
+      # and links the library, with the check of its page size after the link
+      # and the check of the APK's licence text after the packaging. Lint is
+      # what notices a call newer than minSdk, and looks at the one module
+      # that holds the scan. The unit tests are those of every module that has
+      # any, which today are :core and :pegasus.
+      - name: Build the app, lint the hasher's module, run the Android build's own tests
+        run: ./gradlew --no-daemon :app:assembleDebug :hasher:lintDebug testDebugUnitTest
+
+      # What the native build wrote down of itself. Without this a build that
+      # found another NDK or another CMake would be as green as this one, and
+      # the library it made is not the released one's kin. The folder is where
+      # this version of the Android Gradle plugin keeps a native build; a
+      # plugin that moves it fails this step and has to be read again.
+      - name: The library was built by that NDK and that CMake
+        run: |
+          grep -h -e '^CMAKE_ANDROID_NDK:' -e '^CMAKE_COMMAND:' hasher/.cxx/Debug/*/arm64-v8a/CMakeCache.txt
+          grep -q '^CMAKE_ANDROID_NDK:.*/ndk/27\.0\.12077973$' hasher/.cxx/Debug/*/arm64-v8a/CMakeCache.txt
+          grep -q '^CMAKE_COMMAND:.*/cmake/3\.22\.1/bin/cmake$' hasher/.cxx/Debug/*/arm64-v8a/CMakeCache.txt
+
+      # The check after the link looked at the file the linker wrote. This
+      # looks at the file a device is handed: the library as it lies in the
+      # APK, by the same script, which reads the file itself and so runs with
+      # whatever cmake the image has; and then the APK, in which the library
+      # is stored as it is and has to begin on a 16 KB boundary to be mapped
+      # from there.
+      - name: The library in the APK is laid out for 16 KB pages
+        run: |
+          unzip -q -o app/build/outputs/apk/debug/app-debug.apk 'lib/arm64-v8a/librahasher.so' -d "$RUNNER_TEMP/apk"
+          cmake "-DLIBRARY=$RUNNER_TEMP/apk/lib/arm64-v8a/librahasher.so" -DPAGE=16384 -P hasher/src/main/cpp/check_page_size.cmake
+          "$ANDROID_HOME/build-tools/35.0.0/zipalign" -c -P 16 4 app/build/outputs/apk/debug/app-debug.apk
+
+      - name: Upload reports
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-reports
+          path: |
+            */build/reports/
+            */build/test-results/testDebugUnitTest/*.xml

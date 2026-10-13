@@ -35,7 +35,19 @@ trap cleanup EXIT
 
 # Resolved, links and all: the daemon names its library by the path the
 # launcher worked out with readlink, and that line is compared below.
-sandbox="$(cd "$(mktemp -d -t bridge-package-test.XXXXXX)" && pwd -P)"
+#
+# Nothing goes on without the folder. Every path below is made of its name
+# and the trap removes it: with the name empty, which is what a TMPDIR that
+# cannot be written to left it, every one of those paths began at the root
+# of the system, and a shell whose `cd` takes an empty name for the folder
+# it is in would have had the trap remove that one.
+made="$(mktemp -d -t bridge-package-test.XXXXXX)" && sandbox="$(cd "$made" && pwd -P)"
+if [[ -z "$sandbox" || ! -d "$sandbox" ]]; then
+    sandbox=""
+    [[ -n "$made" && -d "$made" ]] && rmdir "$made"
+    echo "no temporary folder to work in: is TMPDIR a folder that can be written to?" >&2
+    exit 2
+fi
 mkdir -p "$sandbox/home"
 
 finish() {

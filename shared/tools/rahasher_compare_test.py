@@ -177,8 +177,10 @@ class ClassTest(Programs):
         (row,) = self.compared([compare.Line("i.chd", 9, expected=A)])
         self.assertEqual(row[3:], ["crashed", A, "-", "-", "THEIRS-CRASHED"])
 
+        # The time is our program's too, which has to have answered in it:
+        # long enough for a runner that is busy to start one.
         self.answers({"i.chd": ours_says(None)}, {"i.chd": {"sleep": 30}})
-        (row,) = self.compared([compare.Line("i.chd", 9, expected=A)], seconds=0.5)
+        (row,) = self.compared([compare.Line("i.chd", 9, expected=A)], seconds=3)
         self.assertEqual(row[2:4] + row[-1:], ["-", "crashed", "THEIRS-CRASHED"])
 
         # On the disc alone: the image is still judged, with our disc's hash.

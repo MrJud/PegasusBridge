@@ -48,12 +48,14 @@ jobs:
       # JDK 21 is what the README asks for and what the released APK is built
       # with; the modules compile to the bytecode of 17 whatever runs Gradle.
       #
-      # The cache is keyed on the files that decide what this build downloads
-      # and on no others. Left to itself the action keys it on every Gradle
-      # file of the repository, which is the key the jobs of shared-tests.yml
-      # save under: they finish first, their cache has no Android plugin in
-      # it, and this job would be handed it as its own and download everything
-      # again on every run.
+      # The cache is keyed on the files that decide what this build downloads.
+      # Left to itself the action keys it on every Gradle file of the
+      # repository, which is the key the jobs of shared-tests.yml save under:
+      # they finish first, their cache has no Android plugin in it, and this
+      # job would be handed it as its own and download everything again on
+      # every run. The pattern for the modules' build files takes
+      # shared/build.gradle.kts with them, which decides nothing here: a
+      # change to it costs this job one cache made again and no more.
       - uses: actions/setup-java@v4
         with:
           distribution: temurin

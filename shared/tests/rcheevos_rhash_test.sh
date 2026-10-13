@@ -5,8 +5,14 @@
 # Every patch is there to refuse a file that is no valid image, and each says
 # it changes nothing a valid file hashes to. The rows of native_repro_test.py
 # hold the first half. This holds the second with the files and the hashes
-# upstream's authors wrote down: a bound of ours drawn one byte too tight
-# fails a test of theirs here.
+# upstream's authors wrote down: a patch that changes what one of those files
+# hashes to fails a test of theirs here. No further than that. Their files
+# are small and plain, and a bound of ours drawn a byte too tight, at a
+# length none of them has, passes every one: the sector size of a .gdi sheet
+# held to eight digits where the patch allows nine does, and held to three,
+# which their sheets have four of, fails five tests. The edge of a bound is
+# for the rows of native_repro_test.py, with a valid file on one side of it
+# and a refused one on the other.
 #
 #   ./rcheevos_rhash_test.sh [out-dir]
 #

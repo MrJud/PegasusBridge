@@ -203,7 +203,9 @@ jobs:
       # The step above holds what the patches refuse. This is the other half,
       # in upstream's words: the tests rcheevos has of its own hashing, on the
       # copy as the patches left it, compiled plain and with the sanitizers.
-      # A bound of ours drawn too tight fails a test of theirs.
+      # A patch that changes what one of their files hashes to fails a test
+      # of theirs. A bound a byte too tight at a length none of their files
+      # has does not, and is for the rows of the step above.
       - name: rcheevos' own tests of its hashing, on the copy with our patches
         working-directory: shared
         run: ./tests/rcheevos_rhash_test.sh "$RUNNER_TEMP/rhash-tests"

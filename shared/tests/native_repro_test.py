@@ -238,6 +238,27 @@ def dreamcast_track():
     return bytes(track), md5(bytes(boot) + program)
 
 
+def pcfx_disc():
+    """A PC-FX data track of 24 cooked sectors, and what a disc made of it
+    hashes to. The console's name opens sector 0. Sector 1 has the title in
+    its first 32 bytes and after it, as two words, where the program begins
+    and how many sectors it is: here sector 4 and two of them. The hash is of
+    the first 128 bytes of sector 1 and then the program's sectors. Sector 16
+    opens as a volume descriptor does, which is what tells rcheevos the size
+    of the track's sectors whatever a sheet says of it."""
+    program = noise(2 * 2048, seed="pcfx-program")
+    track = bytearray(24 * 2048)
+    put(track, 0, b"PC-FX:Hu_CD-ROM")
+    header = bytearray(128)
+    put(header, 0, b"REPRO TEST")
+    put(header, 32, (4).to_bytes(4, "little"))
+    put(header, 36, (2).to_bytes(4, "little"))
+    put(track, 2048, header)
+    put(track, 4 * 2048, program)
+    put(track, 16 * 2048, b"\x01CD001\x01")
+    return bytes(track), md5(bytes(header) + program)
+
+
 def be32(image, at):
     return int.from_bytes(whole(image, at, 4), "big")
 
@@ -1587,6 +1608,91 @@ def write_fixtures(directory):
         ("a .gdi whose sector size is 9 digits, and whose track is there",
          0, "digits-9.gdi", f"{dreamcast}|40"),
         ("the same with 10 digits", 0, "digits-10.gdi", REFUSED),
+    ]
+
+    # The name and the sector size at the longest the parser admits, and the
+    # name one byte longer. rcheevos copies the two once more for a disc
+    # asked for its largest track, with strcpy_s, which on Windows ends the
+    # process when what it is given does not fit and here is strcpy, which
+    # would write past the buffer where the sanitizer sees it. What it is
+    # given is these two buffers, of 256 bytes and of 16, and the bounds held
+    # by the rows around this one are what makes it fit. So here are 255
+    # characters and nine digits that are a track's real name and hash, alone
+    # and together, and 256 that would be a track's name too if they were let
+    # through. A name is made that long with "./" before it, which names the
+    # folder the sheet is in as often as it is written.
+    longest = b"./" * 120 + b"repro-gd-03.bin"
+    assert len(longest) == 255
+    longer = b"./" * 119 + b".//repro-gd-03.bin"
+    assert len(longer) == 256
+    lone = b"3\n3 %d 4 %%s %%s 0\n" % DREAMCAST_FIRST_SECTOR
+    write("name-255.gdi", lone % (b"2048", longest))
+    write("name-255-digits-9.gdi", lone % (b"9" * 9, longest))
+    write("name-256.gdi", lone % (b"2048", longer))
+    must_pass += [
+        ("a .gdi whose track's name is 255 characters, all that fit", 0, "name-255.gdi", f"{dreamcast}|40"),
+        ("the same sheet under console 40", 40, "name-255.gdi", f"{dreamcast}|40"),
+        ("the same with a sector size of 9 digits", 0, "name-255-digits-9.gdi", f"{dreamcast}|40"),
+        ("a .gdi whose track's name is 256 characters and names a track that is there",
+         0, "name-256.gdi", refused("Cannot copy 256 byte filename into 256 byte buffer")),
+    ]
+    # And the same sheets asked for their largest track, which the PC-FX is
+    # and no other console: the one request the copies are made for. The
+    # track is a PC-FX disc, which the cue sheet beside it shows by hashing.
+    # From a .gdi it does not hash, long name or short. The request is no
+    # track's number but a mark, 4294967293, and the parser passes over
+    # every line whose number is another before it reads the rest of it: so
+    # over every line a sheet of a disc has, and it reaches neither the
+    # bounds nor the copies, and opens no track. That is rcheevos as it is,
+    # and these rows are how a change to it is noticed: on the day a .gdi
+    # gives a PC-FX disc its hash the copies are run, and the sheets with
+    # the longest name and sector size are the ones that go through them.
+    # The track says by its content what its sectors are, so that those
+    # sheets are then to hash like the others.
+    pcfx_track, pcfx = pcfx_disc()
+    write("repro-fx-01.bin", pcfx_track)
+    write("pcfx.cue", cue(b"repro-fx-01.bin", b"MODE1/2048"))
+    fx_longest = b"./" * 120 + b"repro-fx-01.bin"
+    fx_longer = b"./" * 119 + b".//repro-fx-01.bin"
+    assert (len(fx_longest), len(fx_longer)) == (255, 256)
+    # The data track is the first of two, so that it would be the largest
+    # and not the last line read, which is when the copies are made both
+    # ways: into the buffers kept for the largest track, and back.
+    fx = (b"2\n"
+          b"1 0 4 %s %s 0\n"
+          b"2 600 0 2352 repro-fx-02.raw 0\n")
+    write("pcfx.gdi", fx % (b"2048", b"repro-fx-01.bin"))
+    write("pcfx-name-255.gdi", fx % (b"2048", fx_longest))
+    write("pcfx-name-256.gdi", fx % (b"2048", fx_longer))
+    write("pcfx-digits-9.gdi", fx % (b"9" * 9, fx_longest))
+    write("pcfx-digits-10.gdi", fx % (b"9" * 10, b"repro-fx-01.bin"))
+    no_track = refused("Could not open track")
+    must_pass += [
+        ("a PC-FX disc from a cue sheet, which is asked for its largest track", 49, "pcfx.cue", f"{pcfx}|49"),
+        ("the same disc from a .gdi, of which no line is read for that track", 49, "pcfx.gdi", no_track),
+        ("the same with a name of 255 characters", 49, "pcfx-name-255.gdi", no_track),
+        ("the same with a name of 256 characters", 49, "pcfx-name-256.gdi", no_track),
+        ("the same with a name of 255 characters and a sector size of 9 digits",
+         49, "pcfx-digits-9.gdi", no_track),
+        ("the same with a sector size of 10 digits", 49, "pcfx-digits-10.gdi", no_track),
+    ]
+    # One line is not passed over: a line numbered -3, which read as a number
+    # without a sign is the mark itself. It is taken for the track asked
+    # for, by the branch every other console's track is found by and before
+    # the one that makes the copies, and its fields are read one place to
+    # the left, the sign being stepped over as the number is. No disc's
+    # sheet has such a line. It is here because it is the only way a .gdi
+    # is read at all for this console, and it does not go by the copies
+    # either: with the two fields at their longest it hashes, and with the
+    # name one byte longer it is refused by the bound.
+    numbered = b"1\n-3 0 %s %s 0\n"
+    write("pcfx-numbered.gdi", numbered % (b"9" * 9, fx_longest))
+    write("pcfx-numbered-256.gdi", numbered % (b"2048", fx_longer))
+    must_pass += [
+        ("a PC-FX .gdi whose line is numbered -3, its name 255 characters and its sector size 9 digits",
+         49, "pcfx-numbered.gdi", f"{pcfx}|49"),
+        ("the same with a name of 256 characters", 49, "pcfx-numbered-256.gdi",
+         refused("Cannot copy 256 byte filename into 256 byte buffer")),
     ]
 
     # A sheet longer than one read, whose line for the track lies across the

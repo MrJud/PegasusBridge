@@ -50,6 +50,13 @@ system_dlls='^(kernel32|msvcrt|api-ms-win-crt-[a-z0-9-]+)\.dll$'
 # thousand bytes to a track that is not there was the end of the daemon.
 # Local patch 0010 has it use vsnprintf, and this is what holds the patch: no
 # file can show the difference on a system that is not Windows.
+#
+# strcpy_s ends the process the same way and is not here, and the DLL calls
+# it: four times in rcheevos' parser of a .gdi sheet, each from a buffer the
+# parser filled and ended itself into one of the same size, so that no call
+# has anything to refuse. CONTEXT.md says so at length, and what holds it is
+# the rows of sheets at those bounds in NativeCrashReproTest and in
+# native_repro_test.py.
 forbidden_calls='printf_s$'
 
 # What neither kind of library may call: the function assert() ends the

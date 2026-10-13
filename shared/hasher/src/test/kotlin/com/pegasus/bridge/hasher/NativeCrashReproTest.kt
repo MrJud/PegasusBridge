@@ -170,6 +170,136 @@ class NativeCrashReproTest {
         )
     }
 
+    // A .gdi sheet's line for a track has two fields the parser keeps: the
+    // track's file name, in 256 bytes, and its sector size, in 16 of which
+    // nine digits are let in. For a disc asked for its largest track rcheevos
+    // copies the two once more, into buffers of the same sizes and back, and
+    // on Windows it does that with strcpy_s, which ends the process when what
+    // it is handed does not fit. Nothing it is handed can be longer than the
+    // two bounds let it be, and these are the bounds from both sides, on the
+    // library every system loads: 255 characters and nine digits that are a
+    // real track's and hash, 256 and ten that are refused in words. The long
+    // name is the short one with "./" before it, as often as it takes.
+    //
+    // Then the same sheets as the one console that asks for the largest
+    // track, the PC-FX. The track is such a disc, which its cue sheet shows
+    // by hashing. From a .gdi it is refused, long fields or short: what is
+    // asked for is no track's number but a mark, 4294967293, and rcheevos
+    // passes over every line whose number is another before it reads the
+    // rest of it, so neither the bounds nor the copies are reached and no
+    // track is opened. That is rcheevos as it stands, and it is held here on
+    // purpose. The day a .gdi gives a PC-FX disc its hash, the copies run,
+    // and the rows with the longest fields are the ones that go through
+    // them: they are then to hash too, on Windows first of all.
+    //
+    // One line is not passed over, a line numbered -3, which read without
+    // its sign is the mark. No disc's sheet has one. It is taken for the
+    // track asked for, before the branch that makes the copies, and its
+    // fields are read one place to the left: it is the one way a .gdi is
+    // read at all for this console, and with both fields at their longest
+    // it hashes, and with the name one byte longer the bound refuses it.
+    @Test
+    fun `a gdi with fields as long as the parser admits is hashed or refused in words`() {
+        val program = ByteArray(3000) { (it * 29 + 11).toByte() }
+        val boot = ByteArray(256) { ' '.code.toByte() }
+        ascii("SEGA SEGAKATANA ").copyInto(boot, 0)
+        ascii("1ST_READ.BIN").copyInto(boot, 96)
+        ascii("REPRO TEST").copyInto(boot, 128)
+        // 24 cooked sectors that the sheet says begin at sector 45000 of the
+        // disc: the boot record, the volume descriptor in sector 16, a
+        // directory of one file in sector 18 and the program in sector 20.
+        val first = 45000
+        fun le(value: Int, bytes: Int) = ByteArray(bytes) { (value shr (8 * it)).toByte() }
+        val entry = ascii("1ST_READ.BIN;1")
+        val record = ByteArray(33 + entry.size).also {
+            it[0] = it.size.toByte()
+            le(first + 20, 3).copyInto(it, 2)
+            le(program.size, 4).copyInto(it, 10)
+            it[32] = entry.size.toByte()
+            entry.copyInto(it, 33)
+        }
+        file("repro-gd-03.bin", image(24 * 2048, 0 to boot,
+            16 * 2048 to byteArrayOf(1) + ascii("CD001") + byteArrayOf(1),
+            16 * 2048 + 128 to le(2048, 2), 16 * 2048 + 158 to le(first + 18, 3), 16 * 2048 + 166 to le(2048, 4),
+            18 * 2048 to record, 20 * 2048 to program))
+        val dreamcast = NativeChild.Result.Ok(md5(boot + program), 40)
+
+        // A PC-FX track: the console's name in sector 0, and in sector 1 the
+        // title and where the program is, sector 4 and two sectors long.
+        // Sector 16 opens as a volume descriptor does, so that the track
+        // says for itself what its sectors are, as the Dreamcast one does.
+        val fxHeader = ByteArray(128).also {
+            ascii("REPRO TEST").copyInto(it, 0)
+            le(4, 4).copyInto(it, 32)
+            le(2, 4).copyInto(it, 36)
+        }
+        val fxProgram = ByteArray(2 * 2048) { (it * 13 + 5).toByte() }
+        file("repro-fx-01.bin", image(24 * 2048, 0 to ascii("PC-FX:Hu_CD-ROM"), 2048 to fxHeader,
+            4 * 2048 to fxProgram, 16 * 2048 to byteArrayOf(1) + ascii("CD001") + byteArrayOf(1)))
+        val pcfx = NativeChild.Result.Ok(md5(fxHeader + fxProgram), 49)
+
+        fun longest(name: String) = "./".repeat((255 - name.length) / 2) + name
+        fun longer(name: String) = "./".repeat((255 - name.length) / 2 - 1) + ".//" + name
+        for (name in listOf("repro-gd-03.bin", "repro-fx-01.bin")) {
+            assertEquals(255, longest(name).length)
+            assertEquals(256, longer(name).length)
+        }
+        fun gd(sectorSize: String, name: String) = ascii("3\n3 $first 4 $sectorSize $name 0\n")
+        // The data track is the first of two: the largest, and not the last
+        // line read, which is when the copies are made both ways.
+        fun fx(sectorSize: String, name: String) =
+            ascii("2\n1 0 4 $sectorSize $name 0\n2 600 0 2352 repro-fx-02.raw 0\n")
+        // The line numbered -3, which has no field for the track's type:
+        // read one place to the left, that is where its sector size is.
+        fun numbered(sectorSize: String, name: String) = ascii("1\n-3 0 $sectorSize $name 0\n")
+
+        // What a file may come to: the hash, or no hash and these words.
+        class Row(val file: File, val console: Int, val hash: NativeChild.Result.Ok?, val words: String?)
+        val nines = "9".repeat(9)
+        val tooLong = "Cannot copy 256 byte filename into 256 byte buffer"
+        // A path that long is opened on Linux and macOS as any other. Windows
+        // opens it where long paths are switched on, and where they are not
+        // the track is not found: either is an answer, and neither is the
+        // process ended.
+        val windows = System.getProperty("os.name").startsWith("Windows")
+        val notFound = if (windows) "Could not open" else null
+        val sheets = listOf(
+            Row(file("short.gdi", gd("2048", "repro-gd-03.bin")), 0, dreamcast, null),
+            Row(file("digits-9.gdi", gd(nines, "repro-gd-03.bin")), 0, dreamcast, null),
+            Row(file("digits-10.gdi", gd(nines + "9", "repro-gd-03.bin")), 0, null, "Sector size has more than 9 digits"),
+            Row(file("name-255.gdi", gd("2048", longest("repro-gd-03.bin"))), 0, dreamcast, notFound),
+            Row(file("name-255-digits-9.gdi", gd(nines, longest("repro-gd-03.bin"))), 0, dreamcast, notFound),
+            Row(file("name-256.gdi", gd("2048", longer("repro-gd-03.bin"))), 0, null, tooLong)
+        )
+        val largest = listOf(
+            Row(file("pcfx.cue", ascii("FILE \"repro-fx-01.bin\" BINARY\r\n  TRACK 01 MODE1/2048\r\n    INDEX 01 00:00:00\r\n")),
+                49, pcfx, null),
+            Row(file("pcfx.gdi", fx("2048", "repro-fx-01.bin")), 49, null, "Could not open track"),
+            Row(file("pcfx-name-255.gdi", fx("2048", longest("repro-fx-01.bin"))), 49, null, "Could not open track"),
+            Row(file("pcfx-name-255-digits-9.gdi", fx(nines, longest("repro-fx-01.bin"))), 49, null, "Could not open track"),
+            Row(file("pcfx-name-256.gdi", fx("2048", longer("repro-fx-01.bin"))), 49, null, "Could not open track"),
+            Row(file("pcfx-digits-10.gdi", fx(nines + "9", "repro-fx-01.bin")), 49, null, "Could not open track"),
+            Row(file("pcfx-numbered.gdi", numbered(nines, "repro-fx-01.bin")), 49, pcfx, null),
+            Row(file("pcfx-numbered-255.gdi", numbered(nines, longest("repro-fx-01.bin"))), 49, pcfx, notFound),
+            Row(file("pcfx-numbered-256.gdi", numbered("2048", longer("repro-fx-01.bin"))), 49, null, tooLong)
+        )
+        // Each sheet of a Dreamcast disc twice, as its extension says and as console 40 by number.
+        val rows = sheets + sheets.map { Row(it.file, 40, it.hash, it.words) } + largest
+
+        val wrong = rows.mapNotNull { row ->
+            val result = NativeChild.hash(row.file, row.console)
+            println("NativeCrashReproTest: ${row.file.name} as console ${row.console} -> $result")
+            val hashed = row.hash != null && result == row.hash
+            val refused = row.words != null && result is NativeChild.Result.NoHash && row.words in result.reason
+            if (hashed || refused) null
+            else "${row.file.name} as console ${row.console}: $result, and it was to be " +
+                 listOfNotNull(row.hash?.toString(), row.words?.let { "no hash and the words \"$it\"" }).joinToString(" or ")
+        }
+        if (wrong.isNotEmpty())
+            fail("${wrong.size} of ${rows.size} sheets ended otherwise than they should:\n" +
+                 wrong.joinToString("\n") { "  $it" })
+    }
+
     // Not a file made to mislead, this once, but a path: one that ends where
     // a folder's name does. An arcade set is hashed by its file's name with
     // the extension taken off, and of a name of no letters rcheevos takes off

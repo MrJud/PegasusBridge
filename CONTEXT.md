@@ -1203,9 +1203,9 @@ made to say 128 MiB, which is as much as the decoder takes unasked, has it
 reserve that much for as long as the image is open, of which no more than a
 hunk is ever written to. chdman's own hunks say their own size.
 
-The reader made each library larger: `librahasher.so` 412,896 bytes where it
-was 97,288, `rahasher.dll` 502,154 where it was 188,908, the stripped arm64
-library of a debug build 306,680 where it was 81,632. No option removes the
+The reader made each library larger: `librahasher.so` 412,744 bytes where it
+was 97,288, `rahasher.dll` 502,100 where it was 188,908, the stripped arm64
+library of a debug build 304,920 where it was 81,632. No option removes the
 decoders' unused functions.
 
 Three builds compile that list:
@@ -1239,6 +1239,35 @@ Three builds compile that list:
   `shared-tests.yml` builds it on `windows-latest` and runs the hasher's tests
   against it, and the one run of that job stopped before those tests, at
   `native_lib_check.sh`, for the `_assert` told of above.
+
+  The DLL does call `strcpy_s`, which ends the process the same way when
+  what it is to copy does not fit, and that name is not on the list of what
+  it may not call. rcheevos' parser of a `.gdi` sheet has the four calls
+  (`cdreader_open_gdi_track`): a track's file name and its sector size are
+  copied into the buffers kept for the largest track, and back. Each is
+  copied from a buffer the parser filled itself and ended with a NUL, into
+  one of the same size, 256 bytes for the name and 16 for the digits, of
+  which the bounds before them let in 255 characters and nine digits (the
+  second bound is local patch 0006's). So no call has anything to refuse.
+  As rcheevos stands none is even run: they are for a sheet asked for its
+  largest track, which the PC-FX alone asks for. What is asked for is then
+  no track's number but a mark, 4294967293, and the parser passes over
+  every line whose number is another: every line a disc's sheet has. A
+  line numbered -3 reads as the mark, and is taken for the track asked
+  for by the branch before the one with the copies. A patch that took them
+  out would raise the patch level, and every device would hash its
+  unmatched files again for an answer that is the same. It is held from
+  outside: `NativeCrashReproTest` hands the library sheets whose name and
+  sector size are as long as the bounds admit, which hash, and one longer,
+  which are refused in words, in every job that runs the hasher's tests,
+  the `windows` job among them; `native_repro_test.py` has the same rows on
+  the sanitized program. Both expect a PC-FX disc's `.gdi` to be refused,
+  so that an rcheevos which comes to read one, and with it to run the
+  copies, fails them and is read again, and both have the sheet with the
+  line numbered -3. **Not shown on Windows**, like everything
+  else of the DLL: whether a track's name of 255 characters opens there
+  depends on the system's limit for a path, and where it does not the test
+  takes the refusal for an answer.
 
 CI's `native` job builds a fresh Linux library and runs the tests on that as
 well as on the committed one, and runs `shared/tests/native_repro_test.py`:

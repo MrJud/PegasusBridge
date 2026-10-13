@@ -305,10 +305,12 @@ class ArchiveAwareHasher internal constructor(
     /**
      * [path] left to rcheevos, which takes the console from the extension.
      * Its answer is kept unless the console it settled on is one that is
-     * held back ([ConsoleChoice.guessed]).
+     * held back, or one a file of that name is not read as
+     * ([ConsoleChoice.guessed]). The name is the path's: a copy taken out
+     * of an archive is called as its entry was.
      */
     private fun guessed(path: String): HashOutcome =
-        ConsoleChoice.guessed(delegate.hashForConsole(path, 0))
+        ConsoleChoice.guessed(delegate.hashForConsole(path, 0), File(path).extension)
 
     /**
      * A playlist is hashed as the first file it names, read here and not by

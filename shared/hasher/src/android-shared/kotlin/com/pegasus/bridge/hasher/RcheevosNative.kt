@@ -4,8 +4,9 @@ import java.util.Locale
 
 /**
  * The functions of librahasher, which is rcheevos, one file of JNI
- * (`hasher/src/main/cpp/rahasher_jni.c`) and a reader of `.wbfs` containers
- * (`pb_wbfs.c`), for both shells.
+ * (`hasher/src/main/cpp/rahasher_jni.c`), a reader of `.wbfs` containers
+ * (`pb_wbfs.c`) and a reader of `.chd` discs over libchdr (`pb_chd.c`), for
+ * both shells.
  *
  * A native function is found by the name of the class that declares it, so
  * the class is this one, here where the tablet and the desktop both compile
@@ -26,12 +27,12 @@ internal object RcheevosNative {
      * The library this code was written against: the rcheevos release, how
      * many local patches it carries (`pb_patchlevel.h`), and after the slash
      * the readers of our own that are in it, each with the turn it is at
-     * (`pb_wbfs.h`). Whoever loads a library holds [version] against this
+     * (`pb_wbfs.h`, `pb_chd.h`). Whoever loads a library holds [version] against this
      * before any file is hashed. One that answers otherwise is another
      * build's, and what it would say of a file is not what the tests of this
      * build saw.
      */
-    const val EXPECTED_VERSION = "12.5.0+pb10/wbfs1"
+    const val EXPECTED_VERSION = "12.5.0+pb10/wbfs1,chd1"
 
     /**
      * How the note on a `.wbfs` begins when half or more of what was hashed

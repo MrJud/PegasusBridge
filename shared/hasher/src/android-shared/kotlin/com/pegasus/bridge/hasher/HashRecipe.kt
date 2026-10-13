@@ -30,6 +30,7 @@ import java.util.zip.CRC32
  * our own in the library ([READERS]). It is in the number of the files it
  * reads, so that a build that gains one, or reads otherwise, has those
  * files looked at again and leaves the rest of the library as it stands.
+ * A `.wbfs` and a `.chd` are read so.
  *
  * What cannot be read off a table is the code that uses them, and for that
  * a number is still raised by hand, [RULES].
@@ -184,12 +185,32 @@ class HashRecipe internal constructor(
          * it ([versionFor]), so a reader that is new, or that comes to
          * answer otherwise and is counted up, redoes those files and no
          * other. Another reader is another entry, and moves nobody else's
-         * number.
+         * number: `chd` came after `wbfs` and left the number of a .wbfs,
+         * and of every other file, what it was.
+         *
+         * The number is that of a file called by the extension. A packed
+         * disc is also reached through a file of another name, an archive
+         * that holds one or a playlist that names one, and the verdict an
+         * older build kept for such a file is under a number no reader is
+         * in. What takes that one again is said at [ScanLedger.canSkip].
          */
-        val READERS: Map<String, Int> = mapOf("wbfs" to 1)
+        val READERS: Map<String, Int> = mapOf("wbfs" to 1, "chd" to 1)
 
-        /** The readers on one line, for a log and for an audit's table: `wbfs1`. */
-        val readers: String = READERS.toSortedMap().entries.joinToString(",") { "${it.key}${it.value}" }
+        /**
+         * The readers on one line, in the order they came, as the library
+         * writes them after the slash of its version; for a log and for an
+         * audit's table: `wbfs1,chd1`.
+         */
+        val readers: String = READERS.entries.joinToString(",") { "${it.key}${it.value}" }
+
+        /**
+         * How a verdict ended while a build had no reader for [extension],
+         * which is in lower case and without its dot. [ConsoleChoice] says
+         * it of whatever it still turns away for that, and the ledger knows
+         * by it the verdicts a build without a reader left
+         * ([ScanLedger.canSkip]).
+         */
+        fun noReaderFor(extension: String): String = ".$extension is a format this build has no reader for"
 
         /** What the number of a file with [extension] gains, or nothing when no reader of ours reads it. */
         private fun readerOf(extension: String): String {

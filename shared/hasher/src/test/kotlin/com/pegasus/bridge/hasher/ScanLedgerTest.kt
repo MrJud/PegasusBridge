@@ -451,21 +451,61 @@ class ScanLedgerTest {
     // and read back under its name by the ledger that comes after.
     @Test fun `a format nobody reads is a verdict kept for a season`() {
         val file = File(paths.cache, ScanLedger.FILE_NAME).apply { parentFile.mkdirs() }
-        val path = "/roms/ps2/Disc.chd"
+        val path = "/roms/ps2/Disc.cso"
         val ninetyDays = 90L * 24 * 60 * 60
         assertEquals(ScanLedger.State.UNSUPPORTED.retryAfterSeconds, ScanLedger.State.UNSUPPORTED_FORMAT.retryAfterSeconds)
         val ps2 = CollectionRef.inferred("ps2")
         ScanLedger(file).apply {
             record(path, ps2, ScanLedger.State.UNSUPPORTED_FORMAT, 10, 20, now = 1000,
-                   detail = ".chd is a format this build has no reader for")
+                   detail = ".cso is a format rcheevos does not read")
             save { f, text -> BridgePaths.writeAtomic(f, text) }
         }
 
         val read = ScanLedger(file)
         val kept = read.canSkip(path, ps2, 10, 20, now = 1000 + ninetyDays)
         assertEquals(ScanLedger.State.UNSUPPORTED_FORMAT, kept?.state)
-        assertEquals(".chd is a format this build has no reader for", kept?.detail)
+        assertEquals(".cso is a format rcheevos does not read", kept?.detail)
         assertNull(read.canSkip(path, ps2, 10, 20, now = 1000 + ninetyDays + 1))
+    }
+
+    // But for one such verdict, which does not stand a day: that the build
+    // had no reader for a format, kept by a build before the one that has
+    // it. For the packed disc itself the number says as much. Said of an
+    // archive's entry or of a playlist's first file it is kept for the
+    // archive and for the playlist, under a number no reader is in, and
+    // only its words tell it from a verdict that is still true. They are
+    // the last words of the detail, under that state, of an extension that
+    // has a reader today: anything else stands as it did.
+    @Test fun `a verdict that a build had no reader does not stand once there is one`() {
+        val file = File(paths.cache, ScanLedger.FILE_NAME).apply { parentFile.mkdirs() }
+        val ps2 = CollectionRef.inferred("ps2")
+        val unsupported = ScanLedger.State.UNSUPPORTED_FORMAT
+        val noReader = "is a format this build has no reader for"
+        val kept = listOf(
+            Triple("/roms/ps2/Packed.zip", unsupported, "'Packed.chd' in the archive: .chd $noReader"),
+            Triple("/roms/ps2/Listed.m3u", unsupported, "Disc 1.chd, the first file the playlist names: .chd $noReader"),
+            Triple("/roms/ps2/Wii.m3u", unsupported, "Disc 1.wbfs, the first file the playlist names: .wbfs $noReader"),
+            Triple("/roms/ps2/Bare.zip", unsupported, ".chd $noReader"),
+            // An extension that has no reader, the words that are true of a
+            // .wbfs inside an archive, the old words with others after
+            // them, and the old words under another state.
+            Triple("/roms/ps2/Other.zip", unsupported, "'Other.xyz' in the archive: .xyz $noReader"),
+            Triple("/roms/ps2/Wii.zip", unsupported, "'Disc.wbfs' in the archive: a .wbfs inside an archive is not unpacked"),
+            Triple("/roms/ps2/Quoted.zip", unsupported, "'.chd $noReader.txt' in the archive: a .txt file is not a game"),
+            Triple("/roms/ps2/Named.zip", ScanLedger.State.NO_PLAYABLE_ENTRY,
+                   "nothing in the archive is a game of this collection: .chd $noReader"))
+        ScanLedger(file).apply {
+            for ((path, state, detail) in kept) record(path, ps2, state, 10, 20, now = 1000, detail = detail)
+            save { f, text -> BridgePaths.writeAtomic(f, text) }
+        }
+
+        val read = ScanLedger(file)
+        assertEquals(listOf(false, false, false, false, true, true, true, true),
+                     kept.map { (path, _, _) -> read.canSkip(path, ps2, 10, 20, now = 1001) != null },
+                     "which of them stand: " + kept.map { it.first.substringAfterLast('/') })
+        // Nothing is taken out of the ledger for it: the verdict is there
+        // for whoever reads it, until a scan has written another.
+        assertEquals(kept.map { it.third }, kept.map { read.entry(it.first)?.detail })
     }
 
     // Kept for thirty days, as a file the hasher cannot hash is, and not

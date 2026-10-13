@@ -92,9 +92,10 @@ class ScanLedger(private val file: File, private val recipe: HashRecipe = HashRe
          */
         KNOWN_UNSUPPORTED,
         /**
-         * The collection can be hashed and this file cannot: a compressed
-         * disc image this build has no reader for, a container rcheevos
-         * does not read at all, a file that is no game. Known from the
+         * The collection can be hashed and this file cannot: a container
+         * rcheevos does not read and the library has no reader of its own
+         * for, a packed disc of a console such a disc is not read as, a
+         * file that is no game. Known from the
          * file's name and its collection, so no I/O was done, but for one
          * look at a file small enough to be a sentence under such a name,
          * which is a [PLACEHOLDER] and not one of these. Handed to
@@ -290,6 +291,16 @@ class ScanLedger(private val file: File, private val recipe: HashRecipe = HashRe
      * says what reads it ([HashRecipe.versionFor]). [path] is where the
      * file really lies, and for a link the two names can differ; a caller
      * with no other name leaves it to the path's.
+     *
+     * One verdict more does not stand, and it is known by its words and
+     * not by its number: a file kept as [State.UNSUPPORTED_FORMAT] because
+     * the build had no reader for an extension that has one now
+     * ([leftForAReader]). For a file of that extension the number says so
+     * already. But a packed disc was also turned away inside an archive
+     * and as the first file of a playlist, and that was kept for the
+     * archive and for the playlist, whose numbers no reader is in: it
+     * would stand for its season, and the disc go unread for ninety days
+     * under a build that reads it. Nothing else is taken again by this.
      */
     fun canSkip(path: String, collection: CollectionRef, size: Long, modified: Long, now: Long,
                 extension: String = File(path).extension): Entry? {
@@ -300,10 +311,24 @@ class ScanLedger(private val file: File, private val recipe: HashRecipe = HashRe
         if (!e.state.cacheable) return null
         if (e.fileSize != size || e.lastModified != modified) return null
         if (e.algorithmVersion != recipe.versionFor(collection, extension)) return null
+        if (leftForAReader(e)) return null
         val ttl = e.state.retryAfterSeconds
         if (ttl != Long.MAX_VALUE && now - e.checkedAt > ttl) return null
         return e
     }
+
+    /**
+     * Whether [e] is what a build with no reader for some format said of a
+     * file, of a format this build reads: the detail ends in the sentence
+     * such a build wrote ([HashRecipe.noReaderFor]), whatever stands
+     * before it, the name of an archive's entry or of a playlist's first
+     * file. What this build writes of a file it will not hash ends
+     * otherwise, of a `.wbfs` inside an archive too, so a file is taken
+     * again by this once.
+     */
+    private fun leftForAReader(e: Entry): Boolean =
+        e.state == State.UNSUPPORTED_FORMAT &&
+        HashRecipe.READERS.keys.any { e.detail.endsWith(HashRecipe.noReaderFor(it)) }
 
     /**
      * What is held for [path] as it was recorded, or null. For a reader that

@@ -1,7 +1,7 @@
 # What librahasher.so beside this file was compiled from. native/build.sh writes
 # the two together and tests/native_manifest_check.py compares them: a
 # line that no longer holds is a library to build again.
-library 634cb17d586624f6410e4ac5054a3d1fdcd9d68d110d2a4381ce8a999ce8b9cb librahasher.so
+library dcec12b8c7864cc2a128d1c214e43c1413b69e14bd8a535163046115b44df174 librahasher.so
 compiler gcc (GCC) 16.2.1 20260810
 flags -std=gnu11 -O2 -fPIC -fvisibility=hidden -DRC_HASH_NO_ENCRYPTED -DMINIZ_NO_ARCHIVE_APIS -DMINIZ_NO_DEFLATE_APIS -DMINIZ_NO_STDIO -DMINIZ_NO_TIME -DNDEBUG -shared -Wl,-z,defs -Wl,-z,now -Wl,--version-script=hasher/src/main/cpp/jni.map
 input 3ff95500850ebe134589473059ae0616f450b1a99ebb77a9190c137d4b82785b hasher/src/main/cpp/jni.map
@@ -50,12 +50,12 @@ input 92efc390845a76d027cf2c3bbaae0c7643109f3b3654fea07ed01871a9a3b76a hasher/sr
 input ee8dc53130ee5a86df4a783e6f55cdb5cba6856e340c7e7feff40ff314461cc7 hasher/src/main/cpp/libchdr/src/libchdr_flac.c
 input 1d9617d27ec324674157dbe3e8284ed7ea32d6c6cf5b802996086559cef249f2 hasher/src/main/cpp/libchdr/src/libchdr_huffman.c
 input 9bd860b4a5cc11c7eeb48ad43194589536c5a49bc0a0b2b9aeb9d6ae21baf34f hasher/src/main/cpp/pb_chd.c
-input 6a1faa4ae90d5b6af2bfd6c9c5abb286ac68d49d5bbfc94faff635a80b85b73a hasher/src/main/cpp/pb_chd.h
+input 5ac4d2b888f7b755e669668be6c877dc54dcb66124e21b7f4cac9d4124801d3e hasher/src/main/cpp/pb_chd.h
 input fbfaa123f573e6a17b65723c6a76ffd227d2fc83278cfe21845852ac06c7beb6 hasher/src/main/cpp/pb_patchlevel.h
 input 16fb3cdd938ef4fc7fbd3bd22a68e6f831eff372f7a18429897249fca8fae925 hasher/src/main/cpp/pb_wbfs.c
 input 0fa8c31653e9eb27659775fa9e33091e249bf62aff36a408f0ee26cb23f81428 hasher/src/main/cpp/pb_wbfs.h
 input db1cf0070f2afdbfe4ce68189eb8d592e7c09a2e4cf2b30d98e9b69d280b1d4a hasher/src/main/cpp/rahasher.sources
-input 02ea4e75790f222ab9afb57a5f3d83793af3140124cb2569c00e848eebedaae0 hasher/src/main/cpp/rahasher_jni.c
+input 325f8ed4f390eda1b42de4fa55b9675fcd7bdbd4001fc51460a8627d87a39c82 hasher/src/main/cpp/rahasher_jni.c
 input 73c1178e501692a11fb702eb1d90d25a7c47ed1d02678c619bc087c9755b132b hasher/src/main/cpp/rcheevos/include/rc_consoles.h
 input 9683f979bb152781677ffd952a68fdddcb5d951eb227e96a2d1f7fd0feb3be62 hasher/src/main/cpp/rcheevos/include/rc_export.h
 input b2eeb7eb928ed07094463eefd8111ecc69a2f8aeb04e63b23172dcf3663a271b hasher/src/main/cpp/rcheevos/include/rc_hash.h

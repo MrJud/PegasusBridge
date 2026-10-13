@@ -660,7 +660,7 @@ class NativeConsoleHashTest {
             }
         }
         val hasher = ArchiveAwareHasher(counting, File(dir, "tmp"))
-        inCollection("psx", "Packed.chd", noise(64, seed = 42))
+        inCollection("psx", "Packed.cso", noise(64, seed = 42))
 
         val rows = listOf(
             inCollection("psx", "self.m3u", ascii("self.m3u\n"))
@@ -672,9 +672,9 @@ class NativeConsoleHashTest {
             // The disc may be on its way: a copy still running lists it first.
             inCollection("psx", "gone.m3u", ascii("Disc 1.cue\n"))
                 to HashOutcome.Failed("the playlist names Disc 1.cue, which is not there", retryable = true),
-            inCollection("psx", "packed.m3u", ascii("Packed.chd\n"))
-                to HashOutcome.UnsupportedFormat("Packed.chd, the first file the playlist names: " +
-                                                 ".chd is a format this build has no reader for"))
+            inCollection("psx", "packed.m3u", ascii("Packed.cso\n"))
+                to HashOutcome.UnsupportedFormat("Packed.cso, the first file the playlist names: " +
+                                                 ".cso is a format rcheevos does not read"))
         val wrong = rows.mapNotNull { (playlist, expected) ->
             val outcome = hasher.hashDetailed(playlist.path, "psx")
             if (outcome == expected) null else "${playlist.name}: expected $expected, got $outcome"
@@ -866,7 +866,8 @@ class NativeConsoleHashTest {
         val engine = listOf("MAJOR", "MINOR", "PATCH")
             .joinToString(".") { defined("rcheevos/src/rc_version.h", "RCHEEVOS_VERSION_$it") } +
             "+pb" + defined("pb_patchlevel.h", "PB_RCHEEVOS_PATCHLEVEL")
-        val sources = engine + "/wbfs" + defined("pb_wbfs.h", "PB_WBFS_READER")
+        val sources = engine + "/wbfs" + defined("pb_wbfs.h", "PB_WBFS_READER") +
+                      ",chd" + defined("pb_chd.h", "PB_CHD_READER")
 
         assertEquals(sources, RcheevosNative.version(), "the library, against the headers in the tree")
         assertEquals(sources, RcheevosNative.EXPECTED_VERSION, "the version the Kotlin expects")

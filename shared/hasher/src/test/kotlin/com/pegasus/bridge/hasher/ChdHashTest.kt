@@ -25,8 +25,11 @@ import kotlin.test.fail
  * gives it the hash it gives the same disc as a cue sheet or an `.iso`; and
  * that two images hashed at once share nothing.
  *
- * The library is asked directly. A scan still turns every `.chd` away before
- * it comes to the library, and what a scan makes of one is not held here.
+ * The first tests ask the library directly. The ones after them go the way
+ * a scan's hasher goes ([ArchiveAwareHasher]), which plans for the file by
+ * its collection first: a `.chd` out of an archive and one a playlist names,
+ * a file that is called `.chd` and is none, one that is not there, and a
+ * disc of a console a `.chd` is not read as.
  */
 class ChdHashTest {
 
@@ -138,7 +141,109 @@ class ChdHashTest {
         assertEquals(emptyList<String>(), wrong.take(5))
     }
 
+    // An archive's entry is copied out to be hashed, under a name that ends
+    // as the entry's does, and the reader knows a .chd by that ending. The
+    // digests beside the hash are of the entry, which is the ROM.
+    @Test
+    fun `a chd in an archive is taken out and hashed as the disc it holds`() {
+        val program = noise(7000, seed = 24)
+        val image = ChdImage.dvd(playStation2Disc("SLUS_200.24", program))
+        val packed = File(dir, "Disc.zip").also { zip ->
+            java.util.zip.ZipOutputStream(zip.outputStream()).use { z ->
+                z.putNextEntry(java.util.zip.ZipEntry("Disc.chd")); z.write(image); z.closeEntry()
+            }
+        }
+
+        val result = (planning.hashDetailed(packed.path, "ps2") as? HashOutcome.Ok ?: fail("no hash")).result
+
+        assertEquals(md5(ascii("SLUS_200.24") + program) to PLAYSTATION_2, result.hash to result.consoleId)
+        assertEquals("Disc.chd" to md5(image), result.archiveEntry to result.fileMd5)
+        assertEquals(emptyList(), File(dir, "tmp").walkTopDown().filter { it.isFile }.toList(), "left of the copy")
+    }
+
+    // The first file a playlist names is planned for as any file of the
+    // collection is, and a .chd is then the disc.
+    @Test
+    fun `a playlist that names a chd is hashed as that disc`() {
+        val program = noise(7000, seed = 25)
+        file("Game (Disc 1).chd", ChdImage.dvd(playStation2Disc("SLUS_200.25", program)))
+        val playlist = file("Game.m3u", ascii("Game (Disc 1).chd\r\nGame (Disc 2).chd\r\n"))
+
+        val result = (planning.hashDetailed(playlist.path, "ps2") as? HashOutcome.Ok ?: fail("no hash")).result
+
+        assertEquals(md5(ascii("SLUS_200.25") + program) to PLAYSTATION_2, result.hash to result.consoleId)
+    }
+
+    // The reader refuses the file by its first bytes and says so, and
+    // rcheevos then says of the track what it says of any it could not
+    // open. The file does open, so this is a verdict to keep: it will be
+    // no CHD at the next scan either.
+    @Test
+    fun `a file called chd that is no CHD is kept as one the console refused, with the reader's reason`() {
+        val fake = file("Fake.chd", noise(4096, seed = 26))
+
+        assertEquals(HashOutcome.Failed("the hasher could not read Fake.chd: " +
+                                        "CHD: the file does not begin as a CHD does; Could not open track",
+                                        retryable = false),
+                     planning.hashDetailed(fake.path, "ps2"))
+    }
+
+    // A file the walk found and that is gone when its turn comes, with the
+    // card it was on. The scan's hasher looks before it asks, and says so.
+    // Gone between that look and the call, the file is the reader's to
+    // miss: it opens the image through rcheevos' reader of files and says
+    // what that says, in the words a failure is known by as one to try
+    // again, and not the words of an image it refused.
+    @Test
+    fun `a chd that is not there is tried again`() {
+        val gone = File(dir, "Gone.chd")
+        assertEquals(HashOutcome.Failed("no such file", retryable = true), planning.hashDetailed(gone.path, "ps2"))
+
+        for (console in listOf(PLAYSTATION_2, 0)) {
+            val failed = native.hashForConsole(gone.path, console) as? HashOutcome.Failed
+                ?: fail("a file that is not there was answered for")
+            assertTrue(failed.retryable && RcheevosNative.isTransient(failed.reason), "console $console: $failed")
+            assertTrue(failed.reason.startsWith("Could not open file"), failed.reason)
+        }
+    }
+
+    // Where nothing is known of the collection rcheevos tries a .chd as
+    // each console it knows one of, and the first that finds its disc in
+    // the image answers. A PlayStation 2 disc is one of the nine a .chd is
+    // read as, and its hash is kept. The list goes on to the PC-FX, which
+    // is none of them: the reader answers for it, as this image shows by
+    // getting a hash from the library, and nothing here has held that hash
+    // against a disc. It is not kept, in a folder nothing is known of as
+    // in a collection of that console, where the file is not even read.
+    @Test
+    fun `left to guess, a chd of one of the nine consoles keeps its hash and one of another does not`() {
+        val program = noise(7000, seed = 27)
+        val known = file("Known.chd", ChdImage.dvd(playStation2Disc("SLUS_200.27", program)))
+        val kept = (planning.hashDetailed(known.path, "attic") as? HashOutcome.Ok ?: fail("no hash")).result
+        assertEquals(md5(ascii("SLUS_200.27") + program) to PLAYSTATION_2, kept.hash to kept.consoleId)
+
+        // A PC-FX disc as rcheevos knows one: the marker in the first
+        // sector, and in the second where the program lies and how long
+        // it is.
+        val track = rawTrack(32)
+        ascii("PC-FX:Hu_CD-ROM").copyInto(track, 16)
+        byteArrayOf(2, 0, 0, 0, 1, 0, 0, 0).copyInto(track, 2352 + 16 + 32)
+        val other = file("Other.chd", ChdImage.cd(listOf(ChdImage.Track("MODE1_RAW", track.chunked(2352)))))
+        val guess = native.hashForConsole(other.path, 0) as? HashOutcome.Ok ?: fail("the library gave no hash")
+        assertEquals(PC_FX, guess.result.consoleId, "the console the library settles on")
+
+        assertEquals(HashOutcome.Failed("the hasher could not read Other.chd: rcheevos takes this .chd for " +
+                                        "console 49, which is not one of the nine a .chd is read as", retryable = false),
+                     planning.hashDetailed(other.path, "attic"))
+        assertEquals(HashOutcome.UnsupportedFormat("a .chd is read as a disc of nine consoles, " +
+                                                   "and console 49 is not one of them"),
+                     planning.hashDetailed(other.path, "pcfx"))
+    }
+
     // ---------------------------------------------------------------- helpers
+
+    /** The library as a scan asks it: behind the plan made for the file's collection. */
+    private val planning: ArchiveAwareHasher by lazy { ArchiveAwareHasher(native, File(dir, "tmp")) }
 
     private fun file(name: String, bytes: ByteArray) = File(dir, name).apply { writeBytes(bytes) }
 
@@ -152,6 +257,14 @@ class ChdHashTest {
      * is of the first 512 bytes of that sector's data.
      */
     private fun segaCdTrack(sectors: Int = 32): ByteArray {
+        val track = rawTrack(sectors)
+        ascii("SEGADISCSYSTEM  CHDTEST    ").copyInto(track, 16)
+        ascii("SEGA MEGA DRIVE ").copyInto(track, 16 + 0x100)
+        return track
+    }
+
+    /** Raw sectors of 2352 bytes, each with its sync pattern, its address and mode 1, and noise for its data. */
+    private fun rawTrack(sectors: Int): ByteArray {
         fun bcd(n: Int) = ((n / 10) shl 4 or (n % 10)).toByte()
         val track = ByteArray(sectors * 2352)
         for (s in 0 until sectors) {
@@ -161,8 +274,6 @@ class ChdHashTest {
             byteArrayOf(bcd(lba / 4500), bcd(lba / 75 % 60), bcd(lba % 75), 1).copyInto(track, at + 12)
             noise(2048, seed = 900 + s).copyInto(track, at + 16)
         }
-        ascii("SEGADISCSYSTEM  CHDTEST    ").copyInto(track, 16)
-        ascii("SEGA MEGA DRIVE ").copyInto(track, 16 + 0x100)
         return track
     }
 
@@ -214,6 +325,7 @@ class ChdHashTest {
     private companion object {
         const val SEGA_CD = 9
         const val PLAYSTATION_2 = 21
+        const val PC_FX = 49
 
         /**
          * The library Gradle's test task names, loaded by its path as the

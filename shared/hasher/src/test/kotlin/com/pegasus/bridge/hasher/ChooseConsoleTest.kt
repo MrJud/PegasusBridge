@@ -71,6 +71,7 @@ class ChooseConsoleTest {
             // The size says something of a .bin and an .img alone.
             Case("megadrive", "x.md", hash(1), size = 40 * MIB),
             Case("megadrive", "x.gdi", hash(40, foreign = true)),
+            Case("megadrive", "x.chd", hash(9)),
             Case("segacd", "x.bin", hash(9)),
             Case("mastersystem", "x.sms", hash(11)),
             Case("gamegear", "x.gg", hash(15)),
@@ -78,11 +79,15 @@ class ChooseConsoleTest {
             // says which of a family the file is, and what a stray is.
             Case("gamegear", "x.sms", hash(11)),
             Case("gba", "x.sms", hash(11, foreign = true)),
-            // PC Engine: the CD game is its descriptor and nothing else.
+            // PC Engine: the CD game is its descriptor or a .chd, and
+            // nothing else. Among the HuCards a .chd is the disc a .cue is.
             Case("pcengine", "x.pce", hash(8)),
             Case("pcengine", "x.sgx", hash(8)),
             Case("pcengine", "x.cue", hash(76)),
+            Case("pcengine", "x.chd", hash(76)),
             Case("pcenginecd", "x.cue", hash(76)),
+            Case("pcenginecd", "x.chd", hash(76)),
+            Case("pcenginecd", "X.CHD", hash(76)),
             Case("pcenginecd", "x.iso", UNSUPPORTED_FORMAT),
             Case("pcenginecd", "x.bin", UNSUPPORTED_FORMAT),
             Case("atarijaguar", "x.j64", hash(17)),
@@ -98,7 +103,28 @@ class ChooseConsoleTest {
             Case("psx", "x.m3u", Plan.ResolvePlaylist),
             Case("gba", "x.m3u", Plan.ResolvePlaylist),
             Case("ps2", "x.iso", hash(21)),
-            Case("ps2", "x.chd", UNSUPPORTED_FORMAT),
+            // A .chd is a disc of its collection's console, for the nine
+            // consoles the reader has been held to, loose or out of an
+            // archive.
+            Case("ps2", "x.chd", hash(21)),
+            Case("ps2", "X.CHD", hash(21)),
+            Case("ps2", "x.chd", hash(21), insideArchive = true),
+            Case("ps2", "x.chd", hash(21), size = 4096 * MIB),
+            Case("psx", "x.chd", hash(12)),
+            Case("psp", "x.chd", hash(41)),
+            Case("segacd", "x.chd", hash(9)),
+            Case("saturn", "x.chd", hash(39)),
+            Case("dreamcast", "x.chd", hash(40)),
+            Case("3do", "x.chd", hash(43)),
+            // And of no other: a cartridge console would hash the bytes of
+            // the container, and the PC-FX and the Jaguar CD ask for tracks
+            // in ways the reader has not been held to.
+            Case("nes", "x.chd", UNSUPPORTED_FORMAT),
+            Case("gc", "x.chd", UNSUPPORTED_FORMAT),
+            Case("wii", "x.chd", UNSUPPORTED_FORMAT),
+            Case("pcfx", "x.chd", UNSUPPORTED_FORMAT),
+            Case("atarijaguar", "x.chd", UNSUPPORTED_FORMAT),
+            Case("nes", "x.chd", UNSUPPORTED_FORMAT, insideArchive = true),
             Case("psp", "x.iso", hash(41)),
             Case("psp", "x.cso", UNSUPPORTED_FORMAT),
             Case("wii", "x.iso", hash(19, 16)),
@@ -169,6 +195,10 @@ class ChooseConsoleTest {
             Case("somefolder", "x.bin", Plan.Guess, size = 40 * MIB),
             Case("somefolder", "x.cue", Plan.Guess),
             Case("somefolder", "x.md", Plan.Guess),
+            // A .chd too: rcheevos tries it as each console it knows a
+            // .chd of, and what it settles on is looked at afterwards.
+            Case("somefolder", "x.chd", Plan.Guess),
+            Case("somefolder", "x.chd", Plan.Guess, insideArchive = true),
             // Not guessed either: rcheevos has no console for the extension,
             // and its guess for one it does not know is the Game Boy.
             Case("somefolder", "x.wbfs", hash(19)),
@@ -204,15 +234,24 @@ class ChooseConsoleTest {
             (ConsoleChoice.choose(RcConsoles.row(collection), extension, 1, insideArchive) as Plan.UnsupportedFormat).reason
         assertEquals("a .txt file is not a game", words("psx", "txt"))
         assertEquals(".cso is a format rcheevos does not read", words("psp", "CSO"))
-        assertEquals(".chd is a format this build has no reader for", words("ps2", "chd"))
+        assertEquals("a .chd is read as a disc of nine consoles, and console 7 is not one of them", words("nes", "chd"))
+        assertEquals("a .chd is read as a disc of nine consoles, and console 49 is not one of them", words("pcfx", "CHD"))
+        assertEquals("a .chd is read as a disc of nine consoles, and console 77 is not one of them",
+                     words("atarijaguar", "chd"))
         assertEquals("an arcade set is a .zip or a .7z, and this is a .bin", words("arcade", "bin"))
+        assertEquals("an arcade set is a .zip or a .7z, and this is a .chd", words("arcade", "chd"))
         assertEquals("an arcade set inside an archive has lost its name", words("arcade", "zip", insideArchive = true))
         assertEquals("an archive inside an archive is not opened", words("nes", "7z", insideArchive = true))
         assertEquals("a .wbfs inside an archive is not unpacked", words("wii", "wbfs", insideArchive = true))
         assertEquals("a .md file in this collection is not a Mega Drive cartridge", words("psx", "md"))
         assertEquals("rcheevos reads a .pbp only as a PSP game", words("psx", "pbp"))
         assertEquals("a .cue describes a disc, and console 3 is not hashed as one", words("snes", "cue"))
-        assertEquals("a PC Engine CD game is hashed from its .cue, and this is a .iso", words("pcenginecd", "iso"))
+        assertEquals("a PC Engine CD game is hashed from its .cue or its .chd, and this is a .iso",
+                     words("pcenginecd", "iso"))
+        // What a build with no reader for a format says of it, and the
+        // ledger knows such a build's verdicts by. Nothing is turned away
+        // in these words today.
+        assertEquals(".xyz is a format this build has no reader for", HashRecipe.noReaderFor("xyz"))
     }
 
     /**
@@ -246,6 +285,9 @@ class ChooseConsoleTest {
                     if (plan.foreign == (plan.console in family)) wrong += "$what: $plan, and the family is $family"
                     if (row.arcade && extension != "neo")
                         wrong += "$what is in an arcade collection and is hashed as a file"
+                    if (extension == "chd" && plan.console !in ConsoleChoice.CHD_CONSOLES)
+                        wrong += "$what is a .chd hashed as console ${plan.console}"
+                    if (extension == "chd" && plan.alternates.isNotEmpty()) wrong += "$what: $plan"
                 }
                 if (plan is Plan.ArcadeSet && !(row is RcConsoles.Hashable && row.arcade)) wrong += "$what is an arcade set"
             }
@@ -284,10 +326,42 @@ class ChooseConsoleTest {
         assertTrue(82 in RcConsoles.HELD_BACK, "the PlayStation 3, which the guess for an .iso and a .chd tries")
     }
 
+    /**
+     * For a .chd that list has the PC-FX on it as well, which is none of
+     * the consoles a .chd is read as. In a collection of that console the
+     * file is turned away by its name; where nothing is known of the
+     * collection the hash has been made by the time anybody can tell, and
+     * is not kept. The same console is a good answer for any other file.
+     */
+    @Test fun `a guess that takes a chd for a console it is not read as is a failure, kept`() {
+        fun answered(console: Int) = HashOutcome.Ok(HashResult("0123456789abcdef0123456789abcdef", console))
+
+        for (console in ConsoleChoice.CHD_CONSOLES) {
+            val ok = answered(console)
+            assertTrue(ConsoleChoice.guessed(ok, "chd") === ok, "console $console")
+        }
+        for (extension in listOf("chd", "CHD")) {
+            assertEquals(HashOutcome.Failed("rcheevos takes this .chd for console 49, " +
+                                            "which is not one of the nine a .chd is read as", retryable = false),
+                         ConsoleChoice.guessed(answered(49), extension))
+        }
+        val pcfx = answered(49)
+        assertTrue(ConsoleChoice.guessed(pcfx, "cue") === pcfx, "a cue sheet of the same console")
+        assertTrue(ConsoleChoice.guessed(pcfx) === pcfx, "a caller that names no extension")
+        // Held back comes first, and is said in its own words.
+        assertEquals(HashOutcome.Failed("rcheevos takes it for a file of RC_CONSOLE_PLAYSTATION_3 (id 82), which is held back",
+                                        retryable = false), ConsoleChoice.guessed(answered(82), "chd"))
+        val unread = HashOutcome.Failed("Could not open file")
+        assertTrue(ConsoleChoice.guessed(unread, "chd") === unread)
+        assertEquals(setOf(9, 12, 21, 39, 40, 41, 43, 56, 76), ConsoleChoice.CHD_CONSOLES)
+        assertTrue(ConsoleChoice.CHD_CONSOLES.all { RcConsoles.console(it)?.algorithm == RcConsoles.Algorithm.DISC },
+                   "a console of the nine is not hashed as a disc")
+    }
+
     @Test fun `the three lists of extensions that are never hashed`() {
         assertEquals(setOf("rvz", "wia", "gcz", "ciso", "cso", "zso", "isz", "ecm", "cdi", "nrg", "nsp", "xci",
                            "nsz", "xcz", "ccd", "toc", "mds", "sub"), ConsoleChoice.DENIED_ALWAYS)
-        assertEquals(setOf("chd"), ConsoleChoice.DENIED_THIS_BUILD)
+        assertEquals(emptySet(), ConsoleChoice.DENIED_THIS_BUILD)
         assertEquals(ArchiveSelector.NEVER_THE_ROM + setOf("bml", "sbi", "lst", "elf"), ConsoleChoice.NOT_A_ROM)
         assertTrue("txt" in ConsoleChoice.NOT_A_ROM && "sav" in ConsoleChoice.NOT_A_ROM)
         // Markdown to most software and a Mega Drive cartridge here: the collection decides, not a list.

@@ -296,7 +296,7 @@ class HashRecipeTest {
             rom("cartridges", "Unread.nes", "UNREAD"), stub("cartridges", "Not Here Yet.nes"),
             File(romRoot, "cartridges/Empty.nes").apply { writeText("") },
             // Turned away by its name before it is read, in a collection that can be hashed.
-            rom("cartridges", "Packed.chd", "never read"))
+            rom("cartridges", "Packed.cso", "never read"))
         val states = mapOf(
             ScanLedger.State.MATCHED to 1, ScanLedger.State.NOT_FOUND to 1, ScanLedger.State.KNOWN_UNSUPPORTED to 1,
             ScanLedger.State.UNHASHABLE to 1, ScanLedger.State.AMBIGUOUS_ARCHIVE to 1,
@@ -498,6 +498,35 @@ class HashRecipeTest {
         assertNull(ledger.canSkip("/roms/wii/Disc.iso", wii, 10, 20, now = 1000))
     }
 
+    // The numbers three collections had in the build before the one that
+    // came to read a .chd, written out: one the reader is for, one it has
+    // nothing to do with, and a folder nothing is known of. A reader that
+    // is counted in moves none of them, so every verdict of those
+    // collections on a file that is no .chd is found standing by the build
+    // that carries it. Were one of these to change with a reader, that
+    // build would read every library again for the sake of its packed
+    // discs. A table that is edited moves them too, and then the new
+    // numbers are written here with the line of the test above.
+    @Test fun `a reader that is counted in moves no collection's number`() {
+        val recipe = HashRecipe("none")
+        val collections = listOf("ps2", "nes", "attic").map { CollectionRef.inferred(it) }
+
+        assertEquals(listOf(1646433656, 321660687, 803730885), collections.map { recipe.versionFor(it) })
+        // Nor the number of a file the reader that was there before reads.
+        assertEquals(162122514, recipe.versionFor(CollectionRef.inferred("wii"), "wbfs"))
+        for (c in collections) {
+            assertEquals(recipe.versionFor(c), recipe.versionFor(c, "iso"), c.shortName)
+            assertEquals(recipe.versionFor(c), recipe.versionFor(c, "zip"), "an archive, whatever it holds")
+            assertEquals(recipe.versionFor(c), recipe.versionFor(c, "m3u"), "a playlist, whatever it names")
+            // The reader is in the number of the files it reads, in a
+            // collection whose .chd files are turned away as well: what is
+            // said of one there is said by a build that has the reader.
+            assertNotEquals(recipe.versionFor(c), recipe.versionFor(c, "chd"), c.shortName)
+            assertEquals(recipe.versionFor(c, "chd"), recipe.versionFor(c, "CHD"), c.shortName)
+            assertNotEquals(recipe.versionFor(c, "wbfs"), recipe.versionFor(c, "chd"), "one number for two readers")
+        }
+    }
+
     // The library says which readers it has after the slash of its version,
     // and a library that says otherwise than the Kotlin expects is not
     // loaded. So a reader counted up in the C is a literal to change, and
@@ -505,7 +534,7 @@ class HashRecipeTest {
     // again by the build that carries it.
     @Test fun `the readers the library is expected to have are the ones the recipe counts`() {
         assertEquals(RcheevosNative.EXPECTED_VERSION.substringAfter('/', ""), HashRecipe.readers)
-        assertEquals("wbfs1", HashRecipe.readers)
+        assertEquals("wbfs1,chd1", HashRecipe.readers)
         // No reader for a format that is still turned away by its name: the
         // two lists would be saying two things of one extension.
         assertEquals(emptySet(), HashRecipe.READERS.keys intersect

@@ -131,7 +131,7 @@ to leave that to the file's extension, and hands back what rcheevos said of a
 file it gave no hash for; the scan records that after the file's name
 (`the hasher could not read X: <reason>`). `version` is the rcheevos release,
 the number of local patches on it and, after a slash, the readers of our own
-with the turn each is at (`12.5.0+pb10/wbfs1`). `NativeHasher` and
+with the turn each is at (`12.5.0+pb10/wbfs1,chd1`). `NativeHasher` and
 `NativeRomHasher` only load the library, and each holds that version against
 the one it was built for before any file is hashed. The part before the slash
 is the hasher's `engine`, which every verdict is kept under; a reader is
@@ -144,9 +144,7 @@ more, and `HashResult.caveat` carries it. No note means that no byte of a
 missing block was hashed, not that the copy is a full one: a tool can blank
 what a disc does not use inside blocks that are held. A path that ends in `.chd`
 is hashed by rcheevos as the disc console that was asked for, through the reader
-of tracks in `pb_chd.c` (see "The hasher's library"); a scan does not come to
-that yet, since `ConsoleChoice` still turns every `.chd` away before the
-library is asked. The rcheevos it is compiled
+of tracks in `pb_chd.c` (see "The hasher's library"). The rcheevos it is compiled
 from is the folder `hasher/src/main/cpp/rcheevos`: upstream's tree as
 `rcheevos.version` beside it names it, file by file, with the patches of
 `rcheevos-patches/` on it, which `shared/tests/vendored_check.py` holds it to.
@@ -171,6 +169,33 @@ a hash rcheevos then gives under a console that is held back
 (`RcConsoles.HELD_BACK`: the PlayStation 3, which it tries an `.iso` as) is a
 failure that is kept, and not a hash.
 
+A `.chd` is a disc of its collection's console, and is hashed as that disc by
+rcheevos' own code through the library's reader of tracks (`pb_chd.c`), loose,
+out of an archive, or as the first file a playlist names. That holds for nine
+consoles (`ConsoleChoice.CHD_CONSOLES`): PlayStation, PlayStation 2, PSP,
+Saturn, Sega CD, Dreamcast, PC Engine CD, 3DO and Neo Geo CD, for each of which
+a synthetic disc hashes alike from a `.chd` and from a cue sheet, a `.gdi` or
+an `.iso`. The console is the one the collection's row gives a `.chd`, else the
+one it gives a `.cue`, else the collection's own: under `megadrive` a `.chd` is
+a Sega CD disc, under `pcengine` a PC Engine CD game. In a collection of any
+other console the file is `UNSUPPORTED_FORMAT` and not read (`a .chd is read as
+a disc of nine consoles, and console 7 is not one of them`): a cartridge
+console would hash the container's bytes, and the PC-FX and the Jaguar CD ask
+for tracks in ways nothing has held against a disc. In a collection nothing is
+known of, rcheevos tries the `.chd` as each console it knows one of, and a hash
+it gives under a console outside the nine is a failure that is kept
+(`rcheevos takes this .chd for console 49, ...`). There is no row for a
+collection of Neo Geo CD games, so those are hashed by that guess. What the
+reader refuses is `UNHASHABLE` with the reader's reason in its detail, which
+begins `CHD:`: a version before 5, a difference against a parent image, a
+hunk that cannot be read (the image is cut short or does not unpack to its
+checksum), a file that is no CHD. One
+refusal is of a sound image: a track that lies after a pregap which
+RetroAchievements' own hasher and chdman, which writes the format, place
+differently is not hashed, since only one of the two hashes could be the
+disc's (see "The `.chd` reader" for which images that is). An image that could
+not be opened at all is `HASH_FAILED` and tried at every scan.
+
 A `.wbfs` is a Wii disc wherever it lies, in a collection nothing is known of
 as well, and is hashed as one by the library's own reader (`pb_wbfs.c`): in a
 collection whose family the Wii is not of it is a stray, and in an arcade
@@ -191,8 +216,7 @@ full copy` when such bytes are half or more of what was hashed, and below that
 the two numbers with `not the hash of a full copy`. A miss with no detail is
 not thereby a full copy: no byte of a missing block was hashed, which is all
 that is counted. The theme is told `not_in_database` either way. A `.wbfs`
-inside an archive is not unpacked and stays `UNSUPPORTED_FORMAT`, as does a
-`.chd` anywhere, for which this build has no reader.
+inside an archive is not unpacked and stays `UNSUPPORTED_FORMAT`.
 
 Beside the hash a scan keeps the MD5 and CRC of the file itself (`rom.fileMd5`,
 `rom.fileCrc32`), and takes them only where the read they need costs next to
@@ -250,12 +274,25 @@ size and date, with no read and no request. A file that shares its game's
 metadata file with another, a second dump or a track beside its sheet, is not
 described by it, and is then read and looked up once. One thing is in the
 number of some files only: a reader of our own in the library
-(`HashRecipe.READERS`, today `wbfs1`) is in the number of the files of its
+(`HashRecipe.READERS`, today `wbfs1,chd1`) is in the number of the files of its
 extension, by the name the scan found the file under, and of no other. So the
-build that first reads a `.wbfs`, or a later one whose reader answers
-otherwise, has those files hashed once more and leaves every other verdict
-standing; the line all numbers share is what it was, `containers=wbfs0,chd0`
-included, which is frozen for that reason. What no table shows is
+build that first reads a `.wbfs` or a `.chd`, or a later one whose reader
+answers otherwise, has those files hashed once more and leaves every other
+verdict standing; the line all numbers share is what it was,
+`containers=wbfs0,chd0` included, which is frozen for that reason. A packed
+disc is also reached through a file of another name, an archive that holds
+one or a playlist that names one first, and the build that had no reader kept
+its verdict for that file, under a number no reader is in. So one verdict is
+known by its words instead (`ScanLedger.canSkip`): an `UNSUPPORTED_FORMAT`
+whose detail ends in `.<ext> is a format this build has no reader for`, for
+an extension that has a reader now, does not stand, and the file is planned
+for again at the next scan. Nothing else is taken again by that, and it
+happens once: an archive that holds a `.chd` and a playlist of `.chd` or
+`.wbfs` discs are hashed, and an archive that holds a `.wbfs` is listed once
+more and kept in the words that are true of it now, that it is not unpacked.
+A sentence of text under the name of a `.chd` or a `.wbfs` is a placeholder
+under a number without the reader, so it is opened once more, its first 513
+bytes at most, and kept as a placeholder under the new one. What no table shows is
 the code that judges, and for a change to that a number in the recipe is still
 raised by hand, `HashRecipe.RULES`, with two beside it for one corner each:
 `PLACEHOLDERS` and `CONTAINERS`. The scan logs the line the numbers are made
@@ -276,7 +313,7 @@ size, its date and its number are what they were:
 | `API_RETRY` | a list the hash was to be looked up in could not be had | `failedLookups` | never kept |
 | `UNSUPPORTED` | its collection is of a console nobody can hash for | `skippedPlatforms` | 90 days, and decided again at every scan |
 | `PLACEHOLDER` | an empty file, or a few lines of text under a ROM's name | `skippedPlatforms` | as long as the file does |
-| `UNSUPPORTED_FORMAT` | the collection can be hashed and this file cannot: a format nobody reads or this build has no reader for (`.chd`; a `.wbfs` inside an archive), a file that is no game | `hashFailed` | 90 days, and decided again at every scan where the name says it |
+| `UNSUPPORTED_FORMAT` | the collection can be hashed and this file cannot: a format nobody reads (`.cso`, `.rvz`), a `.wbfs` inside an archive, a `.chd` of a console such a disc is not read as, a file that is no game | `hashFailed` | 90 days, and decided again at every scan where the name says it |
 | `NO_PLAYABLE_ENTRY` | an archive that opened and holds no game of its collection | `hashFailed` | 30 days |
 | `AMBIGUOUS_ARCHIVE` | an archive in which several entries could each be the game | `hashFailed` | 7 days |
 | `UNHASHABLE` | the console of its collection read the file and refused it, or its archive or its disc's sheet is one nothing can be made of. Also a file that was set aside, with a detail that begins `set aside:` (see "When the process dies in a scan") | `hashFailed` | 30 days |
@@ -1101,7 +1138,12 @@ given); any decoder against hostile input beyond the rows there are. One
 thing is known of that: handed a FLAC stream that has been spoiled, dr_flac
 adds and multiplies past what a signed number holds, which C leaves
 undefined and the sanitized build reports; what comes out fails the hunk's
-checksum, and no row has such a stream. The file a scan has in the hasher is
+checksum, and no row has such a stream. Another is rcheevos' own and older
+than the reader: reading a directory of a disc whose sector numbers have
+their top bit set, it shifts a byte into the sign of a number
+(`hash_disc.c`), which is undefined as well and reported the same way, from
+a `.chd` as from an `.iso`; it is left, since a patch there is another
+patch level and with it every verdict taken again. The file a scan has in the hasher is
 written down
 (`cache/scan-inflight.jsonl`), which is what covers a file that ends the
 process inside a decoder.
@@ -1132,7 +1174,7 @@ hunk is ever written to. chdman's own hunks say their own size.
 
 The reader made each library larger: `librahasher.so` 412,896 bytes where it
 was 97,288, `rahasher.dll` 502,154 where it was 188,908, the stripped arm64
-library of a debug build 306,648 where it was 81,632. No option removes the
+library of a debug build 306,680 where it was 81,632. No option removes the
 decoders' unused functions.
 
 Three builds compile that list:

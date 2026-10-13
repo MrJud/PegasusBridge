@@ -15,6 +15,13 @@
 #include "rc_hash.h"
 
 /*
+ * Counted up whenever the reader comes to answer otherwise for some file.
+ * The library says it in its version, and a scan keeps the verdict of a
+ * .chd under it.
+ */
+#define PB_CHD_READER 1
+
+/*
  * Puts the reader on an iterator made with rc_hash_initialize_iterator, and
  * is to be called after it, as the callback for errors is set after it. From
  * then on a track of a path that ends in .chd is opened here, and a track of

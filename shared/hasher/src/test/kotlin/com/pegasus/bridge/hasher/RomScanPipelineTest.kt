@@ -603,7 +603,7 @@ class RomScanPipelineTest {
         stub("nes", "Nothing (World).nes", "")
         stub("nes", "Not Here Yet (World).nes")
         rom("switch", "Game.nes", "hash-switch")
-        rom("ps2", "Game.chd", "never read")
+        rom("ps2", "Game.cso", "never read")
         zip("nes", "Two Games.zip", "first.nes" to "hash-first", "second.nes" to "hash-second")
         zip("nes", "Patch.zip", "Patch.ips" to "x".repeat(64), "readme.txt" to "x")
         zip("psx", "Disc.zip", "Disc.ccd" to "[CloneCD]", "Disc.img" to "x".repeat(4096))
@@ -1126,7 +1126,8 @@ class RomScanPipelineTest {
                 to "rcheevos' algorithm for RC_CONSOLE_NINTENDO_3DS (id 62) is not built in: it needs decryption keys")
         val unsupportedFormat = mapOf(
             rom("gc", "x.rvz", "never read") to ".rvz is a format rcheevos does not read",
-            rom("ps2", "x.chd", "never read") to ".chd is a format this build has no reader for",
+            rom("nes", "x.chd", "never read")
+                to "a .chd is read as a disc of nine consoles, and console 7 is not one of them",
             rom("psp", "x.cso", "never read") to ".cso is a format rcheevos does not read",
             rom("arcade", "chip.bin", "never read") to "an arcade set is a .zip or a .7z, and this is a .bin",
             rom("psx", "README.md", "never read") to "a .md file in this collection is not a Mega Drive cartridge")
@@ -1182,7 +1183,7 @@ class RomScanPipelineTest {
     // as long as the ROM was not touched.
     @Test fun `what an earlier scan kept for a file nobody can hash gives way at once`(): Unit = runBlocking {
         val disk = rom("amiga", "Kept.adf", "never read")
-        val packed = rom("ps2", "Packed.chd", "never read")
+        val packed = rom("ps2", "Packed.cso", "never read")
         val answered = rom("amiga", "Lantern Keep (USA).adf", "never read")
         ScanLedger(File(paths.cache, ScanLedger.FILE_NAME)).apply {
             for (f in listOf(disk, packed))
@@ -1296,7 +1297,7 @@ class RomScanPipelineTest {
         val corrupt = rom("nes", "Lantern Keep (USA).zip", "the start of a download")
         val patch = zip("ps2", "Other Game (Europe) [patch].zip",
                         "Other Game (Europe).7z" to "x".repeat(4096), "how to apply.txt" to "x")
-        val packed = zip("ps2", "Third Game (Japan).zip", "Third Game (Japan).chd" to "x".repeat(4096))
+        val packed = zip("ps2", "Third Game (Japan).zip", "Third Game (Japan).cso" to "x".repeat(4096))
         val tmp = Files.createTempDirectory("hasher-tmp").toFile()
         val expected = counts(new = 0, cached = 0, skipped = 0, unmatched = 0, incompatible = 0,
                               hashFailed = 3, failedLookups = 0)
@@ -1316,8 +1317,8 @@ class RomScanPipelineTest {
             assertTrue(kept(corrupt).second.startsWith("not a readable archive: "), kept(corrupt).second)
             assertEquals("NO_PLAYABLE_ENTRY" to "nothing in the archive is a game of this collection: " +
                                                 "Other Game (Europe).7z", kept(patch))
-            assertEquals("UNSUPPORTED_FORMAT" to "'Third Game (Japan).chd' in the archive: " +
-                                                 ".chd is a format this build has no reader for", kept(packed))
+            assertEquals("UNSUPPORTED_FORMAT" to "'Third Game (Japan).cso' in the archive: " +
+                                                 ".cso is a format rcheevos does not read", kept(packed))
 
             // And on a rescan each is found standing: counted where it was,
             // with no archive opened. A hasher that fails the scan when it is
@@ -1579,7 +1580,7 @@ class RomScanPipelineTest {
         val stubs = listOf(stub("psp", "Not Here Yet.cso"), stub("dreamcast", "Not Here Yet.cdi"),
                            stub("wii", "Not Here Yet.wbfs"), stub("ps2", "Not Here Yet.chd"),
                            stub("arcade", "nothere.bin"), stub("psx", "Not Here Yet.pbp"))
-        val images = listOf(rom("psp", "Small And Real.cso", "CISO"), rom("ps2", "Small And Real.chd", "MComprHD"))
+        val images = listOf(rom("psp", "Small And Real.cso", "CISO"), rom("nes", "Small And Real.chd", "MComprHD"))
         val notes = stub("psp", "launcher.cfg", "kept beside the games")
         val expected = counts(new = 0, cached = 0, skipped = 6, unmatched = 0, incompatible = 0,
                               hashFailed = 3, failedLookups = 0)
@@ -1595,7 +1596,8 @@ class RomScanPipelineTest {
             assertEquals("PLACEHOLDER" to "text file, ${f.length()} bytes: not a ROM image",
                          ledgerEntry(f).let { it.getString("state") to it.getString("detail") }, f.path)
         }
-        assertEquals(listOf(".cso is a format rcheevos does not read", ".chd is a format this build has no reader for",
+        assertEquals(listOf(".cso is a format rcheevos does not read",
+                            "a .chd is read as a disc of nine consoles, and console 7 is not one of them",
                             "a .cfg file is not a game"),
                      (images + notes).map { ledgerEntry(it).getString("detail") })
 
@@ -1780,6 +1782,172 @@ class RomScanPipelineTest {
                          ledgerEntry(packed).getString("detail"))
         } finally {
             tmp.deleteRecursively()
+        }
+    }
+
+    // ── A reader that is new, and what older builds kept ─────────────────────
+
+    /** The text of every file it is handed, which is the hash it answers, under the console of a disc. */
+    private class ReadHasher : RomHasher {
+        val read: MutableList<String> = java.util.Collections.synchronizedList(mutableListOf())
+        override fun hash(path: String): HashResult? {
+            val text = File(path).readText().removeSuffix(NUL).trim()
+            read += text
+            return HashResult(text, 21)
+        }
+    }
+
+    /** A ledger as a build before this one left it: [entries] by file, under that build's numbers. */
+    private fun ledgerOfAnOlderBuild(vararg entries: Pair<File, JSONObject>) {
+        File(paths.cache, ScanLedger.FILE_NAME).writeText(JSONObject()
+            .put("schemaVersion", ScanLedger.SCHEMA_VERSION).put("algorithmVersion", HashRecipe("none").versionFor(null))
+            .put("entries", JSONObject().apply { for ((f, e) in entries) put(f.canonicalPath, e) })
+            .toString())
+    }
+
+    /**
+     * An entry of such a ledger, for [f] as it is on disk, checked an hour
+     * ago, with the fields a ledger writes: no game where there is none,
+     * and no detail where there is nothing to say.
+     */
+    private fun keptEarlier(f: File, state: String, version: Int, detail: String = "", gameId: Int = 0) = JSONObject()
+        .put("state", state).put("checkedAt", BridgePaths.epochSeconds() - 3600).put("fileSize", f.length())
+        .put("lastModified", f.lastModified()).put("algorithmVersion", version)
+        .also { if (gameId > 0) it.put("gameId", gameId) }
+        .also { if (detail.isNotEmpty()) it.put("detail", detail) }
+
+    // The build before this one turned every .chd away by its name, and
+    // kept that for a season in three shapes: the file itself, an archive
+    // whose one entry is a .chd, and a playlist whose first disc is one.
+    // The reader is in the number of a file called .chd, so the first is
+    // not found standing. The other two are kept under the name of a .zip
+    // and of an .m3u, whose numbers the reader is no part of, and would
+    // have stood for their ninety days. They are known by what was written
+    // of them: a format this build has no reader for, said of an extension
+    // that has one now. Such a verdict does not stand, whatever file it is
+    // kept for.
+    //
+    // And nothing else is read. The same library holds a miss, a file the
+    // console refused, a match, an archive of a format nobody reads, and an
+    // archive kept in the same words for an extension that still has no
+    // reader: each is found as it was, field for field. One file more is
+    // opened and not hashed: a sentence under the name of a .chd, which is
+    // a placeholder under a number without the reader, and is read once
+    // more, its first few hundred bytes, to be kept as a placeholder under
+    // the number with it.
+    @Test fun `a chd kept as a format with no reader is hashed by the next scan, and nothing else is`(): Unit = runBlocking {
+        val elsewhere = Files.createTempDirectory("hasher-discs").toFile()
+        val tmp = Files.createTempDirectory("hasher-tmp").toFile()
+        try {
+            val loose = rom("ps2", "Loose.chd", "hash-loose")
+            val packed = zip("ps2", "Packed.zip", "Packed.chd" to romText("hash-packed"))
+            // The disc a playlist names lies outside the library here, so
+            // that the scan meets it through the playlist alone.
+            val disc = File(elsewhere, "Listed (Disc 1).chd").apply { writeText(romText("hash-listed")) }
+            val listed = stub("ps2", "Listed.m3u", disc.absolutePath + "\n")
+
+            val miss = rom("ps2", "Miss.iso", "hash-miss")
+            val refused = rom("ps2", "Refused.iso", "never read")
+            val sentence = stub("ps2", "Not Here Yet.chd")
+            val match = rom("nes", "Match.nes", "hash-match-1")
+            val nobodyReads = zip("psp", "Packed.zip", "Packed.cso" to "x".repeat(4096))
+            val stillNoReader = zip("ps2", "Other.zip", "Other.xyz" to "x".repeat(4096))
+
+            val recipe = HashRecipe("none")
+            val ps2 = CollectionRef.inferred("ps2")
+            val before = recipe.versionFor(ps2)
+            val noReader = "is a format this build has no reader for"
+            val others = mapOf(
+                miss to keptEarlier(miss, "NOT_FOUND", before),
+                refused to keptEarlier(refused, "UNHASHABLE", before,
+                                       "the hasher could not read Refused.iso: Not a PlayStation 2 disc"),
+                match to keptEarlier(match, "MATCHED", recipe.versionFor(CollectionRef.inferred("nes")), gameId = 2001),
+                nobodyReads to keptEarlier(nobodyReads, "UNSUPPORTED_FORMAT", recipe.versionFor(CollectionRef.inferred("psp")),
+                                           "'Packed.cso' in the archive: .cso is a format rcheevos does not read"),
+                stillNoReader to keptEarlier(stillNoReader, "UNSUPPORTED_FORMAT", before,
+                                             "'Other.xyz' in the archive: .xyz $noReader"))
+            val stubText = "text file, ${sentence.length()} bytes: not a ROM image"
+            ledgerOfAnOlderBuild(
+                loose to keptEarlier(loose, "UNSUPPORTED_FORMAT", before, ".chd $noReader"),
+                packed to keptEarlier(packed, "UNSUPPORTED_FORMAT", before, "'Packed.chd' in the archive: .chd $noReader"),
+                listed to keptEarlier(listed, "UNSUPPORTED_FORMAT", before,
+                                      "${disc.name}, the first file the playlist names: .chd $noReader"),
+                sentence to keptEarlier(sentence, "PLACEHOLDER", before, stubText),
+                *others.map { it.key to it.value }.toTypedArray())
+            paths.metadata("2001").writeText(JSONObject()
+                .put("gameId", 2001).put("title", "Game 1").put("platform", "nes")
+                .put("cacheKey", FuzzyMatch.makeCacheKey("Match", "nes"))
+                .put("ra", JSONObject().put("total", 10))
+                .put("rom", JSONObject().put("hash", "hash-match-1")
+                    .put("fileSize", match.length()).put("lastModified", match.lastModified()))
+                .toString())
+            val asKept = others.mapValues { (f, _) -> ledgerEntry(f).toMap() }
+
+            val h = ReadHasher(); val l = MixedLookup()
+            RomScanPipeline(paths, ArchiveAwareHasher(h, tmp), l, throttleMs = { 0L }).scan(listOf(romRoot.absolutePath))
+
+            assertEquals(listOf("hash-listed", "hash-loose", "hash-packed"), h.read.sorted(), "the files read")
+            assertEquals(listOf("hash-listed", "hash-loose", "hash-packed"), l.asked.sorted(), "the hashes asked about")
+            fun kept(f: File) = ledgerEntry(f).let { it.getString("state") to it.getInt("algorithmVersion") }
+            assertEquals("NOT_FOUND" to recipe.versionFor(ps2, "chd"), kept(loose))
+            assertEquals("NOT_FOUND" to before, kept(packed), "an archive's number has no reader in it")
+            assertEquals("NOT_FOUND" to before, kept(listed), "a playlist's number has no reader in it")
+            for ((f, entry) in asKept) assertEquals(entry, ledgerEntry(f).toMap(), "${f.parentFile.name}/${f.name}")
+            assertEquals(Triple("PLACEHOLDER", recipe.versionFor(ps2, "chd"), stubText),
+                         ledgerEntry(sentence).let { Triple(it.getString("state"), it.getInt("algorithmVersion"),
+                                                            it.getString("detail")) })
+
+            val h2 = ReadHasher(); val l2 = MixedLookup()
+            RomScanPipeline(paths, ArchiveAwareHasher(h2, tmp), l2, throttleMs = { 0L }).scan(listOf(romRoot.absolutePath))
+            assertEquals(emptyList(), h2.read.toList(), "read a second time")
+            assertEquals(emptyList(), l2.asked.toList(), "asked about a second time")
+            assertEquals(emptyList(), tmp.walkTopDown().filter { it.isFile }.toList(), "left of what was copied out")
+        } finally {
+            elsewhere.deleteRecursively(); tmp.deleteRecursively()
+        }
+    }
+
+    // The same holds for the reader that came first. A playlist whose first
+    // disc is a .wbfs was kept, by the build before that reader, in the
+    // words above, and went on standing after it: the disc is hashed now.
+    // An archive whose one entry is a .wbfs was kept so as well. It is
+    // planned for once more, which lists it and copies nothing out of it,
+    // and is kept in the words that are true of it today, that such an
+    // entry is not unpacked. Those are not the words of a build with no
+    // reader, so that verdict stands, and the archive is not listed again.
+    @Test fun `a playlist of a wbfs is hashed by the next scan, and an archive of one is turned away once more and then stands`(): Unit = runBlocking {
+        val elsewhere = Files.createTempDirectory("hasher-discs").toFile()
+        val tmp = Files.createTempDirectory("hasher-tmp").toFile()
+        try {
+            val disc = File(elsewhere, "Listed (Disc 1).wbfs").apply { writeText(romText("hash-listed")) }
+            val listed = stub("wii", "Listed.m3u", disc.absolutePath + "\n")
+            val packed = zip("wii", "Packed.zip", "Packed.wbfs" to "x".repeat(4096))
+            val before = HashRecipe("none").versionFor(CollectionRef.inferred("wii"))
+            val noReader = ".wbfs is a format this build has no reader for"
+            ledgerOfAnOlderBuild(
+                listed to keptEarlier(listed, "UNSUPPORTED_FORMAT", before,
+                                      "${disc.name}, the first file the playlist names: $noReader"),
+                packed to keptEarlier(packed, "UNSUPPORTED_FORMAT", before, "'Packed.wbfs' in the archive: $noReader"))
+            val checked = ledgerEntry(packed).getLong("checkedAt")
+
+            val h = ReadHasher(); val l = MixedLookup()
+            RomScanPipeline(paths, ArchiveAwareHasher(h, tmp), l, throttleMs = { 0L }).scan(listOf(romRoot.absolutePath))
+
+            assertEquals(listOf("hash-listed"), h.read.toList(), "the files read")
+            assertEquals("NOT_FOUND", ledgerEntry(listed).getString("state"))
+            assertEquals("UNSUPPORTED_FORMAT" to "'Packed.wbfs' in the archive: a .wbfs inside an archive is not unpacked",
+                         ledgerEntry(packed).let { it.getString("state") to it.getString("detail") })
+            assertTrue(ledgerEntry(packed).getLong("checkedAt") > checked, "the archive was not planned for again")
+            assertEquals(emptyList(), tmp.walkTopDown().filter { it.isFile }.toList(), "copied out of the archive")
+
+            val untouched = object : RomHasher {
+                override fun hash(path: String): HashResult? = throw AssertionError("$path was read again")
+                override fun hashDetailed(path: String, collection: CollectionRef): HashOutcome =
+                    throw AssertionError("$path was opened again")
+            }
+            pipeline(untouched, NeverAsked()).scan(listOf(romRoot.absolutePath))
+        } finally {
+            elsewhere.deleteRecursively(); tmp.deleteRecursively()
         }
     }
 

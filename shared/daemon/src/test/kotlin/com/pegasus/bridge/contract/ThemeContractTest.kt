@@ -762,7 +762,7 @@ class ThemeContractTest {
     // at three files and is done.
     @Test fun `a desktop scan names a format it does not read apart from a platform it does not cover`() {
         rom("snes", "Alpha.sfc", "hash-alpha")
-        rom("ps2", "Packed.chd", "never read")
+        rom("ps2", "Packed.cso", "never read")
         rom("switch", "Some Game.zip", "never read")
         val read = ContentHasher()
         hasher = read
@@ -1959,7 +1959,7 @@ class ThemeContractTest {
         repeat(7) { rom("snes", "unknown$it.sfc", "hash-unknown-$it") }
         repeat(6) { rom("snes", "virtual$it.sfc", "hash-virtual-$it") }
         repeat(3) { rom("snes", "broken$it.sfc", "unreadable-$it") }
-        repeat(2) { rom("ps2", "packed$it.chd", "never read") }
+        repeat(2) { rom("ps2", "packed$it.cso", "never read") }
         repeat(4) { rom("snes", "unanswered$it.sfc", "hash-silent-$it") }
         val second = recordedScan("job2", hashes, answers)
         val records = second.records

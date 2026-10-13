@@ -449,13 +449,65 @@ Correcting an emulator the build already knows about is unaffected.
 | `igdb` | `token`, `search`, `details`, `covers`, `screenshots`, `artworks` | Twitch client id/secret |
 | `ign` | `search`, `details`, `images` | — |
 | `steam` | `search`, `assets` | — (public store) |
-| `steam-account` | `library`, `achievements`, `resolve` | the user's own Steam Web API key and SteamID |
+| `steam-account` | `library`, `progress`, `achievements`, `resolve` | the user's own Steam Web API key and SteamID |
 | `romm` | `heartbeat`, `platforms`, `roms` | a RomM server, optionally a `rmm_…` client token |
 
 `steam` and `steam-account` are deliberately separate: the first is public
-product data and needs nothing, the second answers only about the signed-in user
-and can be refused because their profile is private — which is a state to show,
-not an error to retry.
+product data and needs nothing, the second answers only about the signed-in user.
+
+#### `steam-account`
+
+The user's own library and achievements, read with their Web API key
+([steamcommunity.com/dev/apikey](https://steamcommunity.com/dev/apikey)) and
+their 17-digit SteamID. Steam declines for reasons that are no error of the
+request: a profile whose game details are not public, a key it does not take, a
+game that has no achievements. So every request this source understands is
+answered with `status: "ok"` and a `results` object, and what happened is
+`results.state`. `status: "error"` means the op or a parameter was wrong, and
+nothing else.
+
+Every `results` carries `namespace: "steam"`, `state`, `message`, `cached`,
+`stale` and `fetchedAt`. `message` is one fixed English sentence per state, never
+Steam's own text.
+
+| op | params | `results` |
+| --- | --- | --- |
+| `library` | `refresh` | `steamId` and `games[]`, last played first and then most played: `appId`, `name`, `playtimeMinutes`, `playtimeLast2WeeksMinutes`, `lastPlayedAt`, `iconUrl`, `headerUrl`, `launchUri`. A game whose progress is on disk also has `unlocked`, `total` and `progressAt`; they cost no call |
+| `progress` | `appIds` (comma-separated, at most 20), `lang`, `refresh` | `items[]`, one per game: `appId`, `state`, `unlocked`, `total`, `cached`, `fetchedAt` |
+| `achievements` | `appId`, `lang`, `refresh` | `appId`, `gameName`, `unlocked`, `total`, `progress` (0 to 1) and `achievements[]`: `id`, `title`, `description`, `unlocked`, `unlockedAt`, `iconUrl`, `iconLockedUrl`, `hidden` |
+| `resolve` | `vanity` | `steamId`, and nothing else: the one op that still fails with an error |
+
+| `state` | when | for `progress` |
+| --- | --- | --- |
+| `ok` | answered | |
+| `not_configured` | no key, no SteamID, or a SteamID that is not 17 digits. Steam is not asked | ends the request |
+| `key_refused` | Steam did not take the key | ends the request |
+| `private` | the profile's game details are not public. `library` cannot tell that from a SteamID nobody has, and its sentence names both | ends the request |
+| `no_achievements` | the game has none | |
+| `rate_limited` | HTTP 429 | ends the request |
+| `offline` | Steam could not be reached | ends the request |
+| `upstream_error` | Steam answered with something that could not be used | |
+| `skipped` | an item that was not asked about | |
+
+A game the account has never started is `ok` with 0 of its total, every
+achievement locked: Steam says "no stats" of it as it does of a game with no
+achievements, and the game's schema tells the two apart.
+
+`progress` is for the games on screen. It stops starting calls about 8 seconds
+in, and after a state that ends the request, and the games it did not reach come
+back `skipped`; the state of the whole answer is the one that ended it, or `ok`.
+Asked again, it finds the games it had answered on disk.
+
+`lang` is the theme's language code (`it`, `en`, `pt_BR`). The Bridge turns it
+into Steam's name for the language, and whatever it does not know into English.
+
+What is kept is under `<dataRoot>/cache/steam/`: a game's schema for 30 days,
+per language, and the library and each game's unlock list for 10 minutes.
+`refresh=1` asks Steam again, but not about an answer younger than a minute.
+Nothing is kept for `private`, `key_refused`, `rate_limited`, `offline` or
+`upstream_error`. When what is kept has gone old and the call for a new one ends
+in `offline`, `rate_limited` or `upstream_error`, the old one is served, with
+`stale: true`.
 
 `/ra/match` is the one worth knowing about. Ask it *which RetroAchievements game
 this is*, with the path of the game's file, and it answers with what the scan

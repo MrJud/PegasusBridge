@@ -212,6 +212,44 @@ class BridgeRouterTest {
         }
     }
 
+    // What the Steam account's source came to travels in `results`, under an
+    // envelope that says "ok": the request was answered, and a profile that is
+    // private or a Bridge with no key is an answer. This is the one state that
+    // needs no Steam to show. A SteamID that is not one is not set up either,
+    // and nothing is asked with it.
+    @Test fun `a steam account that is not set up is an answer in the envelope and not an error`() {
+        get("/scrape?source=steam-account&op=library").use { r ->
+            assertEquals(200, r.code)
+            val j = JSONObject(r.body!!.string())
+            assertEquals("ok", j.getString("status"))
+            assertEquals("steam-account", j.getString("source"))
+            assertEquals("library", j.getString("op"))
+            assertTrue(j.has("schemaVersion") && j.has("fetchedAt"))
+            val results = j.getJSONObject("results")
+            assertEquals("steam", results.getString("namespace"))
+            assertEquals("not_configured", results.getString("state"))
+            assertTrue(results.getString("message").isNotEmpty())
+            assertFalse(results.getBoolean("cached") || results.getBoolean("stale"))
+            assertEquals(0, results.getJSONArray("games").length())
+        }
+
+        config.writeCredentials(steamApiKey = "SENTINEL-STEAM-KEY", steamId = "gabe")
+        for (op in listOf("library", "achievements&appId=440", "progress&appIds=440,570")) {
+            get("/scrape?source=steam-account&op=$op").use { r ->
+                val body = r.body!!.string()
+                assertEquals(200, r.code, op)
+                assertEquals("ok", JSONObject(body).getString("status"), op)
+                assertEquals("not_configured", JSONObject(body).getJSONObject("results").getString("state"), op)
+                assertFalse(body.contains("SENTINEL-STEAM-KEY"), "the key is in the answer to $op")
+            }
+        }
+
+        // Only a request that is wrong in itself is an error.
+        get("/scrape?source=steam-account&op=achievements&appId=x").use { r -> assertEquals(400, r.code) }
+        get("/scrape?source=steam-account&op=friends").use { r -> assertEquals(400, r.code) }
+        assertFalse(File(dataRoot, "cache/steam").exists(), "something was kept of a request Steam never saw")
+    }
+
     // ── ra ──────────────────────────────────────────────────────────────────
 
     @Test fun `ra endpoints validate their parameters`() {

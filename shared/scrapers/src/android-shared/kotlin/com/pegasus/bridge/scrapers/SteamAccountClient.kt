@@ -111,21 +111,11 @@ object SteamAccountClient {
     data class PlayerStats(val gameName: String, val achievements: List<Achievement>)
 
     /**
-     * One game's progress.
-     *
-     * [total] and [unlocked] are Steam's and Steam's alone. They must never be
-     * added to a RetroAchievements total: two accounts, two catalogues, two sets
-     * of games, and a combined number would describe nothing that exists.
+     * What `GetSchemaForGame` says of one game: its name and its achievements
+     * as they are called and pictured, in the order Steam lists them. The same
+     * for every account, and none of them [Achievement.unlocked].
      */
-    data class Progress(
-        val appId: Int,
-        val gameName: String,
-        val unlocked: Int,
-        val total: Int,
-        val achievements: List<Achievement>
-    ) {
-        val fraction: Double get() = if (total <= 0) 0.0 else unlocked.toDouble() / total
-    }
+    data class Schema(val gameName: String, val achievements: List<Achievement>)
 
     // ── Requests ────────────────────────────────────────────────────────────
 
@@ -274,39 +264,6 @@ object SteamAccountClient {
         }
     }
 
-    /**
-     * One game's achievements, with names and pictures.
-     *
-     * Two calls, because Steam splits them: `GetPlayerAchievements` says which
-     * are unlocked, `GetSchemaForGame` says what they are called and what they
-     * look like. The schema is the same for every user, so a caller that syncs a
-     * library should cache it per app rather than per player.
-     *
-     * The schema call is allowed to fail without taking the result with it: knowing
-     * that 12 of 40 are unlocked is useful even when their names could not be fetched.
-     */
-    fun achievements(
-        c: Credentials,
-        appId: Int,
-        language: String = "english",
-        includeSchema: Boolean = true
-    ): Result<Progress> = playerAchievements(c, appId, language).mapCatching { stats ->
-        val schema = if (includeSchema) schemaFor(c.apiKey, appId, language).getOrNull() else null
-        val merged = if (schema == null) stats.achievements else stats.achievements.map { a ->
-            schema[a.apiName]?.let {
-                a.copy(displayName = it.displayName, description = it.description,
-                       iconUrl = it.iconUrl, iconGrayUrl = it.iconGrayUrl, hidden = it.hidden)
-            } ?: a
-        }
-        Progress(
-            appId = appId,
-            gameName = stats.gameName,
-            unlocked = merged.count { it.unlocked },
-            total = merged.size,
-            achievements = merged
-        )
-    }
-
     internal fun parseAchievements(arr: JSONArray?): List<Achievement> {
         if (arr == null) return emptyList()
         return (0 until arr.length()).mapNotNull { i ->
@@ -324,19 +281,26 @@ object SteamAccountClient {
     /**
      * The per-app achievement definitions. Identical for every user of that app,
      * and written in [language], which is one of Steam's own names for one.
+     *
+     * Steam splits a game's achievements over two calls: [playerAchievements]
+     * says which are unlocked, this says what they are called and what they
+     * look like. [SteamAccountOps] puts the two together and keeps each for as
+     * long as it stays true, which for this one is weeks.
+     *
+     * A game with no achievements is an answer here and not a refusal: a
+     * `game` block with nothing in it, and so a schema of none.
      */
-    fun schemaFor(apiKey: String, appId: Int, language: String = "english"): Result<Map<String, Achievement>> {
+    fun schemaFor(apiKey: String, appId: Int, language: String = "english"): Result<Schema> {
         val url = "$BASE/ISteamUserStats/GetSchemaForGame/v2/" +
                   "?key=${enc(apiKey)}&appid=$appId&l=${enc(language)}"
         return call(url, "the achievement schema for app $appId").mapCatching { root ->
-            val arr = root.optJSONObject("game")
-                ?.optJSONObject("availableGameStats")
-                ?.optJSONArray("achievements") ?: JSONArray()
-            (0 until arr.length()).mapNotNull { i ->
+            val game = root.optJSONObject("game")
+            val arr = game?.optJSONObject("availableGameStats")?.optJSONArray("achievements") ?: JSONArray()
+            Schema(game?.optString("gameName").orEmpty(), (0 until arr.length()).mapNotNull { i ->
                 val o = arr.optJSONObject(i) ?: return@mapNotNull null
                 val name = o.optString("name")
                 if (name.isEmpty()) return@mapNotNull null
-                name to Achievement(
+                Achievement(
                     apiName = name,
                     unlocked = false,
                     unlockedAt = 0,
@@ -346,7 +310,7 @@ object SteamAccountClient {
                     iconGrayUrl = o.optString("icongray"),
                     hidden = o.optInt("hidden") == 1
                 )
-            }.toMap()
+            })
         }
     }
 

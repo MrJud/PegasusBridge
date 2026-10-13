@@ -792,67 +792,17 @@ class ScrapeSourceDispatcher(
     // ── Steam account ───────────────────────────────────────────────────────
     //
     // Separate from `steam`, which is the public store and needs no credentials.
-    // This one answers only about the signed-in user, and its refusals include
-    // one that is not a failure: a private profile is a setting to change, not an
-    // error to retry and not an empty result to cache.
+    // This one answers only about the signed-in user. Everything it does is in
+    // SteamAccountOps, which the Android shell compiles too: what is left here
+    // is what the two shells disagree about, where the credentials are read
+    // from and where the data root is. With no data root nothing is kept.
 
-    private fun steamCreds(): SteamAccountClient.Credentials {
-        val c = config.load().steam
-            ?: throw IllegalStateException("missing steam block in credentials.json")
-        if (c.apiKey.isBlank() || c.steamId.isBlank())
-            throw IllegalStateException("missing steam.apiKey/steamId")
-        return SteamAccountClient.Credentials(c.apiKey, c.steamId)
-    }
-
-    private fun dispatchSteamAccount(op: String, params: Map<String, String>): Result = when (op) {
-        "library" -> {
-            val arr = JSONArray()
-            for (g in SteamAccountClient.ownedGames(steamCreds()).getOrThrow()) {
-                arr.put(JSONObject()
-                    .put("appId", g.appId)
-                    .put("name", g.name)
-                    .put("playtimeMinutes", g.playtimeMinutes)
-                    .put("playtimeLast2WeeksMinutes", g.playtimeLast2WeeksMinutes)
-                    .put("iconUrl", g.iconUrl)
-                    .put("lastPlayedAt", g.lastPlayedAt)
-                    .put("launchUri", SteamAccountClient.desktopLaunchUri(g.appId)))
-            }
-            Result(arr)
-        }
-        "achievements" -> {
-            val p = SteamAccountClient.achievements(
-                steamCreds(), paramInt(params, "appId", "appid")).getOrThrow()
-            val arr = JSONArray()
-            for (a in p.achievements) {
-                arr.put(JSONObject()
-                    .put("id", a.apiName)
-                    .put("title", a.displayName.ifEmpty { a.apiName })
-                    .put("description", a.description)
-                    .put("unlocked", a.unlocked)
-                    .put("unlockedAt", a.unlockedAt)
-                    .put("iconUrl", if (a.unlocked) a.iconUrl else a.iconGrayUrl)
-                    .put("hidden", a.hidden))
-            }
-            Result(JSONObject()
-                .put("appId", p.appId)
-                .put("gameName", p.gameName)
-                .put("unlocked", p.unlocked)
-                .put("total", p.total)
-                .put("progress", p.fraction)
-                // Named so nothing downstream is tempted to add it to a
-                // RetroAchievements total. Two accounts, two catalogues; a
-                // combined number would describe nothing that exists.
-                .put("namespace", "steam")
-                .put("achievements", arr))
-        }
-        "resolve" -> {
-            val name = params["vanity"] ?: throw IllegalArgumentException("missing vanity")
-            val key = config.load().steam?.apiKey
-                ?: throw IllegalStateException("missing steam.apiKey")
-            Result(JSONObject().put("steamId",
-                SteamAccountClient.resolveVanity(key, name).getOrThrow()))
-        }
-        else -> throw IllegalArgumentException("steam-account: unknown op '$op'")
+    private fun dispatchSteamAccount(op: String, params: Map<String, String>): Result {
+        val steam = config.load().steam
+        return Result(SteamAccountOps.run(
+            op, params,
+            steam?.let { SteamAccountClient.Credentials(it.apiKey, it.steamId) },
+            paths?.cache(SteamAccountOps.DIR)))
     }
 
     // ── Helpers ─────────────────────────────────────────────────────────────

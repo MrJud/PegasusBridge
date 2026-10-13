@@ -69,12 +69,14 @@ jobs:
       # of ours on it. Which upstream tree, and which patches, is written
       # down beside it, and this holds the copy to what is written: a file
       # the tree's own .gitignore kept out of git, a patch lost in an upgrade
-      # or a line changed by hand would otherwise be found by nobody.
-      - name: The check of the vendored rcheevos passes its own tests
+      # or a line changed by hand would otherwise be found by nobody. Beside
+      # it is a copy of libchdr and the decompressors it carries, with no
+      # patch at all, which the same check holds to a manifest of its own.
+      - name: The check of the vendored sources passes its own tests
         working-directory: shared
         run: ./tests/vendored_check_test.py
 
-      - name: The vendored rcheevos is upstream's tree and the local patches
+      - name: The vendored rcheevos is upstream's tree and the local patches, and libchdr is upstream's
         working-directory: shared
         run: ./tests/vendored_check.py
 

@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """Fails when the rcheevos vendored beside the hasher is not the upstream tree
-its manifest names with the local patches applied to it, and nothing else.
+its manifest names with the local patches applied to it, and nothing else; and
+when the libchdr vendored beside it is not the files its manifest names of its
+upstream tree, as upstream has them.
 
     ./tests/vendored_check.py [repository]     (default: the one this file is in)
 
@@ -37,6 +39,14 @@ manifest's `patch` lines, the patch files that are there, and the sections of
 PATCHES.md, with the number in pb_patchlevel.h, which the library reports as
 part of its version.
 
+The second tree, libchdr/ with the decompressors it carries, is held the same
+way to libchdr.version, with two differences. It has no patches: a `patch`
+line in its manifest is refused, and every file has to be upstream's byte for
+byte. And its manifest names, on `licence` lines, the licence texts of two of
+those decompressors, which upstream's tree does not carry and which are kept
+in licenses/: each has to be in git and to have the content the line says.
+Most of upstream's tree is not in that copy, each file on a `left-out` line.
+
 It needs git, to ask what is tracked and to take the patches off, and it
 compiles nothing. Without git, or outside a checkout, it says so and ends
 with 2: that is no answer either way.
@@ -57,9 +67,35 @@ TREE = f"{CPP}/rcheevos"
 MANIFEST = f"{CPP}/rcheevos.version"
 PATCHES = f"{CPP}/rcheevos-patches"
 PATCH_LEVEL = f"{CPP}/pb_patchlevel.h"
+LICENCES = f"{CPP}/licenses"
 
-REMEDY = ("take the folder from upstream's tree again with `git add -f`, apply the patches of "
-          f"{PATCHES}, and write the diffs and {MANIFEST} again; PATCHES.md says how")
+
+class Vendored:
+    """One tree kept here as a copy of somebody else's: where it is, the
+    manifest that says which copy, and what it has beside those two. A tree
+    with no folder of patches is one that has to be upstream's as it is."""
+
+    def __init__(self, name, tree, manifest, remedy, patches=None, patch_level=None, licences=None):
+        self.name = name
+        self.tree = tree
+        self.manifest = manifest
+        self.remedy = remedy
+        self.patches = patches
+        self.patch_level = patch_level
+        self.licences = licences
+
+
+RCHEEVOS = Vendored(
+    "rcheevos", TREE, MANIFEST,
+    "take the folder from upstream's tree again with `git add -f`, apply the patches of "
+    f"{PATCHES}, and write the diffs and {MANIFEST} again; PATCHES.md says how",
+    patches=PATCHES, patch_level=PATCH_LEVEL)
+LIBCHDR = Vendored(
+    "libchdr", f"{CPP}/libchdr", f"{CPP}/libchdr.version",
+    "take the files again from a checkout of upstream at the commit the manifest names, with "
+    f"`git add -f`, and the licence texts from the tags it names; {CPP}/libchdr.version says how",
+    licences=LICENCES)
+TREES = (RCHEEVOS, LIBCHDR)
 
 
 class CannotCheck(Exception):
@@ -72,11 +108,13 @@ def blob_id(data):
 
 
 def read_manifest(path):
-    """(upstream, patches, files, left_out): the release and commit as a pair,
-    the patch files' names in the order written, {path: blob id} of the files
-    the copy has, and the paths of those it leaves out on purpose. A line this
-    does not know is an error: a manifest read in part is checked in part."""
-    upstream, patches, files, left_out = None, [], {}, []
+    """(upstream, patches, files, left_out, licences): the release and commit
+    as a pair, the patch files' names in the order written, {path: blob id} of
+    the files the copy has, the paths of those it leaves out on purpose, and
+    {file name: blob id} of the licence texts kept beside the copy. A line
+    this does not know is an error: a manifest read in part is checked in
+    part."""
+    upstream, patches, files, left_out, licences = None, [], {}, [], {}
     for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
         if not line.strip() or line.startswith("#"):
             continue
@@ -98,11 +136,16 @@ def read_manifest(path):
                 files[name] = digest
             else:
                 left_out.append(name)
+        elif word == "licence":
+            digest, _, name = rest.partition(" ")
+            if not re.fullmatch(r"[0-9a-f]{40}", digest) or not name or "/" in name or name in licences:
+                raise ValueError(f"line {number} is not `licence <blob id> <file name>`, once: {line!r}")
+            licences[name] = digest
         else:
             raise ValueError(f"line {number} begins with {word!r}, which is no kind of line of a manifest")
     if not upstream:
         raise ValueError("no `upstream` line says which tree this is")
-    return upstream, patches, files, left_out
+    return upstream, patches, files, left_out, licences
 
 
 def git(folder, *arguments, stdin=None, alone=False):
@@ -119,13 +162,13 @@ def git(folder, *arguments, stdin=None, alone=False):
         raise CannotCheck(f"git could not be run ({error})")
 
 
-def tracked_files(repository):
-    """The files git has under the vendored folder, as paths from it."""
-    done = git(repository, "ls-files", "-z", "--", TREE)
+def tracked_files(repository, folder):
+    """The files git has under `folder`, as paths from it."""
+    done = git(repository, "ls-files", "-z", "--", folder)
     if done.returncode != 0:
         raise CannotCheck("git does not answer for this folder: "
                           + done.stderr.decode("utf-8", "replace").strip())
-    return {name[len(TREE) + 1:] for name in done.stdout.decode("utf-8").split("\0") if name}
+    return {name[len(folder) + 1:] for name in done.stdout.decode("utf-8").split("\0") if name}
 
 
 def files_named(patch_text):
@@ -153,20 +196,10 @@ def without_patches(tree, names, patches):
     return contents, wrong
 
 
-def check(repository=REPOSITORY):
-    """The list of what is wrong, empty when nothing is, and what was read."""
-    manifest = repository / MANIFEST
-    tree = repository / TREE
-    if not manifest.is_file():
-        return [f"there is no {MANIFEST}"], {}
-    try:
-        upstream, listed_patches, files, left_out = read_manifest(manifest)
-    except (ValueError, UnicodeDecodeError) as error:
-        return [f"{MANIFEST} cannot be read as a manifest: {error}"], {}
-
+def patches_counted(repository, listed_patches):
+    """What is wrong among the three places that count rcheevos' patches, and
+    the patch files that are there."""
     wrong = []
-
-    # The three places that count the patches.
     there = sorted(path.name for path in (repository / PATCHES).glob("*.patch"))
     for name in listed_patches:
         if name not in there:
@@ -192,9 +225,60 @@ def check(repository=REPOSITORY):
         wrong.append(f"{PATCH_LEVEL} does not define PB_RCHEEVOS_PATCHLEVEL as a number")
     elif int(level.group(1)) != len(there):
         wrong.append(f"{PATCH_LEVEL} says {level.group(1)} patches and there are {len(there)} patch files")
+    return wrong, there
+
+
+def licences_held(repository, vendored, licences):
+    """What is wrong with the licence texts a manifest names: each has to be
+    a file of its own in git, with the content the line says. They are texts
+    taken from somewhere else than the tree, and a word changed in one is a
+    licence nobody gave."""
+    if not vendored.licences:
+        return [f"{vendored.manifest} names the licence text {name}, and no folder of such "
+                f"texts goes with {vendored.name}" for name in sorted(licences)]
+    wrong = []
+    folder = repository / vendored.licences
+    tracked = tracked_files(repository, vendored.licences)
+    for name, digest in sorted(licences.items()):
+        if (folder / name).is_symlink():
+            wrong.append(f"the licence text {name} is a link in {vendored.licences}")
+        elif not (folder / name).is_file():
+            wrong.append(f"the licence text {name} is not in {vendored.licences}")
+        elif blob_id((folder / name).read_bytes()) != digest:
+            wrong.append(f"the licence text {name} is not the one {vendored.manifest} names")
+        elif name not in tracked:
+            wrong.append(f"the licence text {name} is in {vendored.licences} and not in git here")
+    return wrong
+
+
+def check(repository=REPOSITORY, vendored=RCHEEVOS):
+    """The list of what is wrong with one tree, empty when nothing is, and
+    what was read."""
+    manifest = repository / vendored.manifest
+    tree = repository / vendored.tree
+    if not manifest.is_file():
+        return [f"there is no {vendored.manifest}"], {}
+    try:
+        upstream, listed_patches, files, left_out, licences = read_manifest(manifest)
+    except (ValueError, UnicodeDecodeError) as error:
+        return [f"{vendored.manifest} cannot be read as a manifest: {error}"], {}
+
+    wrong = []
+
+    # The three places that count the patches, for the tree that has any.
+    there = []
+    if vendored.patches:
+        counted, there = patches_counted(repository, listed_patches)
+        wrong += counted
+    else:
+        for name in listed_patches:
+            wrong.append(f"{vendored.manifest} lists the patch {name}, and the copy of "
+                         f"{vendored.name} is kept as upstream has it, with none")
+
+    wrong += licences_held(repository, vendored, licences)
 
     # What is in git, and what is in the folder, against upstream's list.
-    tracked = tracked_files(repository)
+    tracked = tracked_files(repository, vendored.tree)
     for name in sorted(set(files) - tracked):
         wrong.append(f"{name} is in upstream's tree and not in git here"
                      + ("" if (tree / name).is_file() else ", nor in the folder"))
@@ -224,7 +308,7 @@ def check(repository=REPOSITORY):
     # The content: upstream's, or upstream's once the patches are off.
     patches, patched = [], {}
     for name in there:
-        text = (repository / PATCHES / name).read_bytes()
+        text = (repository / vendored.patches / name).read_bytes()
         named = files_named(text.decode("utf-8", "replace"))
         if not named:
             wrong.append(f"{PATCHES}/{name} names no file it changes")
@@ -240,7 +324,9 @@ def check(repository=REPOSITORY):
     changed = [name for name in present if blob_id((tree / name).read_bytes()) != files[name]]
     for name in changed:
         if name not in patched:
-            wrong.append(f"{name} is not as upstream has it, and no patch says how")
+            wrong.append(f"{name} is not as upstream has it, "
+                         + ("and no patch says how" if vendored.patches else
+                            f"and the copy of {vendored.name} has no patches"))
     for name in sorted(patched):
         if name in present and name not in changed:
             wrong.append(f"{name} is as upstream has it, and {', '.join(patched[name])} "
@@ -256,7 +342,8 @@ def check(repository=REPOSITORY):
                              "upstream has: something else in it was changed")
 
     return wrong, {"release": upstream[0], "commit": upstream[1], "files": len(files),
-                   "left_out": len(left_out), "patches": len(there), "patched": len(patched)}
+                   "left_out": len(left_out), "patches": len(there), "patched": len(patched),
+                   "licences": len(licences)}
 
 
 def main(argv):
@@ -265,21 +352,35 @@ def main(argv):
         return 2
     repository = Path(argv[1]).resolve() if len(argv) == 2 else REPOSITORY
 
-    try:
-        wrong, read = check(repository)
-    except CannotCheck as error:
-        print(f"vendored_check: nothing was checked: {error}", file=sys.stderr)
-        return 2
-    if wrong:
-        print(f"vendored_check: {len(wrong)} thing(s) wrong with {TREE}:")
-        for line in wrong:
-            print(f"  {line}")
-        print(f"To put it right: {REMEDY}.")
-        return 1
-    print(f"vendored_check: {TREE} is rcheevos {read['release']} ({read['commit'][:12]}), "
-          f"{read['files']} files and {read['left_out']} left out on purpose, with {read['patches']} "
-          f"local patches on {read['patched']} of them and nothing else")
-    return 0
+    # Every tree is gone over, so that one run names all there is to put
+    # right, and what is wrong is said before what is well.
+    status, well = 0, []
+    for vendored in TREES:
+        try:
+            wrong, read = check(repository, vendored)
+        except CannotCheck as error:
+            print(f"vendored_check: nothing was checked: {error}", file=sys.stderr)
+            return 2
+        if wrong:
+            print(f"vendored_check: {len(wrong)} thing(s) wrong with {vendored.tree}:")
+            for line in wrong:
+                print(f"  {line}")
+            print(f"To put it right: {vendored.remedy}.")
+            status = 1
+            continue
+        said = (f"vendored_check: {vendored.tree} is {vendored.name} {read['release']} "
+                f"({read['commit'][:12]}), {read['files']} files and {read['left_out']} left out "
+                "on purpose, ")
+        if vendored.patches:
+            said += (f"with {read['patches']} local patches on {read['patched']} of them and "
+                     "nothing else")
+        else:
+            said += (f"each as upstream has it, and {read['licences']} licence text(s) beside "
+                     "them as the manifest names them")
+        well.append(said)
+    for said in well:
+        print(said)
+    return status
 
 
 if __name__ == "__main__":

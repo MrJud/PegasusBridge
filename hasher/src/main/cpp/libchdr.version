@@ -1,0 +1,175 @@
+# Which libchdr the folder libchdr/ beside this file is a copy of: the branch,
+# the commit it is in upstream's repository (github.com/rtissera/libchdr, the
+# master of 2026-10-11), and every file of that commit's tree with the id git
+# gives its content there. Any checkout of upstream prints the same list with
+# `git ls-tree -r <commit>`, so the copy can be held against it without a file
+# being fetched. The one release upstream has tagged, v0.3.0, is 118 commits
+# older and lacks the fixes a file made to mislead the reader is met with, so
+# the copy is of a commit and not of a release.
+#
+# The copy is 48 files of that tree as upstream has them, byte for byte: there
+# is no `patch` line here and no folder of patches, and a file that is not
+# upstream's is a file to take again. With libchdr come the decompressors it
+# carries in deps/ and include/dr_libs: the LZMA SDK's decoder, miniz, the one
+# file Zstandard's decoder is distributed as, and dr_flac.
+#
+# The other 83 files of the tree are left out on purpose, each on a line that
+# says `left-out` where the others say `file`, and such a file has to be
+# absent: upstream's workflows, its CMake files and the ones in deps/, its
+# tests and their corpora, the ports to boards in contrib/ and cmake/, the
+# notes in docs/, the assembler of the LZMA decoder, a second FLAC decoder
+# written in C++, and unity.c, link.T and pkg-config.pc.in, which belong to
+# upstream's own build, by which nothing here is built.
+#
+# Two licence texts are not in upstream's tree, which carries miniz and
+# Zstandard without them. They are kept in licenses/ beside this file, each
+# on a `licence` line with the id git gives its content in the repository it
+# was taken from:
+#   miniz-3.1.2-LICENSE   github.com/richgel999/miniz, tag 3.1.2,
+#                         commit 77d0dce8627735138c51770d1799a1ef48f2117d,
+#                         the file LICENSE
+#   zstd-1.5.7-LICENSE    github.com/facebook/zstd, tag v1.5.7,
+#                         commit f8745da6ff1ad1e7bab384bd1f9d742439278e99,
+#                         the file LICENSE
+#
+# shared/tests/vendored_check.py holds the folder and the two texts to all of
+# this. To take a later libchdr: copy the files wanted from a checkout of the
+# new commit, with `git add -f` since the tree may carry a .gitignore; write
+# the `upstream` line with the commit, and one line for every file that
+# `git ls-tree -r <commit>` prints, `file` for those copied and `left-out`
+# for the rest; take the licence text of a dependency whose version changed
+# from that version's tag and rename it.
+upstream master 47d794151b2b64f6aba60304e6480f4f5a2bc24b
+licence 1982f4bb8f4afa3dcbe803887fb4af7573430e51 miniz-3.1.2-LICENSE
+licence 75800288cc243f164b9d130f125e2ffae28f8e39 zstd-1.5.7-LICENSE
+left-out 5ace4600a1f26e6892982f3e2f069ebfab108d87 .github/dependabot.yml
+left-out 7b65e93399799023bbfe880a81a8a22225b81629 .github/workflows/android.yml
+left-out ddb92daa6165bcabf7fc5e5caf643b168cff12df .github/workflows/big-endian-correctness.yml
+left-out efe7442ce9c96b11b0738f1ecb2277b88f4f2a6a .github/workflows/bl616-tangcore-build.yml
+left-out b5760339f9168815a9ad37a69836b5ccf73db22e .github/workflows/cmake.yml
+left-out 5d25ecfe544d618595170114a256f602c25d9345 .github/workflows/cross-platform-actions.yml
+left-out 5aa0f827b1b8dbfb6da0bd328e209ee0cd2cf6be .github/workflows/esp32p4-build.yml
+left-out b765e320bdb18ddfbca42e0f89f050fbb93049b3 .github/workflows/lowram-correctness.yml
+left-out 2670eb5b7252480a1be06e2bd1959f76525e8be7 .github/workflows/microflac-backend.yml
+left-out 29e60376d6839768b38d13ab95875d4dd2bed6f1 .github/workflows/msys2.yml
+left-out 7c3eedce4153e53ee2682038dbe285b1cf115fa4 .github/workflows/rp2350-arm-ram-budget.yml
+left-out 97f2e6de8c11f770d3de191049bef68e6b11796e .github/workflows/rp2350-riscv-ram-budget.yml
+left-out 8fa7ebbce3df4495ba81e959e128af37dd4cbfb8 .github/workflows/rv32-ram-budget.yml
+left-out 90638263b62dddff6d35f315c1b69bef9d3d18c1 .github/workflows/switch.yml
+left-out a7d73dbbcc11aa57b06e090cb4786ec995517d55 .github/workflows/vita.yml
+left-out 9ce70fa193f7d1fb0e05d1d002a092f84bc49a64 .gitignore
+file b350a445e860976d74d503c1c4d116e89ee6c84e CHANGELOG.md
+left-out 7c3ae2ec957c6699035d1530f06ece4585fd8f2e CMakeLists.txt
+file 1c36e5b593498866a8ea21aa968c180acac3b967 LICENSE.txt
+file 940920a53624e4c44b0f8fb154f4c88abda80e73 README.md
+left-out aa9080b1f492de73c1407943435eb616d0dd75bd cmake/EspRomMinizWorkaround.cmake
+left-out a8a45a67e35d3ada5cf2d66086f85fdb930670cf cmake/Findzstd.cmake
+left-out 54972d707564a27802891f2e7a05aa15462daff7 cmake/toolchain-cortex-m33.cmake
+left-out 26d1575be096e89bea7a20f1ebb29d35eee99c15 cmake/toolchain-hazard3.cmake
+left-out 060ec7079cc494567a611425d252a70329318f6b cmake/toolchain-rv32imafc.cmake
+left-out 4f71fae111e357b5a6e615419374da6469966f21 contrib/esp32p4/README.md
+left-out e1d5d34511f0cf00b67a242752dca0bc360a9de7 contrib/esp32p4/chd/chd_esp_vfs.c
+left-out bf38dfda438019fe6dbbe635939a88465914f9ac contrib/esp32p4/chd/chd_esp_vfs.h
+left-out 54979cb4329b190f288ab872820da1f5c65284c5 contrib/esp32p4/idf-benchmark/CMakeLists.txt
+left-out 6a380cbe0a6df7ce854dd3bd5b55e799565009d1 contrib/esp32p4/idf-benchmark/README.md
+left-out bb075ba4fa4fd05d7bd8557cc10007b58e30a8a2 contrib/esp32p4/idf-benchmark/components/libchdr/CMakeLists.txt
+left-out 96098c3c508caab9f08cba9b5062947ee1310130 contrib/esp32p4/idf-benchmark/gen_embed.sh
+left-out 3d4d001b928fda8dd84213f141b5eb0a6cd9d814 contrib/esp32p4/idf-benchmark/main/CMakeLists.txt
+left-out 87c7c95231fc421372f19af1aee6cb37cd877037 contrib/esp32p4/idf-benchmark/main/benchmark_main.c
+left-out 6fcf3dea426de6028e694e66d862ab3bf017d0e9 contrib/esp32p4/idf-benchmark/partitions.csv
+left-out 3911c6f233b1546856e36ed792d01493d097a88a contrib/esp32p4/idf-benchmark/sdkconfig.defaults
+left-out 722820068a6ec16f4066c9aa6d8e65f1e9d39a41 contrib/esp32p4/idf-benchmark/sdkconfig.defaults.esp32s3
+left-out cd20094e6ec00e55f8e1a217345a586a776c9f93 contrib/esp32p4/smoke_test.c
+left-out 8a9bff558e87d7e9c15387032d525d4bb03d1316 contrib/rp2350/CMakeLists.txt
+left-out f50165bf2813ab01710cfb095c18fe072f4079b6 contrib/rp2350/README.md
+left-out 48f03b3ab1c4c00520b8a94f938e4b1fab0c577f contrib/rp2350/benchmark_main.c
+left-out e3733dbd5442ff2bb2cc7b6b62b54ed153ac8ad3 contrib/rp2350/hw_config.c
+left-out 5cf17b95288f8a976213c505043004a945368f7a contrib/tangcore-bl616/README.md
+left-out b8dc517cd1196b9759105e41d01c179943eef0db contrib/tangcore-bl616/chd/chd_fatfs.c
+left-out c41f97382d8cb6821cb7d9bed09ab26dc5e07143 contrib/tangcore-bl616/chd/chd_fatfs.h
+left-out b84a7eb8abc5034dcf206f5aaf6529025fafd2d7 contrib/tangcore-bl616/patches/firmware-bl616-libchdr-drflac.patch
+left-out 7f93fe0bba1f6b7dc0d92fc674df8c1b4d23d055 contrib/tangcore-bl616/patches/firmware-bl616-libchdr-integration.patch
+left-out e04235329b1dbec8f668994b0e7dba0f7904e8b8 deps/lzma-26.02/Asm/arm64/7zAsm.S
+left-out 10dc47354867b9bec953783e2db87151e48aeed1 deps/lzma-26.02/Asm/arm64/LzmaDecOpt.S
+left-out 8910d16c6057d70cb52684b63c30aea9df496f9b deps/lzma-26.02/Asm/x86/7zAsm.asm
+left-out 7c568df1d2e643b994d35edce0b183f62e921f44 deps/lzma-26.02/Asm/x86/LzmaDecOpt.asm
+left-out 8a64210eea6cb307b55c807f660a09e9fa831392 deps/lzma-26.02/CMakeLists.txt
+file 5f57051693886e063b523267829fee2abbd419ce deps/lzma-26.02/LICENSE
+file 0aeba2d5f827087c6e118ed72c074c4ab1321588 deps/lzma-26.02/include/LzmaDec.h
+file 8aaabc8fbca8b49ba73ede50b65f3a7d97d829da deps/lzma-26.02/include/real/7zTypes.h
+file b0ce28fa02a1adc422b7269c4e6d2c2d26fc60b9 deps/lzma-26.02/include/real/LzmaDec.h
+file 4772470af2daa31947894f73ea25fedfd25dd8ac deps/lzma-26.02/src/LzmaDec.c
+file ceeec5196af233511e50f409064f748ffdc65d4b deps/lzma-26.02/src/real/LzmaDec.c
+left-out 51fe8babbe13bcb5548e61b570bcc44513cabd24 deps/miniz-3.1.2/CMakeLists.txt
+file 54fc5f39ef444e7cfd768ca8e46cee12684dc4c1 deps/miniz-3.1.2/miniz.c
+file d8244d085b6d2353e7056045c5aff4bd11c143c6 deps/miniz-3.1.2/miniz.h
+left-out 0cdbda8003e2b6a95965504487473d821c2d70ad deps/zstd-1.5.7/CMakeLists.txt
+file b8c0644a7ec6533916e06aa8392a2727cbe55573 deps/zstd-1.5.7/zstd.h
+file 8ebc95cbb2ab882027a3e6cc92cdd5abc1a0dee4 deps/zstd-1.5.7/zstd_errors.h
+file a7623f8a417a55dcd08882a772358b94b55e7caa deps/zstd-1.5.7/zstddeclib.c
+left-out 9f70cda85fb8b43307e40f44412f58fbd226fba7 docs/perf-esp32p4-findings.md
+file 051f37c66e5394203efa80e7d048579b4540c078 include/dr_libs/dr_flac.h
+file 60f20649739c7f66a43019a40efaaede252da2d7 include/libchdr/bitstream.h
+file 680aa39576f8960cd93ad58f82c78e696fcbf670 include/libchdr/cdrom.h
+file f07c374e8708ffa388c6519fa79b8613c5fd819a include/libchdr/chd.h
+file eac64917d39fbfaa5dfcc150e5d4d6b2284ccbd0 include/libchdr/chdconfig.h
+file 11692d70b9cd9fd924a4fb9680598c33951c5d38 include/libchdr/coretypes.h
+file 49a3ba90bf44ee3907afe4e9d69cf755656f1757 include/libchdr/flac.h
+file 8bfacd05601144dacbf80b9aa9a24f07f2bc08aa include/libchdr/huffman.h
+file 445b3b247af4e719026e84cdb664cc88d0b5f068 include/libchdr/macros.h
+left-out f3f391c529dbede0833a7928bd6db5a182022b77 pkg-config.pc.in
+file 774d1f290619f32f1315359283588e7c6dac3889 src/codec_avhuff.h
+file a495bf673d9c1c7e055a4fa7476f4950f8469c93 src/codec_cdfl.h
+file 2b6796823e4b10e492c9b5fc2a4e7c1d3fcb28e0 src/codec_cdlz.h
+file 6db871840a802daaea17df61603710ea271132f8 src/codec_cdzl.h
+file a34d33d9f0a4e503b63141e63f7a06e9bd534184 src/codec_cdzs.h
+file 93c2af1f2de4a971dcb1f274a5d35623eee71aee src/codec_flac.h
+file dcd669cf4b5b66b5af72bf2d5c04dd095c36c605 src/codec_huff.h
+file 821862e6644742c541d30014f95da38da283efdf src/codec_lzma.h
+file f36b430a5d4b273d7ac4b840c9180368b0de4bc6 src/codec_zlib.h
+file a90e52cc06aedcad7b33c479ac04d0f3e667e830 src/codec_zstd.h
+file 4fb1c63b2f67f4d925e2c662acdd2c44493f92dd src/libchdr_bitstream.c
+file 2282aa292d8aa40580f16384f8b53d5fafb026df src/libchdr_cdrom.c
+file d69fbed34ecd89ced9aec8692e4460f197fedc0b src/libchdr_chd.c
+file 5f3a44321cc4b92e9928bb37660c4c1ed691a598 src/libchdr_codec_avhuff.c
+file fe98d92b4214c0766755feacb44f8ad811349632 src/libchdr_codec_cdfl.c
+file 4018a89d28361a6e217f8746e5304a76719797a9 src/libchdr_codec_cdlz.c
+file 8fdb721841155a2e794343cf16f7aededec181eb src/libchdr_codec_cdzl.c
+file 6679202e03eefef5068a8fa29d7b2f3feec8fd4c src/libchdr_codec_cdzs.c
+file 32aa7221debd5e07536017c40cb273db231104ce src/libchdr_codec_flac.c
+file 6453d6857d7b5773c533bec486d45b14d39a4f6f src/libchdr_codec_huff.c
+file bd308541f05193d687853cd2f9dfff187876234e src/libchdr_codec_lzma.c
+file 6d299fe369a2a45495976e7537d77f3c60803bfd src/libchdr_codec_zlib.c
+file 5390d5d415aaadaf78a5a630b81c90e00af2464c src/libchdr_codec_zstd.c
+file 2d1ad10e255deaa65a6debad641afb01b203756e src/libchdr_flac.c
+left-out b23a230774210d0adcb3ac3bf506d77462154530 src/libchdr_flac_microflac.cpp
+file 16d96b5f627f6a69dd407fc1f17b51cd232a91d9 src/libchdr_huffman.c
+left-out ea37716b79f05db73ab8b71c82198dbdcc36ca4e src/link.T
+left-out ae2c0f8facf456736bca71c24bf4fb5d6065af54 tests/CMakeLists.txt
+left-out 0c06cfe8b02e7abda73d972737f4a9816f475aa7 tests/avhuff_corpus/.gitignore
+left-out cb811fdbc8a8622cba5a52e39f78b97265c5c278 tests/avhuff_corpus/README.md
+left-out c9a1e6af1721ea20698b7697947dccbaa45afbcf tests/avhuff_corpus/fetch.sh
+left-out 2a686eef75208b0dc2c0aca43a72649a6896e16d tests/avhuff_regression.c
+left-out bace508c7f3299d8cf401a7f991024b694ddb9da tests/benchmark.c
+left-out 01ad914e45d342b592e1721ddcaaecba376f0930 tests/chd_dump_order.c
+left-out 685c553c92722a7ca5ae90702bfcdbf8648f2e7b tests/corpus/.gitignore
+left-out 2bf021adf486269a59470b226b776900a9b85de4 tests/corpus/README.md
+left-out 926781a0f51393667f891a3b54635242bfe53f29 tests/corpus/fetch.sh
+left-out f2d83b6d1f7203e1acf40606b1d0537fb060664d tests/corpus/generate.sh
+left-out 38ae6e53ca422ab92369bfd6f6439750ae6778f1 tests/corpus/mklegacy.py
+left-out 42a84e8b8c5cfcddc0b09e27bdc7648fcbaf3f5a tests/fuzz.c
+left-out 2aa192ed520cab3501d54a5d2f6a2eb378cc8516 tests/kat.c
+left-out 0d918ca615e13449e571c1b1c1fa464a08504d07 tests/legacy_decode.c
+left-out 8ae1227960568d8f41d5355eb883f6b98e0cd2a4 tests/open_ownership.c
+left-out 1776e3b39a94c7559fe1551dfa5c8e86ecdf8328 tests/parent_decode.c
+left-out a0456b5874099d420f23d3b25c408c4502a719c7 tests/rp2350-arm/check_budget.py
+left-out 4e995deb6ff05c6d32523cc1d92ce88e5cdfd085 tests/rp2350-arm/fw.c
+left-out 83799f0da048f2cb9065fc3621d4567cb20e96e1 tests/rp2350-arm/gen_embed.sh
+left-out 9005b4c5309bd7a831a1d770c5260ba1309ee6c8 tests/rp2350-riscv/check_budget.py
+left-out 1a43e604b86d164ce19e6ce2f60ad8697ee7808c tests/rp2350-riscv/fw.c
+left-out 2d6686e61fbe3309c1d73099caef33cd4be0ccba tests/rp2350-riscv/gen_embed.sh
+left-out 60dccac238e8e0455a009f68448f44357adcb203 tests/rv32/check_budget.py
+left-out f1f58317b1ee3a52fe870a0f0249ecb26695b894 tests/rv32/fw.c
+left-out 4a6dd5c05fc7102f20aaa324a620e17892e55f38 tests/rv32/gen_embed.sh
+left-out 414be56773994944f0ac2799a9fa027d07041168 tests/sparse_map.c
+left-out dd2bd2844970bc67fdd218547666bea22e0a8f49 unity.c

@@ -2,15 +2,17 @@
 """Tests vendored_check.py on a small made-up repository in a temporary
 directory: an upstream tree of four files, one of them of a kind the tree's
 own .gitignore hides, a patch on one of the others, and the manifest, the
-PATCHES.md and the patch level that go with them. Each test spoils one thing
-and asks that the check name it.
+PATCHES.md and the patch level that go with them; and beside it a second
+tree that has no patches, of which the copy keeps two files and leaves one
+out, with a licence text that upstream's tree does not carry. Each test spoils
+one thing and asks that the check name it.
 
     ./tests/vendored_check_test.py
 
 What the check refuses is not seen in an ordinary run, where the folder is
 what the manifest says: a check that had stopped refusing would go on
-printing that all is well. The last test runs it on the repository this file
-is in. Every test needs git, as the check does, and is skipped without one.
+printing that all is well. The last two tests run it on the repository this
+file is in. Every test needs git, as the check does, and is skipped without one.
 """
 
 import io
@@ -43,6 +45,18 @@ UPSTREAM = {
     IGNORE: "*.mod*\n*.out\n",
 }
 
+# The second tree: what upstream has, of which the last is not in the copy.
+CODEC = "src/two.c"
+NOTICE = "LICENSE.txt"
+UNWANTED = "tests/two_test.c"
+SECOND = {
+    CODEC: "int two(void) { return 2; }\n",
+    NOTICE: "Take it, and keep this notice.\n",
+    UNWANTED: "int main(void) { return two() != 2; }\n",
+}
+LICENCE = "dep-1.0-LICENSE"
+LICENCE_TEXT = "The dependency is yours on these terms.\n"
+
 # Two hunks, far enough apart to be two: the first and the last line of the body.
 PATCHED = UPSTREAM[SOURCE].replace("  int a = 1;\n", "  int a = 1; /* local patch 0001 */\n") \
                           .replace("  int i = 9;\n", "  int i = 9; /* local patch 0001 */\n")
@@ -64,6 +78,11 @@ class VendoredCheckTest(unittest.TestCase):
         self.write(self.root / check.PATCH_LEVEL, "#define PB_RCHEEVOS_PATCHLEVEL 1\n")
         self.write(self.tree / SOURCE, PATCHED)
         self.write_manifest()
+        self.second = self.root / check.LIBCHDR.tree
+        for name in (CODEC, NOTICE):
+            self.write(self.second / name, SECOND[name])
+        self.write(self.root / check.LICENCES / LICENCE, LICENCE_TEXT)
+        self.write_second_manifest()
         self.git("init", "-q")
         self.git("add", "-f", "--", check.CPP)
 
@@ -101,6 +120,13 @@ class VendoredCheckTest(unittest.TestCase):
                   for name, text in sorted(files.items())]
         self.write(self.root / check.MANIFEST, "\n".join(lines) + "\n" + extra)
 
+    def write_second_manifest(self, extra=""):
+        lines = ["# what the second folder is a copy of", "upstream master " + "cd" * 20,
+                 f"licence {check.blob_id(LICENCE_TEXT.encode('utf-8'))} {LICENCE}"]
+        lines += [("left-out" if name == UNWANTED else "file") + f" {check.blob_id(text.encode('utf-8'))} {name}"
+                  for name, text in sorted(SECOND.items())]
+        self.write(self.root / check.LIBCHDR.manifest, "\n".join(lines) + "\n" + extra)
+
     def run_check(self):
         """(status, what was printed)."""
         out = io.StringIO()
@@ -121,6 +147,8 @@ class VendoredCheckTest(unittest.TestCase):
         self.assertEqual(status, 0, said)
         self.assertIn("rcheevos v1.0.0 (abababababab), 4 files and 0 left out on purpose, "
                       "with 1 local patches on 1 of them", said)
+        self.assertIn("libchdr master (cdcdcdcdcdcd), 2 files and 1 left out on purpose, "
+                      "each as upstream has it, and 1 licence text(s) beside them", said)
 
     def test_a_file_the_manifest_says_is_left_out_has_to_be_absent(self):
         self.write_manifest(left_out=(HEADER,))
@@ -209,6 +237,65 @@ class VendoredCheckTest(unittest.TestCase):
         self.write(self.patches / PATCH, text)
         self.refused(f"{PATCH} changes src/rhash/none.c, which upstream's tree does not have")
 
+    # ---- the tree that has no patches
+
+    def refused_in_the_second(self, saying):
+        """Refused, and said of the second tree and not of the first."""
+        said = self.refused(saying)
+        self.assertIn(f"wrong with {check.LIBCHDR.tree}:", said)
+        self.assertNotIn(f"wrong with {check.TREE}:", said)
+
+    def test_a_file_of_the_second_tree_that_is_gone_is_named(self):
+        self.git("rm", "-q", "-f", "--", f"{check.LIBCHDR.tree}/{CODEC}")
+        self.refused_in_the_second(f"{CODEC} is in upstream's tree and not in git here, nor in the folder")
+
+    def test_a_file_of_the_second_tree_that_was_changed_is_named(self):
+        # One byte, where no patch could say why: this copy has none.
+        self.write(self.second / CODEC, SECOND[CODEC].replace("return 2", "return 3"))
+        self.refused_in_the_second(f"{CODEC} is not as upstream has it, and the copy of libchdr has no patches")
+
+    def test_a_file_the_second_tree_leaves_out_has_to_be_absent(self):
+        self.write(self.second / UNWANTED, SECOND[UNWANTED])
+        self.refused_in_the_second(f"{UNWANTED} is left out of the copy on purpose, the manifest says, "
+                                   "and is in the folder")
+        self.git("add", "-f", "--", check.LIBCHDR.tree)
+        self.refused_in_the_second(f"{UNWANTED} is left out of the copy on purpose, the manifest says, "
+                                   "and is in git here")
+
+    def test_a_stray_file_in_the_second_tree_is_named(self):
+        self.write(self.second / "src/ours.c", "int ours;\n")
+        self.refused_in_the_second("src/ours.c is in the folder, and neither git nor upstream's tree has it")
+        self.git("add", "-f", "--", check.LIBCHDR.tree)
+        self.refused_in_the_second("src/ours.c is in git here and not in upstream's tree")
+
+    def test_a_patch_line_for_the_second_tree_is_refused(self):
+        self.write_second_manifest(extra=f"patch {PATCH}\n")
+        self.refused_in_the_second(f"lists the patch {PATCH}, and the copy of libchdr is kept as upstream has it")
+
+    def test_a_licence_text_that_was_changed_is_named(self):
+        self.write(self.root / check.LICENCES / LICENCE, LICENCE_TEXT.replace("yours", "ours"))
+        self.refused_in_the_second(f"the licence text {LICENCE} is not the one {check.LIBCHDR.manifest} names")
+
+    def test_a_licence_text_that_is_gone_or_not_in_git_is_named(self):
+        self.git("rm", "-q", "--cached", "--", f"{check.LICENCES}/{LICENCE}")
+        self.refused_in_the_second(f"the licence text {LICENCE} is in {check.LICENCES} and not in git here")
+        (self.root / check.LICENCES / LICENCE).unlink()
+        self.refused_in_the_second(f"the licence text {LICENCE} is not in {check.LICENCES}")
+
+    def test_a_licence_line_for_the_first_tree_is_refused(self):
+        self.write_manifest(extra=f"licence {check.blob_id(LICENCE_TEXT.encode('utf-8'))} {LICENCE}\n")
+        self.refused(f"names the licence text {LICENCE}, and no folder of such texts goes with rcheevos")
+
+    def test_what_is_wrong_with_both_trees_is_said_in_one_run(self):
+        self.write(self.tree / HEADER, "int one(void); /* changed by hand */\n")
+        self.write(self.second / CODEC, "int two;\n")
+        said = self.refused(f"wrong with {check.TREE}:")
+        self.assertIn(f"wrong with {check.LIBCHDR.tree}:", said)
+
+    def test_a_second_tree_with_no_manifest_is_refused(self):
+        (self.root / check.LIBCHDR.manifest).unlink()
+        self.refused(f"there is no {check.LIBCHDR.manifest}")
+
     # ---- the three places that count the patches
 
     def test_a_patch_file_on_no_line_of_the_manifest_is_named(self):
@@ -264,7 +351,7 @@ class VendoredCheckTest(unittest.TestCase):
 
 
 class RepositoryTest(unittest.TestCase):
-    """The one test here that looks at the real repository."""
+    """The tests here that look at the real repository."""
 
     def test_the_vendored_rcheevos_of_this_repository_passes(self):
         if shutil.which("git") is None or not (check.REPOSITORY / ".git").exists():
@@ -275,6 +362,18 @@ class RepositoryTest(unittest.TestCase):
         # files would pass as well as one of the whole tree.
         self.assertGreater(read["files"], 100)
         self.assertGreater(read["patched"], 0)
+
+    def test_the_vendored_libchdr_of_this_repository_passes(self):
+        if shutil.which("git") is None or not (check.REPOSITORY / ".git").exists():
+            self.skipTest("not a git checkout, or no git to ask")
+        wrong, read = check.check(check.REPOSITORY, check.LIBCHDR)
+        self.assertEqual(wrong, [])
+        # As above: a manifest that listed three files would pass too. And
+        # one that named no licence text would hold none.
+        self.assertGreater(read["files"], 40)
+        self.assertGreater(read["left_out"], 0)
+        self.assertEqual(read["patches"], 0)
+        self.assertEqual(read["licences"], 2)
 
 
 if __name__ == "__main__":

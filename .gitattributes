@@ -40,3 +40,10 @@ hasher/src/main/cpp/rcheevos-patches/*.patch -whitespace
 # `git diff --check` would be a change no patch names, so the check is told
 # not to look there.
 hasher/src/main/cpp/rcheevos/** -whitespace
+
+# The same of libchdr and what it carries with it, which no patch touches at
+# all: the folder is the files upstream has, byte for byte.
+hasher/src/main/cpp/libchdr/** -whitespace
+# And of the licence texts beside it, each as its author's repository has it:
+# the one of miniz ends its lines as Windows does.
+hasher/src/main/cpp/licenses/** -whitespace

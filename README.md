@@ -513,7 +513,7 @@ cd shared
 JAVA_HOME=<a JDK 21> ./native/build.sh      # writes native/out/librahasher.so and its manifest
 ./tests/native_manifest_check.py            # fails when the library is older than its sources
 ./tests/native_lib_check.sh native/out/librahasher.so
-./tests/vendored_check.py                   # rcheevos is upstream plus the patches listed, and nothing else
+./tests/vendored_check.py                   # rcheevos is upstream plus the patches listed, libchdr is upstream's files, and nothing else
 ./tests/native_repro_test.py                # files made to hurt rcheevos and the .wbfs reader, on a plain and a sanitized build
 ```
 

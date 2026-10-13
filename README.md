@@ -25,7 +25,7 @@ theme sees is the same on both, so a theme written against it works on either.
 | --- | --- |
 | Linux (x86_64) | working, verified end to end |
 | Android (arm64, API 26+) | working, verified on device |
-| Windows | not released and never run: the hasher's `rahasher.dll` builds with mingw-w64, and a CI job is there to load it that has not run yet |
+| Windows | not released, and the daemon has never been started there: the hasher's `rahasher.dll` builds with mingw-w64, and a CI job loads it and runs the hasher's tests on it |
 
 ---
 

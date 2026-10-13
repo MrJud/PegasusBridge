@@ -1396,10 +1396,10 @@ Three builds compile that list:
   builds `rahasher.dll` with mingw-w64. It is not committed. It has been built
   and its imports and exports read (`native_lib_check.sh` reads a DLL too, and
   refuses one that calls a `printf_s` function, which ends the process on a
-  message too long). **Nothing has loaded it**: the `windows` job of
+  message too long). **Only CI loads it**: the `windows` job of
   `shared-tests.yml` builds it on `windows-latest` and runs the hasher's tests
-  against it, and the one run of that job stopped before those tests, at
-  `native_lib_check.sh`, for the `_assert` told of above.
+  against it, those of the two readers among them, and that job passes. No
+  daemon has been started on Windows.
 
   The DLL does call `strcpy_s`, which ends the process the same way when
   what it is to copy does not fit, and that name is not on the list of what

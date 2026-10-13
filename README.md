@@ -683,7 +683,8 @@ stays free for everyone downstream.
 The licence texts of what the native hasher is compiled from travel with it:
 `hasher/src/main/cpp/licenses/NATIVE-LICENSES.txt` in the sources, the same
 file beside `LICENSE` at the top of the desktop archive, and
-`assets/NATIVE-LICENSES.txt` inside the APK.
+`assets/NATIVE-LICENSES.txt` inside the APK, beside `assets/LICENSE`, which is
+the GPL's text; the build of an APK fails if that file is not in it.
 
 Data and media fetched from third-party databases stay under their own terms —
 they are cached locally for the user who requested them and are never

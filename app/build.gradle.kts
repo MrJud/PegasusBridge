@@ -1,4 +1,6 @@
+import com.android.build.api.artifact.SingleArtifact
 import java.util.Properties
+import java.util.zip.ZipFile
 
 plugins {
     id("com.android.application")
@@ -81,6 +83,60 @@ android {
         targetCompatibility = JavaVersion.VERSION_17
     }
     kotlinOptions { jvmTarget = "17" }
+}
+
+/**
+ * Fails the build of an APK that does not carry the GPL's text.
+ *
+ * The app is under the GPL, which asks that its text travel with every copy,
+ * and the notices inside the APK say it does, as LICENSE. The file gets there
+ * from another module (:hasher copies the repository's LICENSE into its
+ * assets), and an APK without it installs and runs like any other: nothing
+ * but a look inside the archive tells the two apart. So the look is taken at
+ * every build, of every APK the variant produced, and the bytes are held to
+ * the file at the top of the repository.
+ */
+abstract class ApkLicenceCheck : DefaultTask() {
+    @get:InputDirectory
+    abstract val apks: DirectoryProperty
+
+    @get:InputFile
+    abstract val licence: RegularFileProperty
+
+    @TaskAction
+    fun check() {
+        val expected = licence.get().asFile.readBytes()
+        val built = apks.get().asFile.walkTopDown().filter { it.isFile && it.extension == "apk" }.toList()
+        if (built.isEmpty()) throw GradleException("no APK under ${apks.get().asFile}: nothing was checked")
+        for (apk in built) {
+            ZipFile(apk).use { zip ->
+                val entry = zip.getEntry("assets/LICENSE")
+                    ?: throw GradleException("${apk.name} has no assets/LICENSE: the GPL's text must travel with the app")
+                val found = zip.getInputStream(entry).use { it.readBytes() }
+                if (!found.contentEquals(expected)) {
+                    // Two texts of one length say nothing by their sizes.
+                    val at = (0 until minOf(found.size, expected.size)).firstOrNull { found[it] != expected[it] }
+                    throw GradleException("assets/LICENSE in ${apk.name} is not the repository's LICENSE " +
+                                          "(${found.size} bytes, and the file has ${expected.size}" +
+                                          (at?.let { "; the first that differs is byte $it" } ?: "") + ")")
+                }
+            }
+        }
+    }
+}
+
+// Part of assembling, so that no APK is handed over unchecked: there is no
+// separate step to forget. And of installing, which packages an APK and puts
+// it on a device without assembling anything.
+androidComponents {
+    onVariants { variant ->
+        val name = variant.name.replaceFirstChar { it.uppercase() }
+        val check = tasks.register<ApkLicenceCheck>("check${name}ApkLicence") {
+            apks.set(variant.artifacts.get(SingleArtifact.APK))
+            licence.set(rootProject.layout.projectDirectory.file("LICENSE"))
+        }
+        tasks.matching { it.name == "assemble$name" || it.name == "install$name" }.configureEach { dependsOn(check) }
+    }
 }
 
 dependencies {

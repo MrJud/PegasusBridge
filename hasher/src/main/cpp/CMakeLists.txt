@@ -75,3 +75,22 @@ target_compile_options(rahasher PRIVATE -O2 -Wall)
 set(RAHASHER_MAP "${CMAKE_CURRENT_SOURCE_DIR}/jni.map")
 target_link_options(rahasher PRIVATE "-Wl,--version-script=${RAHASHER_MAP}")
 set_property(TARGET rahasher APPEND PROPERTY LINK_DEPENDS "${RAHASHER_MAP}")
+
+# Linked for pages of 16 KB, which newer Android devices have and which a
+# library laid out for 4 KB does not load on. The option is the linker's own
+# and is given here, in the file this repository owns, whatever the NDK that
+# builds it would do by itself; r27 lays a library out for 4 KB unless asked.
+# A library aligned to 16 KB loads on a device with pages of 4 KB as before.
+#
+# And held to it after every link: the option gone, or a toolchain that no
+# longer honours it, fails the build there and names the segment. It has been
+# loaded on no device with such pages, and none is at hand; what is checked is
+# what the file says of itself. A library that is refused is removed as well
+# (DISCARD), or a later build could find it there and take it for built.
+set(RAHASHER_PAGE 16384)
+target_link_options(rahasher PRIVATE "-Wl,-z,max-page-size=${RAHASHER_PAGE}")
+add_custom_command(TARGET rahasher POST_BUILD
+    COMMAND "${CMAKE_COMMAND}" "-DLIBRARY=$<TARGET_FILE:rahasher>" "-DPAGE=${RAHASHER_PAGE}"
+            -DDISCARD=ON -P "${CMAKE_CURRENT_SOURCE_DIR}/check_page_size.cmake"
+    VERBATIM
+)

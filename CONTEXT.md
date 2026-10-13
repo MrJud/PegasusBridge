@@ -1033,7 +1033,18 @@ through the callbacks rcheevos reads any file by. It is not a patch to
 rcheevos and is not in its folder, which `vendored_check.py` holds to
 upstream. Three builds compile that list:
 
-- **Android** — CMake, with the app, for each ABI.
+- **Android** — CMake, with the app, for each ABI. Linked for pages of 16 KB
+  (`-Wl,-z,max-page-size=16384` in `hasher/src/main/cpp/CMakeLists.txt`, given
+  there whatever the NDK would do by itself), which a library laid out for
+  4 KB does not load on and newer devices have. After every link
+  `check_page_size.cmake` reads the library's program headers and fails the
+  build when a `LOAD` segment is aligned to less, naming it, and removes the
+  library it refused: ninja leaves the output of a failed step in place, and
+  with the option put back as it was would take that file for built;
+  `shared/tests/page_size_check_test.py` holds that check to libraries made
+  to fail it, in CI's `native` job, since no job builds Android. **It has
+  been loaded on no device with 16 KB pages**: none is at hand, the tablet
+  has pages of 4 KB, and what is checked is what the file says of itself.
 - **Linux** — `shared/native/build.sh`, into `shared/native/out/librahasher.so`,
   which is **committed**, with `librahasher.manifest` beside it: the SHA-256 of
   the library and of every file it was compiled from, the flags and the

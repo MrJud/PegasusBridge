@@ -147,6 +147,13 @@ jobs:
         working-directory: shared
         run: ./tests/native_checks_test.py "$RUNNER_TEMP/native-tools"
 
+      # No job builds Android, where this check runs after every link, so
+      # here is where the check itself is held: on libraries linked for
+      # pages of 4 KB and of 16 KB with the image's own gcc.
+      - name: The check of the Android library's page size passes its own tests
+        working-directory: shared
+        run: ./tests/page_size_check_test.py
+
       # The manifest this compiler wrote, held against the checkout it was
       # written from: it has to name every source, whatever shape this gcc
       # gives its list of what it read.

@@ -491,6 +491,14 @@ cd ..
 Create one yourself and put the details in `local.properties` (git-ignored) —
 see the comment at the top of `app/build.gradle.kts`.
 
+The Android hasher library is linked for devices with 16 KB memory pages
+(`-Wl,-z,max-page-size=16384`, in `hasher/src/main/cpp/CMakeLists.txt`), and
+the build checks the library it has linked and fails when a segment of it is
+aligned to less (`check_page_size.cmake`, beside it). Such a library loads on
+devices with 4 KB pages as before. It has not been tried on a device with
+16 KB pages: the alignment is read off the file, and no such device was at
+hand.
+
 ### The hasher's native library
 
 The desktop's `librahasher.so` is committed, in `shared/native/out/`, with a

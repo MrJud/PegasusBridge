@@ -3,6 +3,7 @@
  *
  *     rahash_cli <console> <path>
  *     rahash_cli --fault=address|undefined
+ *     rahash_cli --handed [path]
  *
  * A file that is cut short or made to mislead can end rcheevos with a signal
  * or leave it reading for ever, and inside a JVM either one takes the daemon,
@@ -53,6 +54,21 @@
  * something only if that build is a sanitized one, and the way to know is to
  * give it a fault and see the report: a build without the sanitizer ends with
  * 0 here, as it would have for every file.
+ *
+ * --handed is not about a file. It asks rcheevos for the hash of a Wii disc
+ * with a callback for opening files that keeps the pointer it is given each
+ * time, and ends with 0 when that was the iterator's own path and nothing
+ * else, once, and with 1 and a line on stderr when it was anything else.
+ * With no path the callback opens nothing, and rcheevos stops there. With a
+ * path it opens the file as rcheevos would have, and rcheevos goes on through
+ * all it does with a disc or a package of the Wii: a second file opened on
+ * the way, or the same one again by another pointer, is seen only so. The
+ * line on stdout then ends with whether there was a hash, so that a test
+ * knows rcheevos went all the way. The reader of .wbfs knows its container
+ * by that pointer and can refuse few of the pointers that are not it
+ * (disc_open in pb_wbfs.c), so an rcheevos that came to hand its callback a
+ * copy of the path, or to open a second file, is to be met here and not
+ * there.
  */
 
 #include <dirent.h>
@@ -105,7 +121,8 @@ static void keep_reason(const char* message, const rc_hash_iterator_t* iterator)
 
 static int usage(void) {
     fprintf(stderr, "usage: rahash_cli <console, 0 to 255> <path>\n"
-                    "       rahash_cli --fault=address|undefined\n");
+                    "       rahash_cli --fault=address|undefined\n"
+                    "       rahash_cli --handed [path]\n");
     return 2;
 }
 
@@ -140,6 +157,51 @@ static int fault(const char* kind) {
     }
 
     return usage();
+}
+
+/* What rcheevos handed the callback of --handed, and how many times: the
+ * pointer of the first time, and whether any time had another. */
+static const char* handed_path;
+static int handed_times;
+static int handed_others;
+/* What rcheevos would have opened the file with, or NULL to open nothing. */
+static rc_hash_filereader_open_file_handler handed_open;
+
+static void* RC_CCONV keep_handed(const char* path_utf8) {
+    if (handed_times++ == 0)
+        handed_path = path_utf8;
+    else if (path_utf8 != handed_path)
+        handed_others++;
+    return handed_open ? handed_open(path_utf8) : NULL;
+}
+
+static int handed(const char* path) {
+    rc_hash_iterator_t iterator;
+    char hash[33];
+    int same, found;
+
+    rc_hash_initialize_iterator(&iterator, path ? path : "a disc that is never opened.wbfs", NULL, 0);
+    handed_open = path ? iterator.callbacks.filereader.open : NULL;
+    iterator.callbacks.filereader.open = keep_handed;
+    found = rc_hash_generate(hash, RC_CONSOLE_WII, &iterator);
+    /* Compared while the iterator still has its path, and before it is freed. */
+    same = iterator.path != NULL && handed_path == iterator.path && handed_others == 0;
+    rc_hash_destroy_iterator(&iterator);
+
+    if (handed_times != 1) {
+        fprintf(stderr, "rcheevos opened %d file(s) to hash one for the Wii, where the reader of .wbfs counts on one\n",
+                handed_times);
+        return 1;
+    }
+    if (!same) {
+        fprintf(stderr, "rcheevos handed its callback for opening a file a pointer that is not the iterator's path\n");
+        return 1;
+    }
+    if (!path)
+        puts("the iterator's own path, once");
+    else
+        printf("the iterator's own path, once, %s\n", found ? "and a hash" : "and no hash");
+    return 0;
 }
 
 /*
@@ -181,6 +243,8 @@ int main(int argc, char** argv) {
 
     if (argc == 2 && strncmp(argv[1], "--fault=", 8) == 0)
         return fault(argv[1] + 8);
+    if ((argc == 2 || argc == 3) && strcmp(argv[1], "--handed") == 0)
+        return handed(argc == 3 ? argv[2] : NULL);
 
     if (argc != 3)
         return usage();

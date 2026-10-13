@@ -26,6 +26,7 @@
 
 #include <inttypes.h>
 #include <stdarg.h>
+#include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -53,15 +54,28 @@ struct pb_wbfs {
     uint64_t position;       /* where in the disc rcheevos is */
     uint64_t bytes_read;
     uint64_t bytes_unheld;
+    /*
+     * One byte that holds nothing. It is here for where it puts the member
+     * after it: one byte past a boundary every other member is aligned to,
+     * which is where no memory handed out by malloc begins. disc_open
+     * refuses a pointer by that.
+     */
+    char off_the_boundary;
+    /*
+     * The path the container was opened by, in a copy the container owns.
+     * It is the last member, with the room it needs after the rest, and it is
+     * how rcheevos' callback for opening a file finds the container: see
+     * disc_open. What counts there is its address. The text is the path's
+     * because rcheevos reads it: it looks for the file's name in it once it
+     * has opened the file, for a message that goes to a callback no caller
+     * of ours sets, and no test tells this text from another.
+     */
+    char path[];
 };
 
-/*
- * rcheevos' callback for opening a file is given the path and nothing else,
- * so the container that is being hashed has to reach it some other way. It is
- * set for the length of one rc_hash_generate and is each thread's own: two
- * files hashed at once know nothing of each other.
- */
-static _Thread_local struct pb_wbfs* current;
+/* Held by the compiler and not by the order the members happen to be in. */
+_Static_assert(offsetof(struct pb_wbfs, path) % _Alignof(struct pb_wbfs) != 0,
+               "the path of a container must not begin where an allocation can");
 
 static void wbfs_close(struct pb_wbfs* wbfs) {
     unsigned part;
@@ -268,13 +282,15 @@ static int wbfs_check(struct pb_wbfs* wbfs, const char* path, char why[PB_WBFS_R
 /* The container, checked and ready to be read, or NULL with the reason. */
 static struct pb_wbfs* wbfs_open(const struct rc_hash_filereader* raw, const char* path,
                                  char why[PB_WBFS_REASON]) {
-    struct pb_wbfs* wbfs = (struct pb_wbfs*)calloc(1, sizeof(*wbfs));
+    const size_t length = strlen(path);
+    struct pb_wbfs* wbfs = (struct pb_wbfs*)calloc(1, offsetof(struct pb_wbfs, path) + length + 1);
 
     if (!wbfs) {
         refuse(why, "No memory for the WBFS container");
         return NULL;
     }
     wbfs->raw = *raw;
+    memcpy(wbfs->path, path, length + 1);
     if (!wbfs_check(wbfs, path, why)) {
         wbfs_close(wbfs);
         return NULL;
@@ -347,9 +363,53 @@ static size_t wbfs_read(struct pb_wbfs* wbfs, unsigned char* buffer, size_t want
 
 /* ---- what rcheevos is given in place of its reader for plain files ---- */
 
+/*
+ * rcheevos' callback for opening a file is given the path and nothing else,
+ * so the container that is being hashed has to reach it through the path. For
+ * the one call that hashes it, pb_wbfs_hash has the iterator's path point at
+ * the copy the container carries, and the pointer rcheevos hands this
+ * function is then that member's address: the container begins a known
+ * number of bytes before it. Nothing is kept outside the container, so two
+ * files hashed at once know nothing of each other, and nothing is asked of
+ * the system: a variable that is each thread's own did the same, and where
+ * the compiler has no such variables of its own it makes them out of its
+ * threading library, which brought assert() into the DLL.
+ *
+ * That holds only while rcheevos hands on the very pointer it found on the
+ * iterator, and not a copy of the text. It does: rc_hash_wii calls
+ * rc_file_open(iterator, iterator->path), and rc_file_open passes its
+ * argument to this callback as it is. And only that call can come here.
+ * These callbacks are on the iterator from just before rc_hash_generate to
+ * just after it, for the Wii's console and no other, and with no buffer on
+ * the iterator rcheevos goes from there straight to rc_hash_wii, which opens
+ * one file, once; a Wii disc is no playlist and names no second file.
+ *
+ * What this can tell of a pointer that is not the member is little, and it
+ * has to be told before anything is read through it: to look at the
+ * container the bytes before the pointer have to be read, and if they are
+ * not a container's that read is already the fault; and to know the pointer
+ * without reading there, it would have to be kept somewhere two threads
+ * share, which is what this is rid of. One thing needs no read. The
+ * container is where calloc put it, on a boundary of its type, and its path
+ * begins off such a boundary (the assertion under the struct). Memory that
+ * malloc, calloc or strdup handed out begins on one, so a copy of the path
+ * that rcheevos or anyone made that way would give a container that begins
+ * off it, and is refused: rcheevos then says the file could not be opened,
+ * and nothing was read. A pointer into the middle of some other text can
+ * still fall where the member would, and is taken for it.
+ *
+ * So the rest is held from outside: vendored_check.py holds rcheevos to the
+ * tree these lines were read in, and rahash_cli --handed, which
+ * native_repro_test.py runs before any row, has rcheevos hash a Wii disc, a
+ * Wii package and a file that does not open, and sees which pointer its open
+ * is given and how many times.
+ */
 static void* RC_CCONV disc_open(const char* path_utf8) {
-    (void)path_utf8;
-    return current;
+    if (!path_utf8)
+        return NULL;
+    if (((uintptr_t)path_utf8 - offsetof(struct pb_wbfs, path)) % _Alignof(struct pb_wbfs) != 0)
+        return NULL;
+    return (char*)path_utf8 - offsetof(struct pb_wbfs, path);
 }
 
 /* The position is kept inside the disc, and worked out without a sum that
@@ -411,6 +471,7 @@ int pb_wbfs_names(const char* path) {
 int pb_wbfs_hash(char hash[33], uint32_t console, rc_hash_iterator_t* iterator,
                  struct pb_wbfs_stats* stats, char why[PB_WBFS_REASON]) {
     struct pb_wbfs* wbfs;
+    const char* path;
     int found;
 
     hash[0] = '\0';
@@ -421,7 +482,12 @@ int pb_wbfs_hash(char hash[33], uint32_t console, rc_hash_iterator_t* iterator,
     if (console != 0 && console != RC_CONSOLE_WII)
         return refuse(why, "A .wbfs holds a Wii disc, and console %" PRIu32 " was asked for", console);
 
-    wbfs = wbfs_open(&iterator->callbacks.filereader, iterator->path, why);
+    /* An iterator made for no path has no file to open, in rcheevos' words. */
+    path = iterator->path;
+    if (!path)
+        return refuse(why, "Could not open file");
+
+    wbfs = wbfs_open(&iterator->callbacks.filereader, path, why);
     if (!wbfs)
         return 0;
 
@@ -431,12 +497,17 @@ int pb_wbfs_hash(char hash[33], uint32_t console, rc_hash_iterator_t* iterator,
     iterator->callbacks.filereader.read = disc_read;
     iterator->callbacks.filereader.close = disc_close;
 
-    current = wbfs;
+    /* The same text at the address disc_open knows the container by. There
+     * is one way out of this function from here on, and the path rcheevos
+     * allocated is back on the iterator before it. */
+    iterator->path = wbfs->path;
     found = rc_hash_generate(hash, RC_CONSOLE_WII, iterator);
-    current = NULL;
+    iterator->path = path;
 
     /* The iterator is handed back as it came: whatever is done with it next
-     * finds the reader for plain files, and not one whose container is gone. */
+     * finds the reader for plain files, and not one whose container is gone,
+     * and rc_hash_destroy_iterator frees the path it allocated, and not the
+     * middle of a container that has been freed. */
     iterator->callbacks.filereader = wbfs->raw;
 
     stats->bytes_read = wbfs->bytes_read;

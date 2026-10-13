@@ -24,11 +24,13 @@
  *
  * Nothing is logged from here and nothing is kept between calls: what
  * rcheevos said of a file it gave no hash for goes back to the caller, in the
- * caller's own buffer, and the caller decides who is told. One thing is kept
- * for the length of a call, by pb_wbfs.c: which container rcheevos is
- * reading, in a variable that is each thread's own. So a call on one thread
- * knows nothing of a call on another, and the library needs nothing of the
- * system but its C library.
+ * caller's own buffer, and the caller decides who is told. Nothing is kept
+ * for the length of a call either, outside what the call itself allocated:
+ * pb_wbfs.c finds the container rcheevos is reading through the path on the
+ * call's own iterator, and no variable of the library is shared by two calls
+ * or is a thread's own. So a call on one thread knows nothing of a call on
+ * another, and the library needs nothing of the system but its C library,
+ * its threads least of all.
  */
 
 #include <jni.h>

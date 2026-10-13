@@ -63,6 +63,16 @@ Before any row, the sanitized build is given two faults of its own making
 without a sanitizer is true of every file there is, and nothing else in a run
 tells the two builds apart: every row that must pass ends the same on both.
 If either report is missing no row is run, and the status is 2.
+
+Then both builds are asked which pointer rcheevos hands its callback for
+opening a file when it hashes for the Wii (rahash_cli --handed): for a file
+that does not open, for a disc and for a package, the last two hashed to the
+end so that every file rcheevos opens on the way is counted. The reader of
+.wbfs finds its container by that pointer, which has to be the iterator's own
+path, once, and can refuse few of the pointers that are not it. Where it is
+another, the rows of a .wbfs would be the reader working on memory that is
+not a container's, which no row is sure to show; so none is run, and the
+status is 1.
 """
 
 import hashlib
@@ -2556,6 +2566,44 @@ def check_sanitized(binary):
     return missing
 
 
+# What rahash_cli --handed is given, and the line it must print: nothing, and
+# rcheevos stops at a file that did not open; then a disc and a package that
+# the rows below hash, for the two ways rcheevos goes on from a file that did.
+HANDED = (
+    ("a file that does not open", None, "the iterator's own path, once"),
+    ("an encrypted disc", "wii-encrypted.iso", "the iterator's own path, once, and a hash"),
+    ("a package", "wad.wad", "the iterator's own path, once, and a hash"),
+)
+
+
+def check_handed(builds, files):
+    """Whether rcheevos, in every one of `builds`, opens the one file it
+    hashes for the Wii by the pointer that is the iterator's path, and opens
+    no other. `files` is where the fixtures are. Prints as it goes."""
+    held = True
+    print("rcheevos opens a Wii file by the iterator's own path and opens no other, "
+          "which the reader of .wbfs counts on:")
+    for binary, label, env in builds:
+        full = dict(os.environ)
+        full.update(env or {})
+        for what, name, expected in HANDED:
+            command = [str(binary), "--handed"] + ([f"{files}{os.sep}{name}"] if name else [])
+            try:
+                done = subprocess.run(command, env=full,
+                                      stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                                      stderr=subprocess.PIPE, timeout=TIMEOUT_SECONDS)
+                status = done.returncode
+                said = (done.stdout + done.stderr).decode("utf-8", "replace").strip()
+            except subprocess.TimeoutExpired:
+                status, said = "none, killed", ""
+            if status == 0 and said == expected:
+                print(f"  ok   {label} build, {what}: {said}")
+            else:
+                print(f"  FAIL {label} build, {what}: exit {status}, {said[:200] or 'and nothing said'}")
+                held = False
+    return held
+
+
 # ---------------------------------------------------------------------- main
 
 def build_tools(directory):
@@ -2611,8 +2659,15 @@ def main(argv):
         files.mkdir()
         must_pass, known_gaps = write_fixtures(files)
 
-        failures = 0
         builds = ((plain, "plain", None), (sanitized, "sanitized", SANITIZER_ENV))
+        if not check_handed(builds, files):
+            sys.stdout.flush()
+            print("native_repro_test: rcheevos does not hand its callback for opening a file "
+                  "the iterator's own path and that alone, which pb_wbfs.c finds its "
+                  "container by. No row was run.", file=sys.stderr)
+            return 1
+
+        failures = 0
         for binary, label, env in builds:
             print(f"must pass, {label} build:")
             for what, console, name, answer in must_pass:

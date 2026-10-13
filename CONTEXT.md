@@ -1159,6 +1159,30 @@ daemon or the app; the sanitized test program is built with the asserts in.
 `native_lib_check.sh` refuses a desktop library or a DLL that still calls
 what `assert()` ends the process through; nothing checks the Android one,
 which was read by hand.
+
+No variable of the library is a thread's own. `pb_wbfs.c` kept one, the
+container rcheevos was reading: rcheevos' callback for opening a file is
+given a path and nothing else. The mingw-w64 gcc of `windows-latest` has no
+thread-local storage of its own and makes it out of libgcc and winpthreads,
+which are linked into the DLL, and winpthreads calls `assert()`: the DLL was
+refused for `_assert` there, and on no machine whose compiler has such
+storage. The container now carries a copy of its path as its last member,
+the iterator's path points at that copy for the one `rc_hash_generate`, and
+the callback finds the container a known number of bytes before the pointer
+it is handed. That counts on rcheevos handing on the iterator's own pointer
+and opening one file. Of a pointer that is not the member the callback can
+tell one thing without reading through it: the path begins one byte off the
+boundary a container is aligned to, so memory that `malloc` or `strdup`
+handed out, which is what a copy of the path would be, gives a container
+that begins off it, and rcheevos is told the file did not open. A pointer
+into the middle of some other text can pass. So it is held from outside as
+well: `rahash_cli --handed`, which `native_repro_test.py` runs on both
+builds before any row, has rcheevos hash a file that does not open, a disc
+and a package, and sees that the callback is given the iterator's own path,
+once. `native_lib_check.sh` refuses a `librahasher.so` that has a segment of
+thread-local storage, the committed one and the one the `native` job builds,
+so the next such variable is found on Linux and named.
+
 Nothing of the reader, of libchdr or of the decoders is shared between two
 calls, with one exception read off the source and not seen to matter:
 dr_flac writes what the CPU can do into process-wide flags each time a
@@ -1210,7 +1234,8 @@ Three builds compile that list:
   refuses one that calls a `printf_s` function, which ends the process on a
   message too long). **Nothing has loaded it**: the `windows` job of
   `shared-tests.yml` builds it on `windows-latest` and runs the hasher's tests
-  against it, and that job has not run yet.
+  against it, and the one run of that job stopped before those tests, at
+  `native_lib_check.sh`, for the `_assert` told of above.
 
 CI's `native` job builds a fresh Linux library and runs the tests on that as
 well as on the committed one, and runs `shared/tests/native_repro_test.py`:

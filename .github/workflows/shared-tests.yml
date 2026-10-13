@@ -164,7 +164,12 @@ jobs:
         run: ./tests/native_manifest_check.py "$RUNNER_TEMP/native/librahasher.manifest"
 
       # Both libraries: the one in git is what the other job tests and what
-      # the sentence about glibc at the top of this file is about.
+      # the sentence about glibc at the top of this file is about. The check
+      # also refuses a library with a variable that is a thread's own. That
+      # harms nothing here, and the DLL of the same sources is refused for
+      # it in the `windows` job, whose compiler makes such a variable out of
+      # a threading library that calls assert(); this is where it is said
+      # first, and with the variable's name.
       - name: Neither library needs a newer glibc or exports more than its two functions
         working-directory: shared
         run: |

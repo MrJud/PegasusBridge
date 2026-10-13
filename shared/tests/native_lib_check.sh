@@ -14,7 +14,8 @@
 # one thing more, which only a DLL can get wrong: that it calls none of the
 # C library's "secure" functions that put text together.
 #
-# And of either, that it does not call the function behind assert().
+# And of either, that it does not call the function behind assert(). And of
+# a librahasher.so, that none of its variables is a thread's own.
 #
 #   ./native_lib_check.sh <librahasher.so | rahasher.dll>
 #
@@ -58,6 +59,8 @@ forbidden_calls='printf_s$'
 # the app where the decompressor's own error ends in a reason. NDEBUG takes
 # them out, in build.sh and in CMakeLists.txt; a build that has lost it is
 # the same library to every test of its hashes, and is known by this alone.
+# A DLL has a second way to come by one, which no flag of ours takes out: see
+# what is said of thread-local storage below.
 assert_calls='^(__assert_fail|__assert_perror_fail|__assert|__assert2|_assert|_wassert)$'
 
 if [[ $# -ne 1 ]]; then
@@ -97,7 +100,8 @@ asserts_nothing() {
     local asserting
     asserting="$(grep -E "$assert_calls" <<<"$1")"
     if [[ -n "$asserting" ]]; then
-        echo "  FAIL calls what assert() ends the process through, so it was not built with NDEBUG:"
+        echo "  FAIL calls what assert() ends the process through: it was not built with NDEBUG,"
+        echo "       or something the compiler added of its own asserts:"
         sed 's/^/         /' <<<"$asserting"
         failures=$((failures + 1))
     else
@@ -223,6 +227,27 @@ elif [[ "$(printf '%s\n%s\n' "$highest" "$glibc_floor" | sort -V | tail -n 1)" !
     failures=$((failures + 1))
 else
     echo "  ok   needs glibc $highest (the floor is $glibc_floor)"
+fi
+
+# No variable of the library may be a thread's own (_Thread_local, __thread).
+# Here that costs nothing: the system keeps such variables, and the library
+# has a segment of them, which is what is looked for. The same sources are the
+# DLL, and a mingw-w64 gcc built without thread-local storage of its own, as
+# the one that builds the DLL in CI is, makes such a variable out of libgcc
+# and its threading library, winpthreads. Both are linked into the DLL, and
+# winpthreads calls assert(), which NDEBUG in our flags does not reach: the
+# DLL is refused above for _assert, on that compiler alone and with nothing
+# that says where it came from. The library had one such variable, the
+# container pb_wbfs.c was reading. This says it on every system, of the
+# library the DLL's sources were just compiled into.
+if grep -Eq '^[[:space:]]+TLS[[:space:]]+off[[:space:]]' <<<"$headers"; then
+    echo "  FAIL has thread-local storage: some variable in it is a thread's own, and the DLL built"
+    echo "       from the same sources gets assert() with it where the compiler emulates one:"
+    awk '$2 ~ /^[lg]$/ && /\.t(bss|data)/ { print "         " $NF }' \
+        <<<"$(LC_ALL=C objdump -t "$library" 2>/dev/null)"
+    failures=$((failures + 1))
+else
+    echo "  ok   has no thread-local storage"
 fi
 
 # A line of the table that is *UND* is a name the library calls in another;

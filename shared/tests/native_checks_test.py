@@ -142,6 +142,21 @@ class LibCheckTest(LibraryCheck):
         self.assertEqual(status, 0, output)
         self.assertIn("ok   has no assert() left in it", output)
 
+    def test_a_library_with_a_variable_that_is_a_threads_own_is_refused_and_names_it(self):
+        # What pb_wbfs.c kept its container in. Linux carries such a variable
+        # for nothing; the DLL of the same sources got winpthreads and its
+        # assert() with it, from a compiler no machine but CI's has.
+        body = "static _Thread_local int calls;\nint counted(void) { return ++calls; }\n"
+        status, output = self.check(self.library("threaded", body=body))
+        self.assertEqual(status, 1, output)
+        self.assertEqual(output.count("FAIL"), 1, output)
+        self.assertIn("FAIL has thread-local storage", output)
+        self.assertRegex(output, r"\n +calls\n")
+
+        status, output = self.check(self.library("shared", body=body.replace("_Thread_local ", "")))
+        self.assertEqual(status, 0, output)
+        self.assertIn("ok   has no thread-local storage", output)
+
     def test_packed_relocations_are_refused_though_no_symbol_shows_them(self):
         # Every symbol of this library is one the first library has. What
         # differs is a line among its version references, and a loader older

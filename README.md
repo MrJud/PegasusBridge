@@ -449,7 +449,7 @@ Correcting an emulator the build already knows about is unaffected.
 | `igdb` | `token`, `search`, `details`, `covers`, `screenshots`, `artworks` | Twitch client id/secret |
 | `ign` | `search`, `details`, `images` | — |
 | `steam` | `search`, `assets` | — (public store) |
-| `steam-account` | `library`, `progress`, `achievements`, `resolve` | the user's own Steam Web API key and SteamID |
+| `steam-account` | `library`, `progress`, `achievements`, `resolve` | the user's own Steam Web API key and SteamID. Desktop daemon only, for now |
 | `romm` | `heartbeat`, `platforms`, `roms` | a RomM server, optionally a `rmm_…` client token |
 
 `steam` and `steam-account` are deliberately separate: the first is public
@@ -465,6 +465,10 @@ game that has no achievements. So every request this source understands is
 answered with `status: "ok"` and a `results` object, and what happened is
 `results.state`. `status: "error"` means the op or a parameter was wrong, and
 nothing else.
+
+For now it is the desktop daemon that answers this source, and the daemon alone.
+The Android app builds the same code, has no route to it and holds no Steam key:
+asked for `steam-account`, it answers that the source is unknown.
 
 Every `results` carries `namespace: "steam"`, `state`, `message`, `cached`,
 `stale` and `fetchedAt`. `message` is one fixed English sentence per state, never

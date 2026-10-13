@@ -9,9 +9,9 @@ import java.util.Locale
 
 /**
  * The `steam-account` source, whole: what each op answers, in what state, and
- * what of it is kept on disk. Both shells compile this one copy and their
- * dispatchers hand it the request as it came, so a theme reads one payload on
- * the desktop and on Android.
+ * what of it is kept on disk. It lies in the folder both shells compile, and
+ * for now only the desktop's dispatcher hands it a request: the Android app
+ * builds this file and has no route to it yet.
  *
  * ── A state, not an error ──────────────────────────────────
  *
@@ -56,9 +56,9 @@ import java.util.Locale
  * [LANGUAGES] and a SteamID held to seventeen digits. No parameter is ever
  * part of a path as it came in, and the key is in no file and no name.
  *
- * One lock is held from the look at the disk to the write. On Android each
- * request runs in a coroutine of its own, and a game's four tiles asking at
- * once would otherwise each find nothing kept and each ask Steam.
+ * One lock is held from the look at the disk to the write. Each request is a
+ * thread of its own, and a game's four tiles asking at once would otherwise
+ * each find nothing kept and each ask Steam.
  */
 object SteamAccountOps {
 

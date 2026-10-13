@@ -1,6 +1,8 @@
 package com.pegasus.bridge.scrapers
 
 import com.pegasus.bridge.core.SafeUrl
+import okhttp3.mockwebserver.MockResponse
+import okhttp3.mockwebserver.MockWebServer
 import org.json.JSONObject
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -172,12 +174,178 @@ class IntegrationClientsTest {
 
     // A private profile is a state to show, not a failure to retry and not an
     // empty result to cache — reporting "no achievements" would tell a user their
-    // game has none when what it has is a privacy setting.
-    @Test fun `a private profile is its own refusal, and it counts as an answer`() {
-        assertTrue(SteamAccountClient.Refusal.PRIVATE.isAnswer)
-        assertFalse(SteamAccountClient.Refusal.AUTH.isAnswer)
+    // game has none when what it has is a privacy setting. It was counted as an
+    // answer here once, and an answer is what gets kept: the profile would have
+    // gone on being private on disk after its owner had made it public.
+    @Test fun `a private profile is its own refusal, and it is not an answer to keep`() {
+        assertFalse(SteamAccountClient.Refusal.PRIVATE.isAnswer)
+        assertFalse(SteamAccountClient.Refusal.KEY_REFUSED.isAnswer)
+        assertFalse(SteamAccountClient.Refusal.RATE_LIMITED.isAnswer)
         assertFalse(SteamAccountClient.Refusal.TRANSPORT.isAnswer)
         assertFalse(SteamAccountClient.Refusal.SERVER.isAnswer)
+        assertFalse(SteamAccountClient.Refusal.MALFORMED.isAnswer)
+        // A game without stats is Steam answering, and stays so.
+        assertTrue(SteamAccountClient.Refusal.NO_STATS.isAnswer)
+    }
+
+    private val steamCreds = SteamAccountClient.Credentials(STEAM_KEY, "76561198000000000")
+
+    /** Runs [block] with the client pointed at a server that answers as queued. */
+    private fun <T> withSteam(block: (MockWebServer) -> T): T {
+        val server = MockWebServer()
+        val base = SteamAccountClient.BASE
+        server.start()
+        SteamAccountClient.BASE = server.url("/").toString().trimEnd('/')
+        try {
+            return block(server)
+        } finally {
+            SteamAccountClient.BASE = base
+            server.shutdown()
+        }
+    }
+
+    private fun steamAnswer(status: Int, contentType: String, body: String) = MockResponse()
+        .setResponseCode(status)
+        .setHeader("Content-Type", contentType)
+        .setBody(body)
+
+    /** One answer of Steam's and the refusal it is, or null for an answer to read. */
+    private class SteamRow(
+        val name: String,
+        val status: Int,
+        val contentType: String,
+        val body: String,
+        val refusal: SteamAccountClient.Refusal?
+    )
+
+    // What Steam answers with and what it is. The first three bodies are as
+    // Steam sent them on 2026-10-13, to a wrong key and to no key. The two
+    // marked "believed" are not measured yet: a profile that is not public and a
+    // game with no stats, each given at the status it is thought to come with
+    // and at 200, since what names them is the body.
+    private val PLAYER_ROWS = listOf(
+        SteamRow("a wrong key", 403, "text/html", STEAM_FORBIDDEN, SteamAccountClient.Refusal.KEY_REFUSED),
+        SteamRow("a wrong key, as the library call refuses it", 401, "text/html", STEAM_UNAUTHORIZED,
+                 SteamAccountClient.Refusal.KEY_REFUSED),
+        SteamRow("no key", 400, "text/html", STEAM_NO_KEY, SteamAccountClient.Refusal.KEY_REFUSED),
+        SteamRow("a profile that is not public (believed)", 403, "application/json", STEAM_NOT_PUBLIC,
+                 SteamAccountClient.Refusal.PRIVATE),
+        SteamRow("a profile that is not public, at 200", 200, "application/json", STEAM_NOT_PUBLIC,
+                 SteamAccountClient.Refusal.PRIVATE),
+        SteamRow("a profile that is not public, at 401", 401, "application/json", STEAM_NOT_PUBLIC,
+                 SteamAccountClient.Refusal.PRIVATE),
+        SteamRow("a game with no stats (believed)", 400, "application/json", STEAM_NO_STATS,
+                 SteamAccountClient.Refusal.NO_STATS),
+        SteamRow("a game with no stats, at 200", 200, "application/json", STEAM_NO_STATS,
+                 SteamAccountClient.Refusal.NO_STATS),
+        SteamRow("a game with no stats, at 403", 403, "application/json", STEAM_NO_STATS,
+                 SteamAccountClient.Refusal.NO_STATS),
+        SteamRow("too many requests", 429, "text/html", "<html><body>Too Many Requests</body></html>",
+                 SteamAccountClient.Refusal.RATE_LIMITED),
+        SteamRow("a server error", 500, "text/html", "<html><body>Internal Server Error</body></html>",
+                 SteamAccountClient.Refusal.SERVER),
+        SteamRow("a server away", 503, "application/json", "{}", SteamAccountClient.Refusal.SERVER),
+        SteamRow("a page where JSON was due", 200, "text/html", "<html><body>Maintenance</body></html>",
+                 SteamAccountClient.Refusal.MALFORMED),
+        SteamRow("nothing at all", 200, "application/json", "", SteamAccountClient.Refusal.MALFORMED),
+        SteamRow("a refusal in words not known here", 403, "application/json",
+                 """{"playerstats":{"error":"Something Steam began to say this year","success":false}}""",
+                 SteamAccountClient.Refusal.MALFORMED),
+        SteamRow("a refusal with no words", 200, "application/json",
+                 """{"playerstats":{"success":false}}""", SteamAccountClient.Refusal.MALFORMED),
+        SteamRow("JSON at a status that is no answer", 403, "application/json", "{}",
+                 SteamAccountClient.Refusal.SERVER),
+        SteamRow("JSON with no playerstats", 200, "application/json", "{}",
+                 SteamAccountClient.Refusal.MALFORMED),
+        SteamRow("an answer", 200, "application/json", STEAM_PLAYER, null)
+    )
+
+    // The status was judged before the body was read, and both a profile that
+    // is not public and a game with no stats came out as a refused key.
+    @Test fun `every answer to the player call is the refusal its body and status make it`() {
+        withSteam { server ->
+            for (row in PLAYER_ROWS) {
+                server.enqueue(steamAnswer(row.status, row.contentType, row.body))
+                val r = SteamAccountClient.playerAchievements(steamCreds, 440)
+                val e = r.exceptionOrNull()
+                if (row.refusal == null) {
+                    assertNull(e, "${row.name}: refused as ${(e as? SteamAccountClient.SteamException)?.refusal}")
+                    assertEquals(2, r.getOrThrow().achievements.size, row.name)
+                    continue
+                }
+                assertTrue(e is SteamAccountClient.SteamException, "${row.name}: got $r")
+                assertEquals(row.refusal, e.refusal, row.name)
+                assertFalse(SafeUrl.leaks(e.message.orEmpty(), STEAM_KEY), "${row.name}: ${e.message}")
+            }
+        }
+    }
+
+    @Test fun `a library with neither games nor a count is private, and one with a count of none is empty`() {
+        withSteam { server ->
+            server.enqueue(steamAnswer(200, "application/json", """{"response":{}}"""))
+            val private = SteamAccountClient.ownedGames(steamCreds).exceptionOrNull()
+            assertTrue(private is SteamAccountClient.SteamException, "got $private")
+            assertEquals(SteamAccountClient.Refusal.PRIVATE, private.refusal)
+
+            server.enqueue(steamAnswer(200, "application/json", """{"response":{"game_count":0}}"""))
+            assertEquals(emptyList(), SteamAccountClient.ownedGames(steamCreds).getOrThrow())
+
+            server.enqueue(steamAnswer(200, "application/json", STEAM_OWNED))
+            assertEquals(2, SteamAccountClient.ownedGames(steamCreds).getOrThrow().size)
+
+            server.enqueue(steamAnswer(401, "text/html", STEAM_UNAUTHORIZED))
+            val refused = SteamAccountClient.ownedGames(steamCreds).exceptionOrNull()
+            assertTrue(refused is SteamAccountClient.SteamException, "got $refused")
+            assertEquals(SteamAccountClient.Refusal.KEY_REFUSED, refused.refusal)
+        }
+    }
+
+    // The message of a failed connection is the network layer's, and what it
+    // was asked for is a URL with the key in it.
+    @Test fun `a steam that cannot be reached is a transport refusal that names no url`() {
+        val base = SteamAccountClient.BASE
+        SteamAccountClient.BASE = "http://127.0.0.1:1"
+        try {
+            val e = SteamAccountClient.playerAchievements(steamCreds, 440).exceptionOrNull()
+            assertTrue(e is SteamAccountClient.SteamException, "got $e")
+            assertEquals(SteamAccountClient.Refusal.TRANSPORT, e.refusal)
+            assertFalse(SafeUrl.leaks(e.message.orEmpty(), STEAM_KEY), "leaked: ${e.message}")
+            assertFalse(e.message.orEmpty().contains("127.0.0.1"), "the message quotes the address: ${e.message}")
+        } finally {
+            SteamAccountClient.BASE = base
+        }
+    }
+
+    @Test fun `both calls about a game are made in the language asked for`() {
+        withSteam { server ->
+            server.enqueue(steamAnswer(200, "application/json", STEAM_PLAYER))
+            server.enqueue(steamAnswer(200, "application/json", """{"game":{}}"""))
+            SteamAccountClient.playerAchievements(steamCreds, 440, "italian").getOrThrow()
+            SteamAccountClient.schemaFor(STEAM_KEY, 440, "italian").getOrThrow()
+
+            assertEquals("italian", server.takeRequest().requestUrl?.queryParameter("l"))
+            assertEquals("italian", server.takeRequest().requestUrl?.queryParameter("l"))
+        }
+    }
+
+    // Unencoded, the name below ends the parameter it is in and begins two more.
+    @Test fun `a name, an id and a key reach steam as one parameter each`() {
+        withSteam { server ->
+            val name = "some one&key=other&steamid=1"
+            val key = "SENTINEL STEAM&KEY"
+            server.enqueue(steamAnswer(200, "application/json", """{"response":{"success":1,"steamid":"76561198000000000"}}"""))
+            assertEquals("76561198000000000", SteamAccountClient.resolveVanity(key, name).getOrThrow())
+            val resolve = server.takeRequest().requestUrl!!
+            assertEquals(listOf(name), resolve.queryParameterValues("vanityurl"))
+            assertEquals(listOf(key), resolve.queryParameterValues("key"))
+            assertEquals(setOf("key", "vanityurl"), resolve.queryParameterNames)
+
+            server.enqueue(steamAnswer(200, "application/json", STEAM_OWNED))
+            SteamAccountClient.ownedGames(SteamAccountClient.Credentials(key, "7656&key=x")).getOrThrow()
+            val owned = server.takeRequest().requestUrl!!
+            assertEquals(listOf(key), owned.queryParameterValues("key"))
+            assertEquals(listOf("7656&key=x"), owned.queryParameterValues("steamid"))
+        }
     }
 
     @Test fun `the desktop launch is a steam uri and never a purchase`() {
@@ -309,5 +477,28 @@ class IntegrationClientsTest {
         // client that is not running.
         assertTrue(SpotifyRemote.Refusal.NEEDS_PREMIUM != SpotifyRemote.Refusal.NO_ACTIVE_DEVICE)
         assertNotNull(SpotifyRemote.Refusal.valueOf("NEEDS_PREMIUM"))
+    }
+
+    private companion object {
+        const val STEAM_KEY = "SENTINEL-STEAM-KEY"
+
+        // As Steam sent them on 2026-10-13.
+        const val STEAM_FORBIDDEN =
+            "<html><head><title>Forbidden</title></head><body><h1>Forbidden</h1>Access is denied. " +
+            "Retrying will not help. Please verify your <pre>key=</pre> parameter.</body></html>"
+        const val STEAM_UNAUTHORIZED =
+            "<html><head><title>Unauthorized</title></head><body><h1>Unauthorized</h1>Access is denied. " +
+            "Retrying will not help. Please verify your <pre>key=</pre> parameter.</body></html>"
+        const val STEAM_NO_KEY =
+            "<html><head><title>Bad Request</title></head><body><h1>Bad Request</h1>" +
+            "Required parameter 'key' is missing</body></html>"
+
+        // Believed, not measured.
+        const val STEAM_NOT_PUBLIC = """{"playerstats":{"error":"Profile is not public","success":false}}"""
+        const val STEAM_NO_STATS = """{"playerstats":{"error":"Requested app has no stats","success":false}}"""
+
+        const val STEAM_PLAYER = """{"playerstats":{"steamID":"76561198000000000","gameName":"Team Fortress 2",
+            "achievements":[{"apiname":"TF_SCOUT_LONG_DISTANCE_RUNNER","achieved":1,"unlocktime":1600000000},
+                            {"apiname":"TF_SCOUT_FAST_KILLS","achieved":0,"unlocktime":0}],"success":true}}"""
     }
 }

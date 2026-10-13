@@ -4,6 +4,7 @@ import com.pegasus.bridge.core.HttpClient
 import com.pegasus.bridge.core.SafeUrl
 import org.json.JSONArray
 import org.json.JSONObject
+import java.net.URLEncoder
 
 /**
  * The Steam **account**: what a user owns, what they have played, what they have
@@ -21,12 +22,17 @@ import org.json.JSONObject
  * with a sentence saying what to change. Collapsing it into "no achievements"
  * would tell a user their game has none when what it has is a privacy setting.
  *
- * ── And the one that arrives as HTML ───────────────────────
+ * ── The status says less than the body ─────────────────────
  *
- * Measured: `GetPlayerAchievements` without a key answers **HTTP 400 with an
- * HTML body**, not JSON. Every parse here therefore treats "this is not JSON" as
- * a refusal rather than as a broken response — the same lesson ScreenScraper's
- * plain-text login errors already taught this codebase.
+ * Measured against Steam on 2026-10-13: a wrong key is **HTTP 403 with an HTML
+ * body** on `GetPlayerAchievements` and **401 with an HTML body** on
+ * `GetOwnedGames`, and no key at all is **400 with an HTML body**. A profile
+ * that is not public and a game that has no stats are refused with statuses
+ * out of the same handful, and what tells them from a refused key is that
+ * their body is JSON and says which it is. So the body is read first and the
+ * status second, in [judge], and a status alone never names a refusal that a
+ * body could have named better. This used to go by the status before the body
+ * was looked at, and a private profile came out as a key to type again.
  */
 object SteamAccountClient {
 
@@ -38,18 +44,36 @@ object SteamAccountClient {
      */
     data class Credentials(val apiKey: String, val steamId: String)
 
+    /**
+     * Why a call gave no answer. [NO_STATS] and [NOT_FOUND] are Steam answering
+     * "there is none", which stays true and may be kept. Every other one is
+     * Steam declining, for a reason that may be gone by the next call.
+     *
+     * [PRIVATE] was counted among the answers once. It is a setting the user
+     * can change in a minute, and an answer kept on disk would go on saying
+     * "private" after they had.
+     */
     enum class Refusal {
-        /** The profile is private, or its game details are. Not an error. */
+        /** The profile's game details are not public. A state to show, never to keep. */
         PRIVATE,
-        /** The key is missing, wrong, or rate-limited. */
-        AUTH,
-        /** The account does not own the game, or it has no achievements at all. */
+        /** Steam did not take the key: wrong, revoked or missing. */
+        KEY_REFUSED,
+        /**
+         * "Requested app has no stats": the game has no achievements, or this
+         * account has never started it. Which of the two is for the schema to say.
+         */
+        NO_STATS,
+        /** No profile of that name. [resolveVanity] only. */
         NOT_FOUND,
+        /** HTTP 429. */
+        RATE_LIMITED,
         TRANSPORT,
+        /** A status that is Steam's own trouble: 5xx, or one this table has no row for. */
         SERVER,
+        /** A body that cannot be used: not JSON, or a refusal in words not known here. */
         MALFORMED;
 
-        val isAnswer: Boolean get() = this == NOT_FOUND || this == PRIVATE
+        val isAnswer: Boolean get() = this == NO_STATS || this == NOT_FOUND
     }
 
     class SteamException(message: String, val refusal: Refusal) : Exception(message)
@@ -80,6 +104,13 @@ object SteamAccountClient {
     )
 
     /**
+     * What `GetPlayerAchievements` says of one game: its name, and every
+     * achievement with whether this account has it. Names and pictures are not
+     * here; they are the schema's.
+     */
+    data class PlayerStats(val gameName: String, val achievements: List<Achievement>)
+
+    /**
      * One game's progress.
      *
      * [total] and [unlocked] are Steam's and Steam's alone. They must never be
@@ -98,31 +129,86 @@ object SteamAccountClient {
 
     // ── Requests ────────────────────────────────────────────────────────────
 
-    private fun call(url: String, what: String): Result<JSONObject> {
-        val resp = HttpClient.getRaw(url, patient = true).getOrElse {
-            return Result.failure(SteamException(
-                "could not reach Steam for $what: ${it.message}", Refusal.TRANSPORT))
-        }
-        // The body is HTML on a bad request, so status is checked before parsing:
-        // handing `<html>Bad Request</html>` to a JSON parser produces an
-        // exception whose message sends the reader entirely the wrong way.
-        if (resp.code == 401 || resp.code == 403)
-            return Result.failure(SteamException("Steam refused the API key", Refusal.AUTH))
-        if (resp.code == 400)
-            return Result.failure(SteamException(
-                "Steam rejected the request for $what — usually a missing or malformed key",
-                Refusal.AUTH))
-        if (!resp.isSuccessful)
-            return Result.failure(SteamException("Steam answered HTTP ${resp.code}", Refusal.SERVER))
+    /** What [judge] makes of one answer: the JSON to read, or why there is none. */
+    internal sealed interface Verdict {
+        class Answer(val root: JSONObject) : Verdict
+        class Refused(val refusal: Refusal) : Verdict
+    }
 
-        return runCatching { JSONObject(resp.body) }.recoverCatching {
-            throw SteamException("Steam's answer for $what was not JSON", Refusal.MALFORMED)
+    /**
+     * One answer, judged by the first row that fits. The rows are in this order
+     * on purpose: what the body says comes before anything the status says.
+     *
+     * A profile that is not public and a game without stats are named by
+     * `playerstats.error` at whatever status they arrive with. After them the
+     * status speaks: 429, then 401, then a 403 or a 400 **whose body is not
+     * JSON**, which is the page Steam sends for a key it does not take. A 403
+     * or a 400 that is JSON and names neither of the two above is Steam saying
+     * something this table does not know, and is not held against the key.
+     *
+     * Nothing here quotes the body. It is Steam's text, and a sentence shown to
+     * the user is never made of it.
+     */
+    internal fun judge(code: Int, body: String): Verdict {
+        val root = runCatching { JSONObject(body) }.getOrNull()
+        val stats = root?.optJSONObject("playerstats")
+        val said = stats?.optString("error").orEmpty()
+        val declined = stats != null && (said.isNotEmpty() || !stats.optBoolean("success", true))
+        val refusal = when {
+            said.contains("not public", ignoreCase = true) -> Refusal.PRIVATE
+            said.contains("no stats", ignoreCase = true)   -> Refusal.NO_STATS
+            code == 429                                    -> Refusal.RATE_LIMITED
+            code == 401                                    -> Refusal.KEY_REFUSED
+            (code == 403 || code == 400) && root == null   -> Refusal.KEY_REFUSED
+            code >= 500                                    -> Refusal.SERVER
+            declined                                       -> Refusal.MALFORMED
+            code !in 200..299                              -> Refusal.SERVER
+            root == null                                   -> Refusal.MALFORMED
+            else                                           -> return Verdict.Answer(root)
+        }
+        return Verdict.Refused(refusal)
+    }
+
+    /**
+     * The sentence of a [SteamException]. [what] is words of this file and an
+     * app id, never a parameter as it came in and never anything Steam or the
+     * network layer wrote: the URL carries the key, and an exception raised
+     * over a URL can quote it.
+     */
+    private fun sentence(refusal: Refusal, what: String, code: Int): String = when (refusal) {
+        Refusal.PRIVATE      -> "this Steam profile's game details are not public"
+        Refusal.KEY_REFUSED  -> "Steam refused the API key"
+        Refusal.NO_STATS     -> "Steam has no stats for this game and this account"
+        Refusal.NOT_FOUND    -> "Steam knows nothing by that name"
+        Refusal.RATE_LIMITED -> "Steam is refusing requests for now: too many were made"
+        Refusal.TRANSPORT    -> "could not reach Steam for $what"
+        Refusal.SERVER       -> "Steam answered HTTP $code for $what"
+        Refusal.MALFORMED    -> "Steam's answer for $what could not be used"
+    }
+
+    private fun refused(refusal: Refusal, what: String, code: Int = 0): SteamException =
+        SteamException(sentence(refusal, what, code), refusal)
+
+    // The ordinary client and its ten seconds: these are small JSON answers,
+    // asked for while a screen waits. The patient client is ScreenScraper's.
+    private fun call(url: String, what: String): Result<JSONObject> {
+        val resp = runCatching { HttpClient.getRaw(url).getOrThrow() }
+            .getOrElse { return Result.failure(refused(Refusal.TRANSPORT, what)) }
+
+        return when (val verdict = judge(resp.code, resp.body)) {
+            is Verdict.Answer  -> Result.success(verdict.root)
+            is Verdict.Refused -> Result.failure(refused(verdict.refusal, what, resp.code))
         }
     }
 
+    // A key is letters and digits and a SteamID is digits, as Steam issues
+    // them. Neither is checked before it comes here, and a profile name is
+    // whatever the user typed: an `&` in any of them would begin a parameter.
+    private fun enc(s: String): String = URLEncoder.encode(s, "UTF-8")
+
     /** A profile name to a 64-bit id. */
     fun resolveVanity(apiKey: String, vanityName: String): Result<String> {
-        val url = "$BASE/ISteamUser/ResolveVanityURL/v1/?key=$apiKey&vanityurl=$vanityName"
+        val url = "$BASE/ISteamUser/ResolveVanityURL/v1/?key=${enc(apiKey)}&vanityurl=${enc(vanityName)}"
         return call(url, "the profile name").mapCatching { root ->
             val r = root.optJSONObject("response")
                 ?: throw SteamException("no response block", Refusal.MALFORMED)
@@ -140,18 +226,18 @@ object SteamAccountClient {
      * titles does not come back empty.
      */
     fun ownedGames(c: Credentials): Result<List<OwnedGame>> {
-        val url = "$BASE/IPlayerService/GetOwnedGames/v1/?key=${c.apiKey}&steamid=${c.steamId}" +
+        val url = "$BASE/IPlayerService/GetOwnedGames/v1/?key=${enc(c.apiKey)}&steamid=${enc(c.steamId)}" +
                   "&include_appinfo=1&include_played_free_games=1&format=json"
         return call(url, "the owned games").mapCatching { root ->
             val r = root.optJSONObject("response")
                 ?: throw SteamException("no response block", Refusal.MALFORMED)
-            // An empty object — not an empty list — is what a private profile
-            // returns. Saying "you own nothing" would be a wrong answer with no
-            // hint about the setting that caused it.
+            // An empty object — not an empty list — is what a profile whose game
+            // details are not public returns, and what a SteamID nobody has
+            // returns too. Saying "you own nothing" would be a wrong answer with
+            // no hint about either. An account that owns nothing still has its
+            // `game_count`, of 0.
             if (!r.has("games") && !r.has("game_count"))
-                throw SteamException(
-                    "this Steam profile's game details are private; " +
-                    "set Game details to Public to sync the library", Refusal.PRIVATE)
+                throw refused(Refusal.PRIVATE, "the owned games")
             parseOwnedGames(r.optJSONArray("games"))
         }
     }
@@ -172,6 +258,23 @@ object SteamAccountClient {
     }
 
     /**
+     * Which of one game's achievements this account has.
+     *
+     * [language] is one of Steam's own names for a language, `italian` or
+     * `english`, and not a code. It changes nothing this keeps; it is sent so
+     * that both calls about a game are made in one language.
+     */
+    fun playerAchievements(c: Credentials, appId: Int, language: String = "english"): Result<PlayerStats> {
+        val url = "$BASE/ISteamUserStats/GetPlayerAchievements/v1/" +
+                  "?appid=$appId&key=${enc(c.apiKey)}&steamid=${enc(c.steamId)}&l=${enc(language)}"
+        val what = "the achievements for app $appId"
+        return call(url, what).mapCatching { root ->
+            val stats = root.optJSONObject("playerstats") ?: throw refused(Refusal.MALFORMED, what)
+            PlayerStats(stats.optString("gameName"), parseAchievements(stats.optJSONArray("achievements")))
+        }
+    }
+
+    /**
      * One game's achievements, with names and pictures.
      *
      * Two calls, because Steam splits them: `GetPlayerAchievements` says which
@@ -182,42 +285,26 @@ object SteamAccountClient {
      * The schema call is allowed to fail without taking the result with it: knowing
      * that 12 of 40 are unlocked is useful even when their names could not be fetched.
      */
-    fun achievements(c: Credentials, appId: Int, includeSchema: Boolean = true): Result<Progress> {
-        val url = "$BASE/ISteamUserStats/GetPlayerAchievements/v1/" +
-                  "?appid=$appId&key=${c.apiKey}&steamid=${c.steamId}&l=english"
-        return call(url, "the achievements for app $appId").mapCatching { root ->
-            val stats = root.optJSONObject("playerstats")
-                ?: throw SteamException("no playerstats block", Refusal.MALFORMED)
-
-            if (!stats.optBoolean("success", true)) {
-                val message = stats.optString("error")
-                throw SteamException(
-                    when {
-                        message.contains("Profile is not public", true) ->
-                            "this Steam profile is private; set it to Public to see achievements"
-                        message.contains("stats", true) ->
-                            "this game reports no achievements for this account"
-                        else -> message.ifEmpty { "Steam declined to answer about app $appId" }
-                    },
-                    if (message.contains("private", true)) Refusal.PRIVATE else Refusal.NOT_FOUND)
-            }
-
-            val unlocked = parseAchievements(stats.optJSONArray("achievements"))
-            val schema = if (includeSchema) schemaFor(c.apiKey, appId).getOrNull() else null
-            val merged = if (schema == null) unlocked else unlocked.map { a ->
-                schema[a.apiName]?.let {
-                    a.copy(displayName = it.displayName, description = it.description,
-                           iconUrl = it.iconUrl, iconGrayUrl = it.iconGrayUrl, hidden = it.hidden)
-                } ?: a
-            }
-            Progress(
-                appId = appId,
-                gameName = stats.optString("gameName"),
-                unlocked = merged.count { it.unlocked },
-                total = merged.size,
-                achievements = merged
-            )
+    fun achievements(
+        c: Credentials,
+        appId: Int,
+        language: String = "english",
+        includeSchema: Boolean = true
+    ): Result<Progress> = playerAchievements(c, appId, language).mapCatching { stats ->
+        val schema = if (includeSchema) schemaFor(c.apiKey, appId, language).getOrNull() else null
+        val merged = if (schema == null) stats.achievements else stats.achievements.map { a ->
+            schema[a.apiName]?.let {
+                a.copy(displayName = it.displayName, description = it.description,
+                       iconUrl = it.iconUrl, iconGrayUrl = it.iconGrayUrl, hidden = it.hidden)
+            } ?: a
         }
+        Progress(
+            appId = appId,
+            gameName = stats.gameName,
+            unlocked = merged.count { it.unlocked },
+            total = merged.size,
+            achievements = merged
+        )
     }
 
     internal fun parseAchievements(arr: JSONArray?): List<Achievement> {
@@ -234,9 +321,13 @@ object SteamAccountClient {
         }
     }
 
-    /** The per-app achievement definitions. Identical for every user of that app. */
-    fun schemaFor(apiKey: String, appId: Int): Result<Map<String, Achievement>> {
-        val url = "$BASE/ISteamUserStats/GetSchemaForGame/v2/?key=$apiKey&appid=$appId&l=english"
+    /**
+     * The per-app achievement definitions. Identical for every user of that app,
+     * and written in [language], which is one of Steam's own names for one.
+     */
+    fun schemaFor(apiKey: String, appId: Int, language: String = "english"): Result<Map<String, Achievement>> {
+        val url = "$BASE/ISteamUserStats/GetSchemaForGame/v2/" +
+                  "?key=${enc(apiKey)}&appid=$appId&l=${enc(language)}"
         return call(url, "the achievement schema for app $appId").mapCatching { root ->
             val arr = root.optJSONObject("game")
                 ?.optJSONObject("availableGameStats")

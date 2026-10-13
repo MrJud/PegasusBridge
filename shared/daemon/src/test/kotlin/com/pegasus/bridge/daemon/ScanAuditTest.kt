@@ -10,6 +10,7 @@ import com.pegasus.bridge.hasher.GameMetadata
 import com.pegasus.bridge.hasher.HashOutcome
 import com.pegasus.bridge.hasher.HashRecipe
 import com.pegasus.bridge.hasher.HashResult
+import com.pegasus.bridge.hasher.IoCounters
 import com.pegasus.bridge.hasher.LookupOutcome
 import com.pegasus.bridge.hasher.RaHashLookup
 import com.pegasus.bridge.hasher.RomHasher
@@ -640,36 +641,13 @@ class ScanAuditTest {
         assertEquals(listOf("snes"), roms.list()!!.toList())
     }
 
-    // The count is the system's, as it writes it for a thread: the first
-    // line of several, and the only one that is of reads asked for.
-    @Test fun `the number after rchar is what was read`() {
-        assertEquals(2884L, ScanAudit.IoCounters.parse("rchar: 2884\nwchar: 0\nsyscr: 7\n"))
-        assertEquals(2884L, ScanAudit.IoCounters.parse("wchar: 9\nrchar: 2884\n"))
-        assertNull(ScanAudit.IoCounters.parse(""))
-        assertNull(ScanAudit.IoCounters.parse("wchar: 1"))
-        assertNull(ScanAudit.IoCounters.parse("rchar: a lot"))
-    }
-
-    // Taking the count is itself a read of some hundred bytes, which the
-    // system adds once it has given the number out. A file's cost is the
-    // difference between two counts, and must not have the first of them in
-    // it: nothing read in between is 0.
-    @Test fun `taking the count costs the file nothing`() {
-        assumeTrue(ScanAudit.IoCounters.thread() != null, "no count of what a thread reads on this system")
-        val before = ScanAudit.IoCounters.thread()
-        val after = ScanAudit.IoCounters.thread()
-        assertEquals(0L, ScanAudit.IoCounters.between(before, after), "the count of the count itself")
-        assertNull(ScanAudit.IoCounters.between(null, after))
-        assertNull(ScanAudit.IoCounters.between(before, null))
-    }
-
     // What the column is for: a file read to its end costs its size at the
     // least, and one the hasher made nothing of costs next to nothing. The
     // library here reads the first file whole and refuses the second
     // unopened; the archive layer around it then opens that one, to see
     // whether it can be read at all, and reads none of it.
     @Test fun `a row says how many bytes its file cost and the table adds them up`() {
-        assumeTrue(ScanAudit.IoCounters.thread() != null, "no count of what a thread reads on this system")
+        assumeTrue(IoCounters.thread() != null, "no count of what a thread reads on this system")
         val size = 4 * 1024 * 1024
         val whole = File(roms, "snes/Whole.sfc").apply { parentFile.mkdirs(); writeBytes(ByteArray(size)) }
         val refused = File(roms, "snes/Refused.sfc").apply { writeBytes(ByteArray(size)) }
@@ -701,7 +679,7 @@ class ScanAuditTest {
     // and a CRC: four megabytes in this cell where there are now next to
     // none, and no MD5 in the row.
     @Test fun `a file the hash did not read whole costs the audit no read for a digest`() {
-        assumeTrue(ScanAudit.IoCounters.thread() != null, "no count of what a thread reads on this system")
+        assumeTrue(IoCounters.thread() != null, "no count of what a thread reads on this system")
         val size = 4 * 1024 * 1024
         val disc = File(roms, "psx/Disc.bin").apply { parentFile.mkdirs(); writeBytes(ByteArray(size)) }
         val library = object : RomHasher {

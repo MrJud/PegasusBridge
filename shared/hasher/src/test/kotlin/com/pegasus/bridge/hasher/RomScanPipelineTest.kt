@@ -18,12 +18,15 @@ import java.io.File
 import java.net.InetSocketAddress
 import java.nio.file.Files
 import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicLong
 import kotlin.test.AfterTest
 import kotlin.test.BeforeTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
+import kotlin.test.assertNotNull
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 private const val NUL = "\u0000"
@@ -3137,6 +3140,170 @@ class RomScanPipelineTest {
         assertEquals(setOf("a.nes", "c.nes"), h2.handed.toSet())
         assertEquals("UNHASHABLE", state(files[1]))
         assertFalse(traceFile.exists(), "left behind: ${traceOnDisk()}")
+    }
+
+    /**
+     * Hashes a file to its content, as [ContentHasher] does, and moves the
+     * test's clock on by what the file is said to take. No time passes.
+     */
+    private class ClockedHasher(private val clock: AtomicLong, private val ms: (File) -> Long) : RomHasher {
+        override fun hash(path: String): HashResult {
+            val f = File(path)
+            clock.addAndGet(ms(f) * 1_000_000)
+            return HashResult(f.readText().removeSuffix(NUL).trim(), 7)
+        }
+    }
+
+    /** The metrics with the counts of bytes taken out, which are the system's to give and not the test's. */
+    private fun ScanMetrics.Snapshot.withoutBytes() =
+        copy(bytesRead = null, slowest = slowest.map { it.copy(bytesRead = null) })
+
+    // The clock is the test's and only the hasher moves it, so what the
+    // hasher adds up is what the scan took, to the millisecond. One file at
+    // a time goes the whole way: the hasher is held at the next until the
+    // result of the one before has been reported, and so moves the clock
+    // under nothing but itself. Let go sooner, it moved it while the file
+    // before was being asked about or written, and their time came to as
+    // much more. The lookup does not move the clock here for the same
+    // reason turned round: the hash of the next file has begun, and is
+    // being timed, while the answer about this one is waited for. The pause
+    // is asked for and really made, 2 ms a file; it is counted as asked,
+    // and this clock does not see it.
+    @Test fun `a scan says where its time went and which file was slowest`(): Unit = runBlocking {
+        val quick = rom("nes", "Quick.nes", "hash-smb")
+        val slow = rom("nes", "Slow.nes", "hash-ctra")
+        val other = rom("nes", "Other.nes", "hash-of-no-game")
+        val clock = AtomicLong(-7_000_000_000)
+        val reported = java.util.concurrent.Semaphore(1)
+        val h = ClockedHasher(clock) {
+            check(reported.tryAcquire(30, java.util.concurrent.TimeUnit.SECONDS)) { "the file before was never reported" }
+            if (it.name == "Slow.nes") 50 else 3
+        }
+        val l = MapLookup(catalogue)
+
+        val s = RomScanPipeline(paths, h, l, throttleMs = { 2L }, hashWorkers = 1, apiWorkers = 2,
+                                reportStep = { 1 }, nanoTime = clock::get)
+            .scan(listOf(romRoot.absolutePath)) { reported.release() }
+
+        assertEquals(counts(2, 0, 0, 1, 0, 0, 0), s.counts())
+        val m = assertNotNull(s.metrics)
+        fun kept(f: File, ms: Long) = ScanMetrics.Slow(RomScanner.canonical(f), ms, f.length(), null)
+        // One worker hashed and two asked, and each number is its own.
+        assertEquals(
+            ScanMetrics.Snapshot(
+                wallMs = 56, walkMs = 0, prepareMs = 0, scanMs = 56, finishMs = 0,
+                hashMs = 56, lookupMs = 0, throttleMs = 6, writeMs = 0,
+                hashWorkers = 1, lookupWorkers = 2, filesHashed = 3, lookups = 3, bytesRead = null,
+                slowest = listOf(kept(slow, 50), kept(other, 3), kept(quick, 3))),
+            m.withoutBytes())
+        assertEquals(3, l.calls.get())
+        // Where the system counts what a thread reads, each file was read
+        // whole by this hasher and costs its length at the least.
+        m.bytesRead?.let { assertTrue(it >= quick.length() + slow.length() + other.length(), "read $it") }
+        m.slowest[0].bytesRead?.let { assertTrue(it >= slow.length(), "read $it") }
+    }
+
+    // What one file costs on its way through, each part timed once and in
+    // its place. Nothing moves this clock but being read, a millisecond each
+    // time, and with one file every reading follows the one before it: the
+    // start of the scan, the walk, the loading, the hash begun and ended,
+    // the lookup begun and ended, the metadata file begun and ended, the
+    // save of the ledger begun and ended, the last result and the return.
+    // Thirteen readings are twelve milliseconds. A part that was not timed
+    // would be two readings fewer, and its time would be missing from the
+    // sum it belongs to and from the phase.
+    @Test fun `a file is timed in the hasher, at the lookup and at each of its two writes`(): Unit = runBlocking {
+        val f = rom("nes", "Mario.nes", "hash-smb")
+        val clock = AtomicLong()
+
+        val s = RomScanPipeline(paths, ContentHasher(), MapLookup(catalogue), hashWorkers = 1, apiWorkers = 1,
+                                ledgerSaveEveryMs = 0, nanoTime = { clock.getAndAdd(1_000_000) })
+            .scan(listOf(romRoot.absolutePath))
+
+        assertEquals(counts(1, 0, 0, 0, 0, 0, 0), s.counts())
+        assertEquals(
+            ScanMetrics.Snapshot(
+                wallMs = 12, walkMs = 1, prepareMs = 1, scanMs = 9, finishMs = 1,
+                hashMs = 1, lookupMs = 1, throttleMs = 0, writeMs = 2,
+                hashWorkers = 1, lookupWorkers = 1, filesHashed = 1, lookups = 1, bytesRead = null,
+                slowest = listOf(ScanMetrics.Slow(RomScanner.canonical(f), 1, f.length(), null))),
+            assertNotNull(s.metrics).withoutBytes())
+    }
+
+    // The commonest scan. Nothing moves this clock but being read, a
+    // millisecond each time, and a scan that hands the hasher nothing reads
+    // it five times: at its start and at the end of each of its phases.
+    @Test fun `a rescan that hashes nothing says so`(): Unit = runBlocking {
+        rom("nes", "Mario.nes", "hash-smb"); rom("nes", "Contra.nes", "hash-ctra")
+        pipeline(ContentHasher(), MapLookup(catalogue)).scan(listOf(romRoot.absolutePath))
+        val h = ContentHasher(); val l = MapLookup(catalogue)
+        val clock = AtomicLong()
+
+        val s = RomScanPipeline(paths, h, l, hashWorkers = 1, apiWorkers = 1,
+                                nanoTime = { clock.getAndAdd(1_000_000) })
+            .scan(listOf(romRoot.absolutePath))
+
+        assertEquals(counts(0, 2, 0, 0, 0, 0, 0), s.counts())
+        assertEquals(listOf(0, 0), listOf(h.calls.get(), l.calls.get()))
+        assertEquals(
+            ScanMetrics.Snapshot(
+                wallMs = 4, walkMs = 1, prepareMs = 1, scanMs = 1, finishMs = 1,
+                hashMs = 0, lookupMs = 0, throttleMs = 0, writeMs = 0,
+                hashWorkers = 1, lookupWorkers = 1, filesHashed = 0, lookups = 0, bytesRead = null,
+                slowest = emptyList()),
+            s.metrics)
+    }
+
+    // A library with no file returns from another place, and is timed there
+    // as well: the walk, and the index it still writes.
+    @Test fun `a scan that finds no file says how long that took`(): Unit = runBlocking {
+        val clock = AtomicLong()
+
+        val s = RomScanPipeline(paths, ContentHasher(), MapLookup(catalogue),
+                                nanoTime = { clock.getAndAdd(1_000_000) })
+            .scan(listOf(romRoot.absolutePath))
+
+        val m = assertNotNull(s.metrics)
+        assertEquals(listOf(2L, 1L, 0L, 0L, 1L), listOf(m.wallMs, m.walkMs, m.prepareMs, m.scanMs, m.finishMs))
+        assertEquals(listOf(0, 0), listOf(m.filesHashed, m.lookups))
+        assertEquals(emptyList(), m.slowest)
+    }
+
+    /** A source that refuses the key at the first question, and moves the test's clock on by what the answer took. */
+    private class RefusingLookup(private val clock: AtomicLong, private val ms: Long) : RaHashLookup {
+        @Volatile private var refused = false
+        override val authRejected: Boolean get() = refused
+        override suspend fun lookup(hash: String): LookupOutcome {
+            clock.addAndGet(ms * 1_000_000)
+            refused = true
+            return LookupOutcome.Failed(LookupOutcome.Cause.AUTH, "refused")
+        }
+    }
+
+    // One file, so that its hash is over before its lookup begins and both
+    // may move the clock: with more, a lookup would move it under a hash.
+    @Test fun `a scan cut short still says where its time went`(): Unit = runBlocking {
+        val f = rom("nes", "Game.nes", "hash-smb")
+        val clock = AtomicLong()
+
+        val s = RomScanPipeline(paths, ClockedHasher(clock) { 30 }, RefusingLookup(clock, 9),
+                                hashWorkers = 1, apiWorkers = 1, nanoTime = clock::get)
+            .scan(listOf(romRoot.absolutePath))
+
+        assertTrue(s.aborted)
+        assertEquals(RomScanPipeline.AbortCause.KEY_REFUSED, s.abortCause)
+        assertEquals(
+            ScanMetrics.Snapshot(
+                wallMs = 39, walkMs = 0, prepareMs = 0, scanMs = 39, finishMs = 0,
+                hashMs = 30, lookupMs = 9, throttleMs = 0, writeMs = 0,
+                hashWorkers = 1, lookupWorkers = 1, filesHashed = 1, lookups = 1, bytesRead = null,
+                slowest = listOf(ScanMetrics.Slow(RomScanner.canonical(f), 30, f.length(), null))),
+            assertNotNull(s.metrics).withoutBytes())
+
+        // And one stopped before a file was read: timed, with nothing in it.
+        val unread = pipeline(ContentHasher(), NoKeyLookup()).scan(listOf(romRoot.absolutePath))
+        assertTrue(unread.aborted)
+        assertEquals(listOf(0, 0), assertNotNull(unread.metrics).let { listOf(it.filesHashed, it.lookups) })
     }
 
     private fun md5(text: String): String =

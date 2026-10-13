@@ -62,7 +62,13 @@ class RomScanPipeline(
      * a scan runs. 0 saves after every result that settled something, which
      * is what a test wants.
      */
-    private val ledgerSaveEveryMs: Long = LEDGER_SAVE_EVERY_MS
+    private val ledgerSaveEveryMs: Long = LEDGER_SAVE_EVERY_MS,
+    /**
+     * The clock a scan's [ScanMetrics] are measured by, in nanoseconds from
+     * wherever it likes. The system's unless a test hands in one that only
+     * it moves, to read exact numbers back.
+     */
+    private val nanoTime: () -> Long = System::nanoTime
 ) {
 
     // Refused here rather than discovered mid-scan. With no hash workers nothing
@@ -182,7 +188,13 @@ class RomScanPipeline(
          * Archives holding several plausible ROMs, with the candidates: the ones
          * [states] counts as AMBIGUOUS_ARCHIVE, so only files this scan looked at.
          */
-        val ambiguousArchives: List<Pair<String, String>> = emptyList()
+        val ambiguousArchives: List<Pair<String, String>> = emptyList(),
+        /**
+         * Where the time of this scan went and which files cost it most. On
+         * every summary a scan returns, one it stopped itself included. Null
+         * only in a summary built by hand.
+         */
+        val metrics: ScanMetrics.Snapshot? = null
     )
 
     /** Why a scan stopped itself. What a person can do about it differs from one to the next. */
@@ -227,19 +239,22 @@ class RomScanPipeline(
         onCounted: (total: Int) -> Unit = {},
         onProgress: (Progress) -> Unit = {}
     ): Summary {
+        val metrics = ScanMetrics(nanoTime)
         paths.ensureAll()
 
         // One resolver for one scan, as it asks to be: it never reads a
         // metafile twice, so one kept longer would not hear of an edit.
         val files = RomScanner.scanWithCollections(roots, CollectionResolver(), extensionsFor)
         val total = files.size
+        metrics.walked()
         BridgeLog.i(TAG, "found $total ROM files under ${roots.size} root(s)")
         // The index is written all the same, from the ledger as it is on
         // disk: a scan that finds nothing is what a card that is out looks
         // like, and the games on it are not to stay listed as on the device.
         if (total == 0) {
             val onDisk = ScanLedger(File(paths.cache, ScanLedger.FILE_NAME))
-            return Summary(0, 0, 0, 0, 0, writeDiscoveryIndex(onDisk))
+            val indexed = writeDiscoveryIndex(onDisk)
+            return Summary(0, 0, 0, 0, 0, indexed, metrics = measured(metrics))
         }
 
         val meta = preloadMetadataCache()
@@ -310,6 +325,7 @@ class RomScanPipeline(
         // When the ledger was last written, by a clock that does not jump.
         var savedAt = System.nanoTime()
 
+        metrics.prepared()
         try {
             // In here and not straight after the walk, so that a caller whose
             // record cannot be written ends the scan as any other failure
@@ -334,7 +350,7 @@ class RomScanPipeline(
                 val solo = launch(Dispatchers.Default) {
                     for (scanned in first) {
                         if (!isActive) break
-                        processFile(scanned, meta, walked, ledger, now, hashQueue, resultQueue, trace, alone = true)
+                        processFile(scanned, meta, walked, ledger, now, hashQueue, resultQueue, trace, alone = true, metrics)
                         trace.cleared(canonical(scanned.file))
                     }
                 }
@@ -356,7 +372,7 @@ class RomScanPipeline(
                         solo.join()
                         for (scanned in fileQueue) {
                             if (!isActive) break
-                            processFile(scanned, meta, walked, ledger, now, hashQueue, resultQueue, trace, alone = false)
+                            processFile(scanned, meta, walked, ledger, now, hashQueue, resultQueue, trace, alone = false, metrics)
                         }
                     }
                 }
@@ -408,7 +424,7 @@ class RomScanPipeline(
                                 // ever; tried with such a lookup, scan() never returned.
                                 // No lookup here throws one, so no test reaches this.
                                 outcome = try {
-                                    lookup.lookup(hash, consoles)
+                                    metrics.lookingUp { lookup.lookup(hash, consoles) }
                                 } catch (t: Throwable) {
                                     synchronized(hashDedup) { hashDedup.remove(key) }
                                     owned.completeExceptionally(t)
@@ -526,7 +542,7 @@ class RomScanPipeline(
                                               detail = outcome.reason.words, extension = job.file.extension)
                             }
                             is LookupOutcome.Match -> {
-                                writeMetadata(job, outcome.game); newEntries++
+                                metrics.writing { writeMetadata(job, outcome.game) }; newEntries++
                                 ledger.record(canonical(job.file), job.collection, ScanLedger.State.MATCHED,
                                               job.fileSize, job.lastModified, now,
                                               gameId = outcome.game.gameId, extension = job.file.extension)
@@ -568,7 +584,7 @@ class RomScanPipeline(
                     // whole ledger. Nothing is forgotten here: that is for a
                     // scan that gets to its end.
                     if (ledger.dirty && (System.nanoTime() - savedAt) / 1_000_000 >= ledgerSaveEveryMs) {
-                        ledger.save(writeLedger)
+                        metrics.writing { ledger.save(writeLedger) }
                         savedAt = System.nanoTime()
                     }
 
@@ -665,6 +681,7 @@ class RomScanPipeline(
             // scope, this is what would release it.
             fileQueue.cancel(); hashQueue.cancel(); resultQueue.cancel()
         }
+        metrics.scanned()
 
         // Pruned here, on the way to the summary, and not where the ledger is
         // opened, which came to the same while this was the only save. The catch
@@ -696,14 +713,36 @@ class RomScanPipeline(
                          "$failedLookups lookups failed; " +
                          states.entries.sortedBy { it.key.name }
                                .joinToString(", ") { "${it.key.name}=${it.value}" })
+        val measured = measured(metrics)
         return Summary(
             total = total, processed = processed, newEntries = newEntries,
             cachedHits = cached, skippedPlatforms = skipped, indexed = indexed,
             aborted = abortReason.isNotEmpty(), reason = abortReason, abortCause = abortCause,
             failedLookups = failedLookups, unmatched = unmatched,
             incompatible = incompatible, hashFailed = hashFailed, states = states,
-            ambiguousArchives = ledger.ambiguousArchives()
+            ambiguousArchives = ledger.ambiguousArchives(),
+            metrics = measured
         )
+    }
+
+    /**
+     * Ends the measuring of a scan that is about to return, and writes one
+     * line of it to the log. Files are named there without their folders, as
+     * everywhere else in the log; the summary has them in full.
+     */
+    private fun measured(metrics: ScanMetrics): ScanMetrics.Snapshot {
+        metrics.finished()
+        val m = metrics.snapshot(hashProducers(hashWorkers), apiWorkers)
+        BridgeLog.i(TAG, "scan took ${m.wallMs} ms: walk ${m.walkMs}, prepare ${m.prepareMs}, " +
+                         "scan ${m.scanMs}, finish ${m.finishMs}; ${m.hashWorkers} hash worker(s) busy " +
+                         "${m.hashMs} ms over ${m.filesHashed} file(s)" +
+                         (m.bytesRead?.let { " and $it bytes" } ?: "") +
+                         ", ${m.lookupWorkers} lookup worker(s) ${m.lookupMs} ms over ${m.lookups} lookup(s), " +
+                         "paused ${m.throttleMs} ms, writing ${m.writeMs} ms" +
+                         (if (m.slowest.isEmpty()) "" else "; slowest: " + m.slowest.joinToString(", ") {
+                             "${File(it.path).name} ${it.ms} ms"
+                         }))
+        return m
     }
 
     private suspend fun processFile(
@@ -716,7 +755,8 @@ class RomScanPipeline(
         resultQueue: Channel<ResultJob>,
         trace: HashTrace,
         /** Whether no other file is in the hasher while this one is gone over. */
-        alone: Boolean
+        alone: Boolean,
+        metrics: ScanMetrics
     ) {
         val file        = scanned.file
         val collection  = scanned.collection
@@ -954,7 +994,12 @@ class RomScanPipeline(
         // thread comes back from a Cancel with its interrupt still set.
         val outcome = try {
                           trace.hashing(path, size, modified, alone) {
-                              runInterruptible(Dispatchers.IO) { hasher.hashDetailed(file.absolutePath, collection) }
+                              // Measured in the block and not around the call: the block
+                              // runs on the thread that reads, and the system's count of
+                              // bytes is a thread's own.
+                              runInterruptible(Dispatchers.IO) {
+                                  metrics.hashing(path, size) { hasher.hashDetailed(file.absolutePath, collection) }
+                              }
                           }
                       }
                       catch (c: kotlinx.coroutines.CancellationException) { throw c }
@@ -1011,7 +1056,7 @@ class RomScanPipeline(
                     preRecorded = ScanLedger.State.UNSUPPORTED_FORMAT))
             }
             is HashOutcome.Ok -> {
-                throttleMs().takeIf { it > 0 }?.let { delay(it) }
+                throttleMs().takeIf { it > 0 }?.let { metrics.throttled(it); delay(it) }
                 hashQueue.send(HashJob(file, cacheKey, outcome.result, collection, size, modified))
             }
         }

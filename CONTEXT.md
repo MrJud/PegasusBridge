@@ -186,15 +186,19 @@ known of, rcheevos tries the `.chd` as each console it knows one of, and a hash
 it gives under a console outside the nine is a failure that is kept
 (`rcheevos takes this .chd for console 49, ...`). There is no row for a
 collection of Neo Geo CD games, so those are hashed by that guess. What the
-reader refuses is `UNHASHABLE` with the reader's reason in its detail, which
-begins `CHD:`: a version before 5, a difference against a parent image, a
-hunk that cannot be read (the image is cut short or does not unpack to its
-checksum), a file that is no CHD. One
+reader refuses in a collection that is known is `UNHASHABLE` with the reader's
+reason in its detail, which begins `CHD:`: a version before 5, a difference
+against a parent image, a hunk that cannot be read (the image is cut short or
+does not unpack to its checksum), a file that is no CHD. One
 refusal is of a sound image: a track that lies after a pregap which
 RetroAchievements' own hasher and chdman, which writes the format, place
 differently is not hashed, since only one of the two hashes could be the
 disc's (see "The `.chd` reader" for which images that is). An image that could
-not be opened at all is `HASH_FAILED` and tried at every scan.
+not be opened at all is `HASH_FAILED` and tried at every scan. So is one the
+reader refuses where rcheevos was left to guess, as any failure of a guess is:
+every console of rcheevos' list has opened the image and been refused, the
+detail is what each said, one after another and cut where the room for it
+ends, and the next scan opens it as many times again.
 
 A `.wbfs` is a Wii disc wherever it lies, in a collection nothing is known of
 as well, and is hashed as one by the library's own reader (`pb_wbfs.c`): in a

@@ -240,6 +240,25 @@ class ChdHashTest {
                      planning.hashDetailed(other.path, "pcfx"))
     }
 
+    // What the reader refuses is a verdict to keep where the collection
+    // says which console the disc is of: that console read the file and
+    // will refuse it again. Left to guess it is not one, for a .chd as for
+    // any file: a failure of the guess is tried again at every scan, and
+    // each console on rcheevos' list has then opened the image and been
+    // told the same, which is what the reason shows.
+    @Test
+    fun `left to guess, a chd the reader refuses is a failure tried again and not a verdict`() {
+        val fake = file("Fake.chd", noise(4096, seed = 28))
+        val refused = "CHD: the file does not begin as a CHD does; Could not open track"
+
+        val guessed = planning.hashDetailed(fake.path, "attic") as? HashOutcome.Failed ?: fail("a hash for no CHD")
+        assertTrue(guessed.retryable, "$guessed")
+        assertTrue(guessed.reason.startsWith("the hasher could not read Fake.chd: $refused; $refused"), guessed.reason)
+
+        assertEquals(HashOutcome.Failed("the hasher could not read Fake.chd: $refused", retryable = false),
+                     planning.hashDetailed(fake.path, "ps2"), "the same file where the console is known")
+    }
+
     // ---------------------------------------------------------------- helpers
 
     /** The library as a scan asks it: behind the plan made for the file's collection. */

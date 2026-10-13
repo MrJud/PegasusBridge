@@ -50,10 +50,13 @@ object ConsoleChoice {
      * The consoles a `.chd` is read as a disc of: PlayStation, PlayStation
      * 2, PSP, Saturn, Sega CD, Dreamcast, PC Engine CD, 3DO and Neo Geo
      * CD. For each of them the same disc has been seen to hash alike from
-     * a `.chd` and from a cue sheet, a `.gdi` or an `.iso`. rcheevos would
-     * try a `.chd` as two more, PC-FX and Jaguar CD, which ask the reader
-     * for tracks in ways nothing here has held against a disc, and any
-     * other console would hash the bytes of the container.
+     * a `.chd` and from a cue sheet, a `.gdi` or an `.iso`. Two more would
+     * open one, the PC-FX, which is on the list rcheevos tries a `.chd` as
+     * when it is left to guess, and the Jaguar CD, which is not: they ask
+     * the reader for tracks in ways nothing here has held against a disc.
+     * The PlayStation 3 is on that list too and is held back
+     * ([RcConsoles.HELD_BACK]). Any other console would hash the bytes of
+     * the container.
      */
     val CHD_CONSOLES: Set<Int> = setOf(9, 12, 21, 39, 40, 41, 43, 56, 76)
 

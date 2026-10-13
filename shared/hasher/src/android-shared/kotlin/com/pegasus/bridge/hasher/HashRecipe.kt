@@ -194,12 +194,12 @@ class HashRecipe internal constructor(
          * older build kept for such a file is under a number no reader is
          * in. What takes that one again is said at [ScanLedger.canSkip].
          */
-        val READERS: Map<String, Int> = mapOf("wbfs" to 1, "chd" to 1)
+        val READERS: Map<String, Int> = mapOf("wbfs" to 1, "chd" to 2)
 
         /**
          * The readers on one line, in the order they came, as the library
          * writes them after the slash of its version; for a log and for an
-         * audit's table: `wbfs1,chd1`.
+         * audit's table: `wbfs1,chd2`.
          */
         val readers: String = READERS.entries.joinToString(",") { "${it.key}${it.value}" }
 

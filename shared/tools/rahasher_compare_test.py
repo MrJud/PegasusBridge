@@ -323,9 +323,17 @@ class FixturesTest(unittest.TestCase):
         for name, disc in list(compare.NOT_PLACED.items()) + [("dreamcast-last-pregap.chd", "dreamcast-last.chd")]:
             self.assertEqual(by_name[name].expected, by_name[disc].expected, name)
             self.assertIsNotNone(by_name[name].expected, name)
-        self.assertEqual(by_name["pce-largest-first.chd"].disc, "d-largest.cue")
-        self.assertEqual(by_name["pce-largest-first.chd"].console, 49)
         self.assertEqual(by_name["dreamcast-last-first.chd"].disc, "d-last.gdi")
+        # The discs asked for their largest track: the ones whose sheet may
+        # hash otherwise than the image have the sheet, the others the answer.
+        self.assertEqual(compare.LARGEST_AS_SHEETS,
+                         ("pce-largest-first.chd", "pcfx-first.chd", "pcfx-two.chd", "pcfx-last-misplaced.chd",
+                          "pcfx-kind-of-largest.chd", "pcfx-length-of-largest.chd"))
+        for name in compare.LARGEST_AS_SHEETS:
+            self.assertEqual(by_name[name].disc, "d-" + name[:-4] + ".cue", name)
+            self.assertEqual(by_name[name].console, 49, name)
+        self.assertEqual(by_name["pcfx-middle.chd"].expected, by_name["pcfx-last.chd"].expected)
+        self.assertRegex(by_name["pcfx-last.chd"].expected, "^[0-9a-f]{32}$")
         # Every image the fixtures refuse as not placed is here: one added
         # there with no disc named for it in NOT_PLACED has no answer.
         self.assertIn("jaguar.chd", by_name)

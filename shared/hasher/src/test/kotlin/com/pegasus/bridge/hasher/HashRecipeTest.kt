@@ -574,7 +574,7 @@ class HashRecipeTest {
     // again by the build that carries it.
     @Test fun `the readers the library is expected to have are the ones the recipe counts`() {
         assertEquals(RcheevosNative.EXPECTED_VERSION.substringAfter('/', ""), HashRecipe.readers)
-        assertEquals("wbfs1,chd1", HashRecipe.readers)
+        assertEquals("wbfs1,chd2", HashRecipe.readers)
         // No reader for a format that is still turned away by its name: the
         // two lists would be saying two things of one extension.
         assertEquals(emptySet(), HashRecipe.READERS.keys intersect

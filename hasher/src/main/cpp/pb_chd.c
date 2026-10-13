@@ -31,7 +31,9 @@
  * Where a track begins is worked out as RetroAchievements' own hasher does
  * it (RALibretro, src/HashCHD.cpp) and as chdman, which writes the format,
  * lays the frames out (MAME, src/lib/util/cdrom.cpp). The two differ for a
- * track that follows a pregap, and such a track is refused: see place().
+ * track that follows a pregap, and such a track is refused: see place(). The
+ * largest track alone, which one console asks for, is read where that hasher
+ * reads it and nowhere else: see choose().
  *
  * Nothing here is kept between two calls, and nothing is written that two
  * threads share.
@@ -791,40 +793,51 @@ static int sector_kind(struct pb_chd* track, const struct chd_track* line) {
 /*
  * Which track is asked for, as RetroAchievements' hasher chooses: the one of
  * that number; or, going through them in order, the first that is not audio
- * when the first with data is asked for; or the last. Returns the track's
- * place among `tracks`, or -1 having said why not.
+ * when the first with data is asked for; or the last. Returns the place among
+ * `tracks` of the track whose kind and length are used, or -1 having said why
+ * not, and puts in `where` the place of the track that is read where it lies.
+ * The two are one track for every request but the largest.
  *
  * For the largest, that hasher takes the kind and the length of the largest
- * track that is not audio and reads it where the last track lies. When the
- * two are one track that is the largest track; when they are not it is the
- * hash of some other place, and the request is refused as a track is whose
- * place the two readings differ on.
+ * track that is not audio, and reads them at the first sector and the first
+ * frame of the last track: it goes through the lines keeping where each
+ * lies, and then reads the largest one's line again over the last one's
+ * without its place. A track is the largest when it has more frames than any
+ * before it, counted from none, so with no track of data it is the first
+ * line. RAHasher 1.8.4 was run on discs made for it, and that is the read it
+ * makes. Only the PC-FX's hash asks for the largest track, and when the
+ * console's name is not found there rcheevos opens track 2 by its number,
+ * which is where a disc with audio around its data has it. So the request is
+ * answered with that same read, whatever it lands on: it is that hasher's
+ * read and no track of the disc, and nothing is asked of where it lies. A
+ * disc whose data is its first track of several gets no hash by it, and one
+ * with two tracks of the console's the hash of the last.
  */
 static int choose(const struct chd_track* tracks, size_t count, uint32_t wanted,
-                  const rc_hash_iterator_t* iterator) {
-    size_t index, largest = count;
+                  const rc_hash_iterator_t* iterator, size_t* where) {
+    size_t index, largest = 0;
+    uint64_t most = 0;
 
     if (wanted == RC_HASH_CDTRACK_FIRST_OF_SECOND_SESSION)
         wanted = 2;
     for (index = 0; index < count; index++) {
+        *where = index;
         if (tracks[index].number == wanted)
             return (int)index;
         if (strcmp(tracks[index].type, "AUDIO") == 0)
             continue;
         if (wanted == RC_HASH_CDTRACK_FIRST_DATA)
             return (int)index;
-        if (largest == count || tracks[index].frames > tracks[largest].frames)
+        if (tracks[index].frames > most) {
+            most = tracks[index].frames;
             largest = index;
+        }
     }
+    *where = count - 1;
     if (wanted == RC_HASH_CDTRACK_LAST)
         return (int)count - 1;
-    if (wanted == RC_HASH_CDTRACK_LARGEST) {
-        if (largest == count - 1)
-            return (int)largest;
-        say(iterator, "CHD: its largest track is not its last, where RetroAchievements' hasher reads it, "
-                      "and is not hashed");
-        return -1;
-    }
+    if (wanted == RC_HASH_CDTRACK_LARGEST)
+        return (int)largest;
     say(iterator, "CHD: it has no track %ld", (long)(int32_t)wanted);
     return -1;
 }
@@ -839,8 +852,8 @@ static struct pb_chd* open_track(chd_file* chd, const struct chd_shape* shape, u
     const chd_header* header = chd_get_header(chd);
     struct chd_track* tracks = NULL;
     struct pb_chd* track = NULL;
-    size_t count;
-    int index;
+    size_t count, where = 0;
+    int index, agreed;
 
     /* What libchdr read of the header is what was checked: the file is read
      * twice, and one still being copied may not be the same both times. */
@@ -862,7 +875,7 @@ static struct pb_chd* open_track(chd_file* chd, const struct chd_shape* shape, u
     count = read_tracks(chd, shape, iterator, tracks);
     if (count == 0)
         goto refused;
-    index = choose(tracks, count, wanted, iterator);
+    index = choose(tracks, count, wanted, iterator, &where);
     if (index < 0)
         goto refused;
 
@@ -872,7 +885,11 @@ static struct pb_chd* open_track(chd_file* chd, const struct chd_shape* shape, u
     track->units_per_hunk = shape->hunk_bytes / shape->unit_bytes;
     track->units = shape->logical_bytes / shape->unit_bytes;
     track->frames = tracks[index].frames;
-    if (!place(tracks, (size_t)index, &track->first_sector, &track->first_frame)) {
+    /* The largest track is read where RetroAchievements' hasher reads it,
+     * which is that hasher's frame of the last track whether the image has
+     * the track there or not. A frame past the image is read as nothing. */
+    agreed = place(tracks, where, &track->first_sector, &track->first_frame);
+    if (!agreed && wanted != RC_HASH_CDTRACK_LARGEST) {
         say(iterator, "CHD: track %lu lies after a pregap that RetroAchievements' hasher and chdman "
                       "place differently, and is not hashed", (unsigned long)tracks[index].number);
         goto refused;

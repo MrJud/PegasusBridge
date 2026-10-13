@@ -20,12 +20,13 @@ temporary folder:
     from. Both programs hash the image and the disc.
   - the images tests/chd_fixture.py writes that are well formed, and the ones
     our reader refuses although nothing in them is damaged: a track it will
-    not place, a largest track that is not the last. For these the answer the
-    test expects of a hashed image stands for the disc, and a refused one is
-    held against the image of the same disc that is hashed. Two have their
-    disc written here, as a sheet of the same tracks: the refused one no
-    image of whose disc is hashed, and the one image the two programs were
-    found to part on, so that its line says which of them left the disc.
+    not place. For these the answer the test expects of a hashed image
+    stands for the disc, and a refused one is held against the image of the
+    same disc that is hashed. Some have their disc written here, as a sheet
+    of the same tracks (discs() below): the one image the two programs were
+    found to part on, so that its line says which of them left the disc, and
+    the ones a console that asks for the largest track gets another answer
+    for from the image than from the sheet, or might.
 
 The images made to be damaged, a map that runs past the end or a hunk with
 another checksum, are left out. What a program does with those is its own
@@ -83,12 +84,18 @@ CRASHED = "crashed"
 # The images our reader refuses with nothing in them damaged, beyond the ones
 # refused in the words native_repro_test.PLACED_DIFFERENTLY, and for each the
 # image of the same disc that is hashed. The first holds its last track's
-# pregap in the image and is opened, and the program is then not found. No
-# image of the second's disc is hashed, so its disc is written by
-# largest_first_disc below.
+# pregap in the image and is opened, and the program is then not found. The
+# second is a PC-FX disc whose data track is the first of two: asked for the
+# largest track, both programs read the audio for it. The third is one whose
+# data track lies behind a track of another kind and the same length, which
+# both read it as. No image of either's disc is hashed, so the disc is
+# written here, as the others of discs() are.
 ALSO_REFUSED = {"dreamcast-last-pregap.chd": "dreamcast-last.chd",
-                "pce-largest-first.chd": None}
-LARGEST_FIRST = "pce-largest-first.chd"
+                "pcfx-first.chd": None,
+                "pcfx-kind-of-largest.chd": None}
+# The images asked for their largest track whose disc is written here.
+LARGEST_AS_SHEETS = ("pce-largest-first.chd", "pcfx-first.chd", "pcfx-two.chd", "pcfx-last-misplaced.chd",
+                     "pcfx-kind-of-largest.chd", "pcfx-length-of-largest.chd")
 # A GD-ROM whose program begins its fourth track. RAHasher 1.8.4 was found to
 # give for it a hash that is not the disc's, so its line has the disc itself.
 LAST_FIRST = "dreamcast-last-first.chd"
@@ -112,16 +119,25 @@ class Line:
         self.image, self.console, self.disc, self.expected = image, console, disc, expected
 
 
-def largest_first_disc(repro, write):
-    """Writes the disc LARGEST_FIRST is an image of, as a cue sheet of its two
-    tracks, the larger first, and returns the sheet's name. The tracks are
-    the ones native_repro_test.chd_rows gives the image."""
-    _, _, data, _ = repro.pce_cd_tracks()
-    write("d-largest-1.bin", b"".join(data))
-    write("d-largest-2.bin", b"".join(data[:8]))
-    write("d-largest.cue", b'FILE "d-largest-1.bin" BINARY\r\n  TRACK 01 MODE1/2352\r\n    INDEX 01 00:00:00\r\n'
-                           b'FILE "d-largest-2.bin" BINARY\r\n  TRACK 02 MODE1/2352\r\n    INDEX 01 00:00:00\r\n')
-    return "d-largest.cue"
+def cue_sheet(name, tracks, write):
+    """Writes a disc as a cue sheet, a file to a track, and returns the
+    sheet's name. The tracks are the ones chd_fixture.cd makes the image of:
+    a pregap that is in the image is in the track's file, ahead of its first
+    sector, and the sheet says so with an INDEX 00."""
+    stem = "d-" + name.rsplit(".", 1)[0]
+    sheet = b""
+    for number, track in enumerate(tracks, 1):
+        sectors = track["sectors"]
+        mode = b"AUDIO" if track["type"] == "AUDIO" else b"MODE1/%d" % len(sectors[0])
+        gap = track.get("pregap", 0) if track.get("pgtype", "").startswith("V") else 0
+        file = f"{stem}-{number}.bin"
+        write(file, b"".join(sectors))
+        sheet += b'FILE "%s" BINARY\r\n  TRACK %02d %s\r\n' % (file.encode("ascii"), number, mode)
+        if gap:
+            sheet += b"    INDEX 00 00:00:00\r\n"
+        sheet += b"    INDEX 01 %02d:%02d:%02d\r\n" % (gap // 4500, gap // 75 % 60, gap % 75)
+    write(stem + ".cue", sheet)
+    return stem + ".cue"
 
 
 def last_first_disc(repro, write):
@@ -142,6 +158,17 @@ def last_first_disc(repro, write):
                         b"3 %d 4 2048 d-last-3.iso 0\n4 %d 4 2048 d-last-4.iso 0\n"
                         % (repro.DREAMCAST_FIRST_SECTOR, last_at))
     return "d-last.gdi"
+
+
+def discs(repro):
+    """The images whose disc is written here, and for each what writes it and
+    returns the sheet's name: the discs asked for their largest track, as cue
+    sheets of the tracks native_repro_test gives the images, and LAST_FIRST."""
+    table = {name: (lambda write, name=name, tracks=tracks: cue_sheet(name, tracks, write))
+             for name, tracks in repro.largest_track_discs()
+             if name in LARGEST_AS_SHEETS}
+    table[LAST_FIRST] = lambda write: last_first_disc(repro, write)
+    return table
 
 
 def fixture_lines(directory):
@@ -174,10 +201,10 @@ def fixture_lines(directory):
         elif (isinstance(answer, tuple) and answer[1] == repro.PLACED_DIFFERENTLY) or str(name) in ALSO_REFUSED:
             kept.setdefault(str(name), console)
     stands_for = dict(ALSO_REFUSED, **NOT_PLACED)
+    written = discs(repro)
     for name in sorted(kept, key=str.lower):
-        if name in (LARGEST_FIRST, LAST_FIRST):
-            written = largest_first_disc if name == LARGEST_FIRST else last_first_disc
-            lines.append(Line(name, kept[name], disc=written(repro, write)))
+        if name in written:
+            lines.append(Line(name, kept[name], disc=written[name](write)))
             continue
         expected = hashed.get(name) or hashed.get(stands_for.get(name))
         lines.append(Line(name, kept[name], expected=expected))

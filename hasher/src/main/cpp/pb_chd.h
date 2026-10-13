@@ -19,7 +19,7 @@
  * The library says it in its version, and a scan keeps the verdict of a
  * .chd under it.
  */
-#define PB_CHD_READER 1
+#define PB_CHD_READER 2
 
 /*
  * Puts the reader on an iterator made with rc_hash_initialize_iterator, and

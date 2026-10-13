@@ -32,7 +32,7 @@ internal object RcheevosNative {
      * build's, and what it would say of a file is not what the tests of this
      * build saw.
      */
-    const val EXPECTED_VERSION = "12.5.0+pb10/wbfs1,chd1"
+    const val EXPECTED_VERSION = "12.5.0+pb10/wbfs1,chd2"
 
     /**
      * How the note on a `.wbfs` begins when half or more of what was hashed

@@ -11,7 +11,7 @@
  * com.pegasus.bridge.hasher.RcheevosNative.
  *
  *   hashForConsole(path, console, errorOut)   "<md5>|<console>", or null
- *   version()                                 "12.5.0+pb10/wbfs1,chd1"
+ *   version()                                 "12.5.0+pb10/wbfs1,chd2"
  *
  * A path that ends in .wbfs is a Wii disc in a container rcheevos has no
  * reader for. pb_wbfs.c beside this file reads it, and the answer for one is

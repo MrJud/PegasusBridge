@@ -131,7 +131,7 @@ to leave that to the file's extension, and hands back what rcheevos said of a
 file it gave no hash for; the scan records that after the file's name
 (`the hasher could not read X: <reason>`). `version` is the rcheevos release,
 the number of local patches on it and, after a slash, the readers of our own
-with the turn each is at (`12.5.0+pb10/wbfs1,chd1`). `NativeHasher` and
+with the turn each is at (`12.5.0+pb10/wbfs1,chd2`). `NativeHasher` and
 `NativeRomHasher` only load the library, and each holds that version against
 the one it was built for before any file is hashed. The part before the slash
 is the hasher's `engine`, which every verdict is kept under; a reader is
@@ -281,7 +281,7 @@ size and date, with no read and no request. A file that shares its game's
 metadata file with another, a second dump or a track beside its sheet, is not
 described by it, and is then read and looked up once. One thing is in the
 number of some files only: a reader of our own in the library
-(`HashRecipe.READERS`, today `wbfs1,chd1`) is in the number of the files of its
+(`HashRecipe.READERS`, today `wbfs1,chd2`) is in the number of the files of its
 extension, by the name the scan found the file under, and of no other. So the
 build that first reads a `.wbfs` or a `.chd`, or a later one whose reader
 answers otherwise, has those files hashed once more and leaves every other

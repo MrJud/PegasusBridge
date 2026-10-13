@@ -238,19 +238,19 @@ def dreamcast_track():
     return bytes(track), md5(bytes(boot) + program)
 
 
-def pcfx_disc():
-    """A PC-FX data track of 24 cooked sectors, and what a disc made of it
-    hashes to. The console's name opens sector 0. Sector 1 has the title in
-    its first 32 bytes and after it, as two words, where the program begins
-    and how many sectors it is: here sector 4 and two of them. The hash is of
-    the first 128 bytes of sector 1 and then the program's sectors. Sector 16
-    opens as a volume descriptor does, which is what tells rcheevos the size
-    of the track's sectors whatever a sheet says of it."""
-    program = noise(2 * 2048, seed="pcfx-program")
-    track = bytearray(24 * 2048)
+def pcfx_disc(sectors=24, seed="pcfx-program", title=b"REPRO TEST"):
+    """A PC-FX data track of cooked sectors, 24 unless said, and what a disc
+    made of it hashes to. The console's name opens sector 0. Sector 1 has the
+    title in its first 32 bytes and after it, as two words, where the program
+    begins and how many sectors it is: here sector 4 and two of them. The
+    hash is of the first 128 bytes of sector 1 and then the program's
+    sectors. Sector 16 opens as a volume descriptor does, which is what tells
+    rcheevos the size of the track's sectors whatever a sheet says of it."""
+    program = noise(2 * 2048, seed=seed)
+    track = bytearray(sectors * 2048)
     put(track, 0, b"PC-FX:Hu_CD-ROM")
     header = bytearray(128)
-    put(header, 0, b"REPRO TEST")
+    put(header, 0, title)
     put(header, 32, (4).to_bytes(4, "little"))
     put(header, 36, (2).to_bytes(4, "little"))
     put(track, 2048, header)
@@ -877,6 +877,43 @@ def pce_cd_tracks(filler=noise):
             md5(bytes(header[106:128]) + program))
 
 
+def largest_track_discs():
+    """The discs a console that asks for the largest track is tried on, each
+    the name of its .chd and its tracks as chd_fixture.cd takes them. They
+    are here and not in chd_rows because tools/rahasher_compare.py writes the
+    same tracks as cue sheets, to have RetroAchievements' hasher read each
+    disc both ways."""
+    from chd_fixture import sectors_of
+
+    _, _, pce_data, _ = pce_cd_tracks()
+    fx = {"type": "MODE1", "sectors": sectors_of(pcfx_disc()[0], 2048)}
+    other = pcfx_disc(sectors=40, seed="pcfx-other-program", title=b"REPRO OTHER")[0]
+    before = {"type": "AUDIO", "sectors": [noise(2352, seed="pcfx-before")] + [bytes(2352)] * (PCE_AUDIO_FRAMES - 1)}
+    after = [noise(2352, seed="pcfx-after")] + [bytes(2352)] * 199
+    return [
+        ("pce-largest-first.chd", [{"type": "MODE1_RAW", "sectors": pce_data},
+                                   {"type": "MODE1_RAW", "sectors": pce_data[:8]}]),
+        ("pcfx-middle.chd", [before, fx, {"type": "AUDIO", "sectors": after}]),
+        ("pcfx-last.chd", [before, fx]),
+        ("pcfx-last-misplaced.chd", [
+            before,
+            dict(fx, sectors=[bytes(2048)] * PCE_PREGAP + fx["sectors"], pregap=PCE_PREGAP, pgtype="VMODE1"),
+            {"type": "AUDIO", "sectors": [bytes(2352)] * 150 + after, "pregap": 150, "pgtype": "VAUDIO"},
+            {"type": "MODE1", "sectors": sectors_of(noise(400 * 2048, seed="pcfx-unmarked"), 2048)}]),
+        ("pcfx-first.chd", [fx, {"type": "AUDIO", "sectors": after}]),
+        ("pcfx-two.chd", [{"type": "MODE1", "sectors": sectors_of(other, 2048)}, fx]),
+        # A track of raw sectors as long as the console's own, and before it.
+        ("pcfx-kind-of-largest.chd", [
+            before, {"type": "MODE1_RAW", "sectors": raw_sectors(noise(len(fx["sectors"]) * 2048, seed="pcfx-raw"), 1)},
+            fx]),
+        # The console's track cut off after the first sector of its program,
+        # behind a longer one: the second lies in the filling after the track.
+        ("pcfx-length-of-largest.chd", [
+            {"type": "MODE1", "sectors": sectors_of(noise(60 * 2048, seed="pcfx-longer"), 2048)},
+            dict(fx, sectors=fx["sectors"][:5])]),
+    ]
+
+
 def saturn_track():
     """A Saturn disc's first sectors, which rcheevos knows by other letters
     than a Sega CD's and hashes the same way."""
@@ -1310,13 +1347,66 @@ def chd_rows(write):
          9, "longline.chd", sega_cd),
         ("a .chd of one track asked for its third, as a Dreamcast disc is, and then for its first with data",
          40, "no-such-track.chd", refused("Not a Dreamcast CD")),
-        # Console 49 asks for the largest track, which RetroAchievements'
-        # hasher reads where the last one lies.
-        ("a .chd whose largest track is not its last, under console 49",
-         49, "pce-largest-first.chd", refused("its largest track is not its last")),
     ]
-    image("pce-largest-first.chd",
-          cd([{"type": "MODE1_RAW", "sectors": data}, {"type": "MODE1_RAW", "sectors": data[:8]}]))
+
+    # ---- the largest track, which console 49 alone asks for
+    #
+    # RetroAchievements' hasher takes the kind and the length of the largest
+    # track that is not audio and reads them where the LAST track lies, and
+    # the reader makes that same read. Where the console's name is not found
+    # there, rcheevos opens track 2 by its number. What each row expects is
+    # what RAHasher 1.8.4 gave for the image.
+    for name, tracks in largest_track_discs():
+        image(name, cd(tracks))
+    pcfx = pcfx_disc()[1]
+    # The last track said to follow a pregap as long as a line can say, and
+    # not in the image: RetroAchievements' frame of it is far past the end.
+    middle = dict(largest_track_discs())["pcfx-middle.chd"]
+    image("pcfx-largest-outside.chd",
+          cd(middle[:2] + [{"type": "MODE1", "sectors": [noise(2048, seed="pcfx-outside")] * 40,
+                            "pregap": 999999999, "pgtype": "MODE1"}]))
+    rows += [
+        # Two tracks of a PC Engine CD, the larger first. The read finds no
+        # PC-FX there, track 2 has none either, and it is hashed as the PC
+        # Engine CD it is, which rcheevos tries last under this console.
+        ("a .chd of two PC Engine tracks, the larger first, under console 49",
+         49, "pce-largest-first.chd", f"{pce_hash}|49"),
+        ("a PC-FX disc as a .chd, its data track between two of audio",
+         49, "pcfx-middle.chd", f"{pcfx}|49"),
+        ("a PC-FX disc as a .chd, its data track the last", 49, "pcfx-last.chd", f"{pcfx}|49"),
+        # The largest track is the last and lies where the two ways of
+        # placing a track differ: asked for by its number it is refused.
+        # Asked for as the largest it is read at RetroAchievements' frame of
+        # it, which has nothing of the console, and track 2 answers.
+        ("a PC-FX disc as a .chd whose last track is its largest, unmarked and placed differently",
+         49, "pcfx-last-misplaced.chd", f"{pcfx}|49"),
+        # Nothing is read there, in order, and track 2 answers.
+        ("a PC-FX disc as a .chd whose largest track is read past the end of the image",
+         49, "pcfx-largest-outside.chd", f"{pcfx}|49"),
+        # The audio is read for the data, and track 2 is the audio.
+        ("a PC-FX disc as a .chd, its data track the first of two", 49, "pcfx-first.chd",
+         refused("Not a PC-FX CD")),
+        # RAHasher's answer, the hash of the last track: neither the cue
+        # sheet's of the same disc nor RetroArch's, which both hash the
+        # larger. Held as what RetroAchievements' hasher gives, not as right.
+        ("a .chd of two PC-FX tracks, the larger first, hashes as its last",
+         49, "pcfx-two.chd", f"{pcfx}|49"),
+        # The kind is the largest track's, and of two as long the first is
+        # the largest. So the console's own track, the last, is read as raw
+        # sectors are, 16 bytes in, where its name is not; track 2 is the
+        # raw one. Read by its own kind, or taken for the largest as the
+        # later of the two, it would be hashed.
+        ("a PC-FX disc as a .chd behind a track of another kind and the same length",
+         49, "pcfx-kind-of-largest.chd", refused("Not a PC-FX CD")),
+        # The length is the largest track's as well. The program's second
+        # sector is past the five the last track has and inside the sixty
+        # the largest has, so it is read: the zeros a track is filled up
+        # with. By the last track's own length nothing would be read there,
+        # and rcheevos would hash the sector before it twice.
+        ("a PC-FX disc as a .chd whose program runs past its track, behind a longer one",
+         49, "pcfx-length-of-largest.chd",
+         md5(pcfx_disc()[0][2048:2048 + 128] + pcfx_disc()[0][4 * 2048:5 * 2048] + bytes(2048)) + "|49"),
+    ]
     return rows
 
 

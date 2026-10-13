@@ -34,6 +34,13 @@ class JobRegistry(private val paths: BridgePaths) {
          * exactly as the Android service used to write them into `pending/`.
          */
         @Volatile var counters: JSONObject? = null,
+        /**
+         * Where a scan's time went, published at the top level under
+         * `metrics` in the record the scan ends on: the object the Android
+         * service writes under the same key. Null while the job runs, and
+         * for one that was cancelled or threw.
+         */
+        @Volatile var metrics: JSONObject? = null,
         val startedAt: Long = BridgePaths.epochSeconds()
     ) {
         fun toJson(): JSONObject = JSONObject()
@@ -51,6 +58,7 @@ class JobRegistry(private val paths: BridgePaths) {
             .put("updatedAt", BridgePaths.epochSeconds())
             .also { j -> error?.let { j.put("error", it) } }
             .also { j -> result?.let { j.put("result", it) } }
+            .also { j -> metrics?.let { j.put("metrics", it) } }
             .also { j -> counters?.let { c -> c.keys().forEach { k -> j.put(k, c.get(k)) } } }
     }
 
@@ -109,10 +117,11 @@ class JobRegistry(private val paths: BridgePaths) {
         publish(job)
     }
 
-    fun finish(job: Job, result: JSONObject?) {
+    fun finish(job: Job, result: JSONObject?, metrics: JSONObject? = null) {
         job.state = State.DONE
         job.progress = 1.0
         job.result = result
+        job.metrics = metrics
         complete(job)
     }
 
@@ -122,10 +131,11 @@ class JobRegistry(private val paths: BridgePaths) {
      * its progress stays where it stopped: unlike [finish], nothing here says
      * the work was all done.
      */
-    fun fail(job: Job, reason: String, result: JSONObject? = null) {
+    fun fail(job: Job, reason: String, result: JSONObject? = null, metrics: JSONObject? = null) {
         job.state = State.ERROR
         job.error = reason
         job.result = result
+        job.metrics = metrics
         complete(job)
     }
 

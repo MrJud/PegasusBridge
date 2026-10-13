@@ -446,6 +446,10 @@ and leaves it there when the scan is over. The theme polls it:
   scan ends when it is cancelled, when credentials are missing, when the
   pipeline stops itself (the error then says what to do next), and when
   anything is thrown — a final `_index.json` that cannot be written included.
+- The record a scan ends on has `metrics` as well, when the pipeline returned:
+  a done record, `No ROMs found` among them, and the error record of a scan
+  the pipeline stopped itself. "Where a scan's time went", below, says what
+  is in it.
 
 `done/{jobId}.done` holds the text `done`, written after the record is whole.
 
@@ -695,6 +699,83 @@ is given; only `newEntries`,
 the first report; an error keeps the progress, message and counters the job
 had; a scan that returned, stopped or not, has a `result` object; the copy in
 `pending/` is deleted when the job ends; and the marker is a small JSON object.
+
+What does not differ is `metrics`: a scan that returned, stopped or not, has
+the object described under "Where a scan's time went" at the top level of the
+body, beside `result` and not in it, and a scan that threw has none. `result`
+keeps the eleven keys it had.
+
+### Where a scan's time went
+
+`metrics` is one object, built by `ScanMetrics.Snapshot.toJson()` for both
+shells, at the top level of the record a scan ends on. It is written once,
+with that record. A record of a scan under way has none, and neither has the
+record of a scan that was cancelled or ended by something thrown, which
+returned nothing to take it from. The theme reads none of it: it is there for
+whoever asks why a scan took what it took. `schemaVersion` is still 1, since
+no key that was there has moved or changed.
+
+Two kinds of number are in it, and they do not add up with one another.
+
+- `wallMs`: from the call of the scan to its return, by the clock on the wall
+  (`System.nanoTime`).
+- `phaseMs`: four spans that follow one another and add up to `wallMs`
+  exactly. `walk` is finding the files. `prepare` is loading what earlier
+  scans left: the metadata files, the ledger, the trace. `scan` is going over
+  every file, hashing and asking where that is needed; on a rescan that finds
+  everything settled it is the time it takes to look at each file and its
+  entry in the ledger. `finish` is the closing writes of the ledger and the
+  index. A library with no ROM has `walk` and `finish` and 0 in the other two.
+- `busyMs`: time spent inside `scan`, added up over the workers, so that four
+  workers hashing for a minute are four minutes. A number here can be more
+  than `wallMs`. `hash` is time in the hasher; divided by `hashWorkers` it is
+  the least time the hashing can have taken, and no more than that, because
+  files hashed one at a time (see `HashTrace`, above) had the hasher to
+  themselves. `lookup` is time in a question put to the lookup, the fetching
+  of a console's list included; when two workers wait for one list the wait
+  is counted for each. `throttle` is the pauses the caller asked for after a
+  hash, as asked: Android's thermal back-off, and 0 on the desktop. `write`
+  is the metadata files and the saves of the ledger made while the scan runs.
+- `hashWorkers` and `lookupWorkers`: how many hashed and how many asked at
+  once.
+- `filesHashed`: files handed to the hasher; 0 on a rescan that found
+  everything settled. `lookups`: questions put to the lookup, one for each
+  distinct hash and the consoles it may be of. One that got no answer is put
+  again for the next file with that hash, and counted again.
+- `bytesRead`, which may be absent: the bytes the hashing threads asked the
+  system for, from `/proc/thread-self/io`. A byte that came from memory counts
+  as one that came from the disk, and a file the hasher reads whole is read
+  once more for its plain hashes, so a cartridge costs about twice its size
+  and a library of them more than it holds. Absent where the system keeps no
+  such count (Windows, macOS), where it does not let the process read it, and
+  for a scan that hashed nothing. Android lets an app read it only when the
+  app can be debugged, so a release build is expected to leave it out; no
+  device has been asked yet.
+- `slowest`: at most five files, the ones that took the hasher longest,
+  slowest first, and an empty list when nothing was hashed. Each has `file`
+  (the whole path), `ms`, `size` (the file's length) and, where the system
+  counts them, `bytesRead`, which for a disc image is far less than its size.
+
+The end of the body of `GET /jobs/{id}` on Linux, for a first scan of 1973
+files:
+
+```
+{"schemaVersion":1,"jobId":"scan_1791233730000_1","verb":"scan","status":"done",
+ "progress":1.0,"message":"[1973/1973] Example Disc.chd", …, "result":{…},
+ "metrics":{"wallMs":51240,
+            "phaseMs":{"walk":820,"prepare":310,"scan":49600,"finish":510},
+            "busyMs":{"hash":181300,"lookup":2100,"throttle":0,"write":640},
+            "hashWorkers":4,"lookupWorkers":2,"filesHashed":1973,"lookups":1890,
+            "bytesRead":16857798246,
+            "slowest":[{"file":"/library/ps2/Example Disc.chd","ms":9440,
+                        "size":4361240576,"bytesRead":5898240}]}}
+```
+
+Read as: 51 seconds, of which 49.6 going over the files; four workers were in
+the hasher for 181 seconds between them, which is at least 45 of those
+seconds; and the slowest file took 9.4 seconds for 5.9 MB read of a 4.3 GB
+image. Android's `pending/{jobId}.json` ends with the same object under the
+same key, with `throttle` above 0 on a warm device.
 
 ### The discovery index
 

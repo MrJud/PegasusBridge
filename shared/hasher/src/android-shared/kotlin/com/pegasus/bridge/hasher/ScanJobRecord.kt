@@ -95,10 +95,16 @@ object ScanJobRecord {
      * a library of them would finish "0 new, 0 cached, 0 skipped, 0 not in the
      * database". The same goes for the files that could not be hashed and the
      * lookups that got no answer.
+     *
+     * [metrics] is where the scan's time went, as [ScanMetrics.Snapshot.toJson]
+     * writes it, and goes in under `metrics`. Only a record a scan ends on
+     * has one, and only when the pipeline returned: the theme reads none of
+     * it, and it is there for whoever asks why a scan took what it took.
      */
     fun done(
         jobId: String, counts: Counts,
-        startedAt: Long, updatedAt: Long = BridgePaths.epochSeconds()
+        startedAt: Long, updatedAt: Long = BridgePaths.epochSeconds(),
+        metrics: JSONObject? = null
     ): JSONObject =
         pending(jobId, "done", 1.0,
                 "Done — ${counts.newEntries} new, ${counts.cachedHits} cached, " +
@@ -106,25 +112,30 @@ object ScanJobRecord {
                 clause(counts.incompatible, "dumps RetroAchievements does not support") +
                 clause(counts.hashFailed, "could not be hashed") +
                 clause(counts.failedLookups, "lookups got no answer"),
-                counts, startedAt, updatedAt)
+                counts, startedAt, updatedAt).withMetrics(metrics)
 
     /** The record of a scan whose roots hold no ROM: done, with nothing to count. */
     fun noRoms(
         jobId: String, counts: Counts,
-        startedAt: Long, updatedAt: Long = BridgePaths.epochSeconds()
+        startedAt: Long, updatedAt: Long = BridgePaths.epochSeconds(),
+        metrics: JSONObject? = null
     ): JSONObject =
-        pending(jobId, "done", 1.0, "No ROMs found", counts, startedAt, updatedAt)
+        pending(jobId, "done", 1.0, "No ROMs found", counts, startedAt, updatedAt).withMetrics(metrics)
 
     /**
      * The record of a scan that did not finish: cancelled, stopped by the
      * pipeline, or ended by something thrown. No progress and no counts, as the
      * service has always written it. The theme shows [error] and nothing else.
+     *
+     * [metrics] is for a scan the pipeline stopped, which returned and so
+     * has them. A cancelled scan and one that threw have none to give.
      */
     fun error(
         jobId: String, error: String,
-        startedAt: Long, updatedAt: Long = BridgePaths.epochSeconds()
+        startedAt: Long, updatedAt: Long = BridgePaths.epochSeconds(),
+        metrics: JSONObject? = null
     ): JSONObject =
-        base(jobId, "error", startedAt, updatedAt).put("error", error)
+        base(jobId, "error", startedAt, updatedAt).put("error", error).withMetrics(metrics)
 
     /**
      * What to tell the person whose scan stopped itself, which is what they
@@ -196,12 +207,13 @@ object ScanJobRecord {
         val counts = Counts(summary.newEntries, summary.cachedHits, summary.skippedPlatforms,
                             summary.unmatched, summary.incompatible,
                             summary.hashFailed, summary.failedLookups)
+        val metrics = summary.metrics?.toJson()
         return when {
             // Asked of `aborted` and not of the cause: a summary that names none
             // must not come out as done either.
-            summary.aborted -> error(jobId, abortAdvice(summary, raUser), startedAt, updatedAt)
-            summary.total == 0 -> noRoms(jobId, counts, startedAt, updatedAt)
-            else -> done(jobId, counts, startedAt, updatedAt)
+            summary.aborted -> error(jobId, abortAdvice(summary, raUser), startedAt, updatedAt, metrics)
+            summary.total == 0 -> noRoms(jobId, counts, startedAt, updatedAt, metrics)
+            else -> done(jobId, counts, startedAt, updatedAt, metrics)
         }
     }
 
@@ -267,6 +279,9 @@ object ScanJobRecord {
             return true
         }
     }
+
+    private fun JSONObject.withMetrics(metrics: JSONObject?): JSONObject =
+        if (metrics == null) this else put("metrics", metrics)
 
     private fun clause(count: Int, what: String): String =
         if (count > 0) ", $count $what" else ""

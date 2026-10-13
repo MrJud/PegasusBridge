@@ -290,6 +290,7 @@ Point the installer at a theme it did not detect with
 | scrape from a source | `GET /scrape?source=&op=` | `scrape-source` |
 | trailers | `GET /video/search?q=`, `/video/resolve`, `/video/download` | `search-video`, `play-video`, `download-video` |
 | hash a ROM tree | `GET /scan?roots=` | `scan` |
+| how that scan is going, and at its end where its time went (`metrics`) | `GET /jobs/{id}` | the file `pending/{jobId}.json` |
 | credentials | `POST /credentials`, `GET /credentials/status`, `GET /credentials/clear?block=` | `set-credentials`, `credentials-status`, `clear-credentials` |
 | which emulators are installed | `GET /emulators` | `emulators` |
 | what each collection is and would be proposed | `GET /collections?roots=` | `collections` |
@@ -550,7 +551,9 @@ RetroAchievements would say of them. On Linux each row also has the bytes the
 scan read for its file, which the report adds up by collection. With
 `--keep=<folder>` among the arguments the scan's data root is that folder and
 stays there, so the same command run again measures a rescan, and one killed
-and run again a scan that resumes.
+and run again a scan that resumes. A scan run by the daemon or the tablet
+says where its own time went in the record it ends on: see `metrics` under
+"Where a scan's time went" in `CONTEXT.md`.
 
 ### One copy of what both shells run
 

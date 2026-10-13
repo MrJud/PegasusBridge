@@ -489,10 +489,17 @@ class BridgeRouter(
                 // failed, and its error is the sentence the Android service
                 // writes for the same scan, which says what to do next. The
                 // result stays beside it, for a client that reads one.
+                //
+                // Where the time went goes beside either, at the top level and
+                // not in `result`: it is the one object the Android record has
+                // too, under the same key. Only here, where the pipeline has
+                // returned; the catch below has no summary to take it from.
+                val metrics = summary.metrics?.toJson()
                 if (summary.aborted) {
-                    jobs.fail(job, ScanJobRecord.abortAdvice(summary, config.load().ra?.user.orEmpty()), result)
+                    jobs.fail(job, ScanJobRecord.abortAdvice(summary, config.load().ra?.user.orEmpty()),
+                              result, metrics)
                 } else {
-                    jobs.finish(job, result)
+                    jobs.finish(job, result, metrics)
                 }
             } catch (t: Throwable) {
                 BridgeLog.e(TAG, "scan failed", t)

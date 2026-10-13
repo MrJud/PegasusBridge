@@ -489,6 +489,12 @@ cd ..
 ./gradlew assembleDebug
 ```
 
+CI makes that release archive on every push, in the `package` job of
+`shared-tests.yml`, and `shared/tests/package_smoke_test.sh` starts the daemon
+out of it: the hasher's library has to load from the bundle, `/health` to
+answer, a request from a web page to be refused, and SIGTERM to end the daemon
+with its `daemon.json` taken away.
+
 `assembleRelease` produces an **unsigned** APK unless you supply a keystore.
 Create one yourself and put the details in `local.properties` (git-ignored) —
 see the comment at the top of `app/build.gradle.kts`.

@@ -312,3 +312,45 @@ jobs:
       - name: Themes are pointed at the data root in every layout
         working-directory: shared
         run: ./tests/install_pointers_test.sh
+
+  package:
+    # The other jobs run the classes and the library where Gradle keeps them.
+    # What a user is handed is neither: it is the archive package.sh makes,
+    # with a Java runtime cut down to the modules the jars were found to need,
+    # the library beside the jars and a launcher that names both. A module
+    # left out of the runtime, or a library the launcher's path does not
+    # reach, starts on no user's machine and fails no test above. So the
+    # archive is built here as a release builds it, and the daemon is started
+    # out of it.
+    #
+    # A job of its own because this one does write to the checkout:
+    # installDist, which package.sh runs, builds the native library in place,
+    # over the committed one, and no check of that file may come after it.
+    # The bundle carries no developer pair, since no SS_DEV_* is set. Nothing
+    # is asked of any game service: the daemon is given an empty data root in
+    # the runner's temporary directory, so it has no credentials, its start
+    # reads the configuration, and /health reads nothing else. That the
+    # hasher in the bundle hashes a file is not held here, only that it
+    # loads; what it hashes is for the jobs above.
+    name: packaged daemon
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: gradle
+
+      - name: Build the bundle as a release does
+        working-directory: shared
+        env:
+          MAKE_TARBALL: '1'
+          BRIDGE_VERSION: ci
+        run: ./package.sh "$RUNNER_TEMP/dist/pegasus-bridge"
+
+      - name: The packaged daemon loads its hasher, answers, refuses a browser and stops in order
+        working-directory: shared
+        run: ./tests/package_smoke_test.sh "$RUNNER_TEMP"/dist/pegasus-bridge-ci-linux-*.tar.gz

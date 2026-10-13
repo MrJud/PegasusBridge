@@ -719,6 +719,32 @@ class ScanLedgerTest {
         assertNull(ledger.entry("/roms/nes/b.nes"))
     }
 
+    // Asked before a scan, of every file, to say how much of the scan each
+    // will be: by the entry alone, so it is yes for a file that has since
+    // changed, which the scan then reads, and no wherever the scan would
+    // not let the verdict stand for a reason the entry itself gives.
+    @Test fun `a verdict stands unread by what the entry holds, with no look at the file`() {
+        val nes = CollectionRef.inferred("nes")
+        val ledger = ScanLedger(File(paths.cache, ScanLedger.FILE_NAME))
+        fun record(path: String, state: ScanLedger.State, detail: String = "") =
+            ledger.record(path, nes, state, 4096, 77, now = 1000, detail = detail)
+
+        // No file is at any of these paths.
+        record("/roms/nes/found.nes", ScanLedger.State.NOT_FOUND)
+        record("/roms/nes/retry.nes", ScanLedger.State.API_RETRY)
+        record("/roms/nes/left.zip", ScanLedger.State.UNSUPPORTED_FORMAT,
+               "disc.chd: " + ScanLedger.LEFT_BY_NINE)
+
+        assertTrue(ledger.standsUnread("/roms/nes/found.nes", nes, now = 1001))
+        assertFalse(ledger.standsUnread("/roms/nes/never.nes", nes, now = 1001), "a path never recorded")
+        assertFalse(ledger.standsUnread("/roms/nes/retry.nes", nes, now = 1001), "a verdict that is not kept")
+        assertFalse(ledger.standsUnread("/roms/nes/left.zip", nes, now = 1001), "a sentence that is taken again")
+        assertFalse(ledger.standsUnread("/roms/nes/found.nes", CollectionRef.inferred("snes"), now = 1001),
+                    "another collection's number")
+        val season = ScanLedger.State.NOT_FOUND.retryAfterSeconds
+        assertFalse(ledger.standsUnread("/roms/nes/found.nes", nes, now = 1001 + season), "a verdict run out")
+    }
+
     // What the index is filtered by: the games a file of which is there. A
     // match written before matches carried their game says nothing of which
     // game it is, and is named apart so that the reader can tell.

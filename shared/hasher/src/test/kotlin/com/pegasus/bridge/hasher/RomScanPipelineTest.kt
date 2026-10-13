@@ -2348,6 +2348,137 @@ class RomScanPipelineTest {
         assertEquals(1.0, seen.last().fraction)
     }
 
+    /** Hashes a file to its name, for a file too large to be read as the text of its hash. */
+    private class NameHasher : RomHasher {
+        val calls = AtomicInteger()
+        override fun hash(path: String): HashResult? {
+            calls.incrementAndGet()
+            return HashResult("hash-" + File(path).nameWithoutExtension, 7)
+        }
+    }
+
+    // Counted by files, a megabyte to read and a file the ledger has
+    // settled were a tenth of the scan each. The megabyte is seventeen
+    // units of the twenty-six there are, sixteen for its reading and one
+    // for being looked at, whenever among the ten its result comes; and
+    // settled, at the next scan, it is one of ten again.
+    @Test fun `progress follows the bytes still to read and never goes back`(): Unit = runBlocking {
+        rom("nes", "Settled.nes", "one")
+        val h = NameHasher(); val l = MapLookup(catalogue)
+        assertEquals(1, pipeline(h, l).scan(listOf(romRoot.absolutePath)).unmatched)
+        assertEquals(1, h.calls.get())
+
+        repeat(8) { rom("nes", "Small$it.nes", "one") }
+        File(romRoot, "nes/Large.nes").writeBytes(ByteArray(1 shl 20) { 1 })
+        val seen = mutableListOf<RomScanPipeline.Progress>()
+        val s = pipeline(h, l).scan(listOf(romRoot.absolutePath)) { seen += it }
+
+        assertEquals(10, s.total)
+        assertEquals(10, h.calls.get(), "the settled file was read")
+        assertEquals((1..10).toList(), seen.map { it.processed })
+        assertTrue(seen.all { it.weightTotal == 26L }, "the total moved: ${seen.map { it.weightTotal }}")
+        val fractions = seen.map { it.fraction }
+        assertTrue(fractions.zipWithNext().all { (a, b) -> a < b }, "not strictly rising: $fractions")
+        assertEquals(1.0, fractions.last())
+        for (p in seen.dropLast(1)) assertEquals(p.weightDone / 26.0, p.fraction)
+        val large = seen.indexOfFirst { it.currentFile == "Large.nes" }
+        assertEquals(17, seen[large].weightDone - (if (large == 0) 0 else seen[large - 1].weightDone))
+        assertEquals(17 / 26.0, fractions[large] - (if (large == 0) 0.0 else fractions[large - 1]), 1e-12)
+        for ((i, p) in seen.withIndex()) if (i != large)
+            assertEquals(1, p.weightDone - (if (i == 0) 0 else seen[i - 1].weightDone), p.currentFile)
+
+        // Every verdict stands now and nothing is read, so each file is a
+        // tenth of the scan, the large one too.
+        val again = mutableListOf<RomScanPipeline.Progress>()
+        pipeline(h, l).scan(listOf(romRoot.absolutePath)) { again += it }
+        assertEquals(10, h.calls.get(), "a settled file was read")
+        assertEquals((1..10).map { it / 10.0 }, again.map { it.fraction })
+        assertTrue(again.all { it.weightTotal == 10L })
+    }
+
+    // The numbers every record and every test of one had before files were
+    // weighed: a file under 64 KiB is one unit, so the share of the work
+    // is the share of the files, as the same double.
+    @Test fun `a library of small files is counted by files as before`(): Unit = runBlocking {
+        repeat(7) { rom("nes", "Game$it.nes", "hash-smb") }
+        File(romRoot, "nes/Edge.nes").writeBytes(ByteArray(65_535) { 1 })
+        val seen = mutableListOf<RomScanPipeline.Progress>()
+        val s = pipeline(NameHasher(), MapLookup(catalogue)).scan(listOf(romRoot.absolutePath)) { seen += it }
+
+        assertEquals(8, s.total)
+        assertEquals((1..8).map { it.toDouble() / 8 }, seen.map { it.fraction })
+        assertEquals((1..8).map { it.toLong() }, seen.map { it.weightDone })
+        assertTrue(seen.all { it.weightTotal == 8L })
+    }
+
+    // The weights are to cost a library already scanned no look at any
+    // file, so the size a file is weighed by is the one the ledger has for
+    // it. Shown by a file that is another size by now: the lookup gave no
+    // answer for it, which is an entry that does not stand, so it is to be
+    // read and weighs by its megabyte, though one byte is what is there.
+    @Test fun `a file the ledger holds is weighed by the size the ledger has for it`(): Unit = runBlocking {
+        val asked = File(File(romRoot, "nes").apply { mkdirs() }, "silent.nes")
+        asked.writeBytes(ByteArray(1 shl 20) { 1 })
+        val h = NameHasher(); val l = MixedLookup()
+        assertEquals(1, pipeline(h, l).scan(listOf(romRoot.absolutePath)).failedLookups)
+        assertEquals(1L shl 20, ScanLedger(File(paths.cache, ScanLedger.FILE_NAME)).entry(asked.canonicalPath)?.fileSize)
+
+        asked.writeBytes(ByteArray(1) { 1 })
+        val seen = mutableListOf<RomScanPipeline.Progress>()
+        pipeline(h, l).scan(listOf(romRoot.absolutePath)) { seen += it }
+        assertEquals(listOf(17L), seen.map { it.weightTotal })
+        assertEquals(2, h.calls.get(), "the file was not read again")
+    }
+
+    // The ledger knows a file by where it really lies and by the name the
+    // walk found it under, and the weights ask it by both: a settled disc
+    // that is a link in the library to a file of another name is one file
+    // of two at the next scan. Asked by the link's path it would be a file
+    // the ledger has never seen, and by the name it lies under one whose
+    // number has changed: a megabyte to read either way.
+    @Test fun `a settled file that is a link is weighed as settled`(): Unit = runBlocking {
+        val store = Files.createTempDirectory("hasher-store").toFile()
+        try {
+            val lying = File(store, "Disc.img").apply { writeBytes(ByteArray(1 shl 20) { 1 }) }
+            val link = File(File(romRoot, "wii").apply { mkdirs() }, "Disc.wbfs")
+            try {
+                Files.createSymbolicLink(link.toPath(), lying.toPath())
+            } catch (e: Exception) {
+                assumeTrue(false, "Symbolic links are unavailable: ${e.message}")
+            }
+            rom("nes", "Small.nes", "one")
+            val h = NameHasher(); val l = MapLookup(catalogue)
+            val first = mutableListOf<RomScanPipeline.Progress>()
+            pipeline(h, l).scan(listOf(romRoot.absolutePath)) { first += it }
+            assertEquals(2, h.calls.get())
+            assertTrue(first.all { it.weightTotal == 18L }, "the first scan: ${first.map { it.weightTotal }}")
+
+            val again = mutableListOf<RomScanPipeline.Progress>()
+            pipeline(h, l).scan(listOf(romRoot.absolutePath)) { again += it }
+            assertEquals(2, h.calls.get(), "a settled file was read")
+            assertEquals(listOf(2L, 2L), again.map { it.weightTotal })
+            assertEquals(listOf(0.5, 1.0), again.map { it.fraction })
+        } finally {
+            store.deleteRecursively()
+        }
+    }
+
+    // What a report says with no weights, which is every one a test or a
+    // caller makes by hand, and at the two ends whatever the weights say.
+    @Test fun `a report's fraction is the files' without weights, and exactly one at the end`() {
+        fun report(processed: Int, total: Int, done: Long = 0, of: Long = 0) =
+            RomScanPipeline.Progress(processed, total, "", 0, 0, 0, weightDone = done, weightTotal = of).fraction
+        assertEquals(0.25, report(30, 120))
+        assertEquals(0.0, report(0, 0))
+        assertEquals(17 / 26.0, report(1, 10, 17, 26))
+        // A result whose file had no weight would leave the sum short of
+        // the total, and a scan that is over must not read as under way.
+        assertEquals(1.0, report(10, 10, 25, 26))
+        // Nor is a share ever over the whole.
+        assertEquals(1.0, report(9, 10, 27, 26))
+        assertEquals(0.0, report(0, 10, 0, 26))
+    }
+
     // What a shell has to tell between the walk and the first result: how many
     // files there are. Once, with the count, and before anything is reported
     // as processed. The reports are the caller's last argument as they were,

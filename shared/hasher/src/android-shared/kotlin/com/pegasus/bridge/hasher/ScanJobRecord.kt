@@ -79,12 +79,18 @@ object ScanJobRecord {
      * The record after a result. The name goes after the two numbers as it is:
      * the theme reads them from the start of the message and takes the rest
      * for the name, so a file called `[BIOS] Something` is shown as that.
+     *
+     * [fraction] is what goes under `progress` when the caller has it: the
+     * pipeline's share of the work it expects, which is not the share of
+     * the files. The two numbers in the message count files either way.
+     * Without one it is the share of the files, as it was.
      */
     fun running(
         jobId: String, processed: Int, total: Int, fileName: String, counts: Counts,
-        startedAt: Long, updatedAt: Long = BridgePaths.epochSeconds()
+        startedAt: Long, updatedAt: Long = BridgePaths.epochSeconds(),
+        fraction: Double? = null
     ): JSONObject =
-        pending(jobId, "running", if (total <= 0) 0.0 else processed.toDouble() / total,
+        pending(jobId, "running", fraction ?: if (total <= 0) 0.0 else processed.toDouble() / total,
                 "[$processed/$total] $fileName", counts, startedAt, updatedAt)
 
     /**
@@ -188,7 +194,7 @@ object ScanJobRecord {
                 Counts(progress.newEntries, progress.cachedHits, progress.skippedPlatforms,
                        progress.unmatched, progress.incompatible,
                        progress.hashFailed, progress.failedLookups),
-                startedAt, updatedAt)
+                startedAt, updatedAt, progress.fraction)
 
     /**
      * The record a scan ends on, from what the pipeline returned.

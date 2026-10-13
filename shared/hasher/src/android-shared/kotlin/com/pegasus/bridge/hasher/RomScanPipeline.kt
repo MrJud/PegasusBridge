@@ -102,6 +102,11 @@ class RomScanPipeline(
     /**
      * How far a scan has got. The seven counts after [currentFile] are the ones
      * [Summary] ends with, and in every report they add up to [processed].
+     *
+     * [weightDone] of [weightTotal] is the same in the scan's own measure of
+     * work ([ScanWeight]), which is what [fraction] goes by: a disc image
+     * and a file that is not read are one file each and not the same share
+     * of a scan. A report made with neither goes by the files.
      */
     data class Progress(
         val processed: Int,
@@ -113,9 +118,22 @@ class RomScanPipeline(
         val unmatched: Int = 0,
         val incompatible: Int = 0,
         val hashFailed: Int = 0,
-        val failedLookups: Int = 0
+        val failedLookups: Int = 0,
+        val weightDone: Long = 0,
+        val weightTotal: Long = 0
     ) {
-        val fraction: Double get() = if (total <= 0) 0.0 else processed.toDouble() / total
+        /**
+         * The share of the expected work that is done, from 0 to 1. Exactly
+         * 1 once every file is processed, whatever the weights came to, so
+         * that a scan that is over never reads as one that is not; never
+         * over 1; and the share of the files where no weights were given.
+         */
+        val fraction: Double get() = when {
+            total > 0 && processed >= total -> 1.0
+            weightTotal > 0 -> (weightDone.toDouble() / weightTotal).coerceAtMost(1.0)
+            total <= 0 -> 0.0
+            else -> processed.toDouble() / total
+        }
     }
 
     data class Summary(
@@ -292,6 +310,27 @@ class RomScanPipeline(
         val ledger = ScanLedger(File(paths.cache, ScanLedger.FILE_NAME), recipe)
         val now = BridgePaths.epochSeconds()
 
+        // What each file is expected to take, fixed here, before the first
+        // is started: the progress a scan reports is the share of this
+        // that is done, so it cannot go back and ends where the total is.
+        // From what the ledger holds where it holds the file, its size
+        // and whether its verdict would stand, so that a library already
+        // scanned is weighed without a look at any file; a file the
+        // ledger does not know costs the one question of its size.
+        val weights = HashMap<File, Long>(total * 2)
+        var weightTotal = 0L
+        for (scanned in files) {
+            val extension = scanned.file.extension
+            val size = ledger.entry(scanned.real)?.fileSize ?: scanned.file.length()
+            val plan = ConsoleChoice.choose(
+                RcConsoles.resolve(scanned.collection.shortName, scanned.collection.dirName),
+                extension, size, insideArchive = false)
+            val weight = ScanWeight.of(plan, extension, size,
+                                       ledger.standsUnread(scanned.real, scanned.collection, now, extension))
+            weights[scanned.file] = weight
+            weightTotal += weight
+        }
+
         // What an earlier scan had in the hasher when its process died, if
         // one did. Those files are hashed before the others and one at a
         // time, so that a process that dies again says which of them it
@@ -327,6 +366,7 @@ class RomScanPipeline(
         var processed = 0; var newEntries = 0; var cached = 0; var skipped = 0
         var unmatched = 0; var incompatible = 0; var hashFailed = 0
         var failedLookups = 0
+        var weightDone = 0L
         var abortReason = ""
         var abortCause: AbortCause? = null
         // When the ledger was last written, by a clock that does not jump.
@@ -596,9 +636,11 @@ class RomScanPipeline(
                     }
 
                     processed++
+                    weightDone += weights[r.job.file] ?: 0
                     if (processed % step == 0 || processed == total) {
                         onProgress(Progress(processed, total, r.job.file.name, newEntries, cached, skipped,
-                                            unmatched, incompatible, hashFailed, failedLookups))
+                                            unmatched, incompatible, hashFailed, failedLookups,
+                                            weightDone, weightTotal))
                     }
 
                     // A refused key fails every lookup from here on: each request

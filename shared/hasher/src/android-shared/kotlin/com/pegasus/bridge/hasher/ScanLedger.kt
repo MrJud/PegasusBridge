@@ -323,6 +323,19 @@ class ScanLedger(private val file: File, private val recipe: HashRecipe = HashRe
     }
 
     /**
+     * Whether the verdict held for [path] would stand if the file is still
+     * the one it was: [canSkip] asked with the entry's own size and date,
+     * so with no look at the file. For what has to say before a scan how
+     * much of it a file will be ([ScanWeight]); the scan itself asks
+     * [canSkip], with what the file is now.
+     */
+    fun standsUnread(path: String, collection: CollectionRef, now: Long,
+                     extension: String = File(path).extension): Boolean {
+        val e = entry(path) ?: return false
+        return canSkip(path, collection, e.fileSize, e.lastModified, now, extension) != null
+    }
+
+    /**
      * Whether [e] is what a build with no reader for some format said of a
      * file, of a format this build reads: the detail ends in the sentence
      * such a build wrote ([HashRecipe.noReaderFor]), whatever stands

@@ -451,6 +451,30 @@ and leaves it there when the scan is over. The theme polls it:
   the first result, `[processed/total] file name` after a result, and at the
   end either `No ROMs found` or a sentence that begins `Done — `. A library
   with no ROM in it goes from the first of these to `No ROMs found`.
+- `progress` is the share of the work the scan expects that is done, and
+  not the share of the files. Each file is given a weight before the first
+  is started (`ScanWeight`): 1 for being looked at, and 1 more for every
+  64 KiB the scan expects to read of it. That is nothing for a file whose
+  verdict in the ledger would stand, for one of a console or a format
+  nobody hashes and for an arcade set; up to 4 MiB of a disc, and of a
+  Nintendo DS or DSi cartridge; the 4 MiB for a disc's sheet, a `.cue` or
+  a `.gdi`, whose own few lines say nothing of the tracks that are read
+  for it; up to 48 MiB of a Wii disc; an archive's whole size; and up to
+  64 MiB of any other file, which is the most rcheevos reads of one. So
+  a file that is not read moves the bar by as little as any file can,
+  and one that is read by what the read is expected to be. It is an
+  estimate: a match the ledger does not vouch for, which the scan takes
+  back from its metadata file, is weighed as a file to read and is not
+  read. The value never goes back, is never over 1, and is exactly 1 at
+  the last result. The two numbers in the message still count files, so
+  the two are no longer the same ratio: a first scan can say 12% beside
+  `[1500/1973]` while the large files are still to come. The key and its
+  range are what they were, and a theme written before this reads it as
+  it did and needs no change. Where every file is settled, or is under
+  64 KiB and no disc's sheet, each weighs 1 and the value is
+  `processed / total` to the last bit, as it was. The desktop's job
+  answers with the same number (`/jobs/{id}`, below). The Android
+  notification's bar still counts files.
 - An error record has `error` and neither progress nor counters. It is how a
   scan ends when it is cancelled, when credentials are missing, when the
   pipeline stops itself (the error then says what to do next), and when

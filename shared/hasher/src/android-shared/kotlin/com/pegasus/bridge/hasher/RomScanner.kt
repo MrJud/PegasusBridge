@@ -57,8 +57,13 @@ object RomScanner {
         "fds", "neo"
     )
 
-    /** A ROM a scan found, with the collection its folder is in. */
-    data class ScannedFile(val file: File, val collection: CollectionRef)
+    /**
+     * A ROM a scan found, with the collection its folder is in. [real] is
+     * where the file really lies ([canonical]), which the walk works out to
+     * keep each file once: carried along so that what weighs the files
+     * before a scan starts does not ask the system for it again.
+     */
+    data class ScannedFile(val file: File, val collection: CollectionRef, val real: String)
 
     /**
      * Every ROM under [dirs], each with its collection.
@@ -111,7 +116,7 @@ object RomScanner {
                 Folder(collection, allowed)
             },
             allowed = { it.allowed }
-        ).map { (file, folder) -> ScannedFile(file, folder.collection) }
+        ).map { (file, real, folder) -> ScannedFile(file, folder.collection, real) }
     }
 
     /**
@@ -155,14 +160,14 @@ object RomScanner {
     /**
      * The walk both of the above are: every file under [dirs] whose extension
      * is in what [allowed] makes of its folder's answer from [about], with
-     * that answer.
+     * the path it really lies at and that answer.
      */
     private fun <T> walk(
         dirs: List<String>,
         about: (File) -> T,
         allowed: (T) -> Set<String>
-    ): List<Pair<File, T>> {
-        val results = mutableListOf<Pair<File, T>>()
+    ): List<Triple<File, String, T>> {
+        val results = mutableListOf<Triple<File, String, T>>()
         // One answer per directory, cached: it may take reading a metadata file
         // from disk, and a library of several thousand ROMs would otherwise ask
         // about the same folder once per file.
@@ -193,9 +198,9 @@ object RomScanner {
                 .forEach { f ->
                     val parent = f.parentFile ?: dir
                     val folder = perDir.getOrPut(parent.path) { about(parent) }
-                    if (f.extension.lowercase() in allowed(folder) && keptFiles.add(canonical(f))) {
-                        results.add(f to folder)
-                    }
+                    if (f.extension.lowercase() !in allowed(folder)) return@forEach
+                    val real = canonical(f)
+                    if (keptFiles.add(real)) results.add(Triple(f, real, folder))
                 }
         }
         BridgeLog.d(TAG, "scanned ${dirs.size} root(s) for ${results.size} files")

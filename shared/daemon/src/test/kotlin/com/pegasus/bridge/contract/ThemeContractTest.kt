@@ -2267,6 +2267,31 @@ class ThemeContractTest {
         assertEquals(desktopResultKeys, desktop.getJSONObject("result").keySet())
     }
 
+    // `progress` is the share of the work the scan expects, and the two
+    // numbers in the message are files: a theme written when they were one
+    // ratio reads the same key in the same range, and shows 65% beside
+    // "3 / 10". The keys are the ones a record always had.
+    @Test fun `an android record carries the pipeline's share of the work under the same key`() {
+        val report = RomScanPipeline.Progress(
+            processed = 3, total = 10, currentFile = "Some Disc (Europe).nes",
+            newEntries = 2, cachedHits = 1, skippedPlatforms = 0, weightDone = 17, weightTotal = 26)
+        val record = ScanJobRecord.running("job7", report, 1791233730, 1791233732)
+        assertEquals(androidRunningKeys + failureCounts, record.keySet())
+        assertEquals(17 / 26.0, record.getDouble("progress"))
+        assertEquals("[3/10] Some Disc (Europe).nes", record.getString("message"))
+
+        BridgePaths.writeAtomic(paths.pending("job7"), record.toString())
+        val theme = androidTheme("job7").apply { readHasherProgress() }
+        assertEquals(View("running", 65, 3, 10, "Some Disc (Europe).nes", 2, 1), theme.view())
+
+        // The last result is the whole of it whatever the weights came to.
+        val last = report.copy(processed = 10, weightDone = 25)
+        assertEquals(1.0, ScanJobRecord.running("job7", last, 1791233730, 1791233732).getDouble("progress"))
+        // A caller with no share to give still gets the files'.
+        assertEquals(0.3, ScanJobRecord.running("job7", 3, 10, "x", ScanJobRecord.Counts(0, 0, 0, 0, 0, 0, 0),
+                                                1791233730, 1791233732).getDouble("progress"))
+    }
+
     /** What the theme shows of a record left in `pending`, before the marker and after it. */
     private fun shownFromFiles(record: JSONObject): List<Any> {
         val job = record.getString("jobId")

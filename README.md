@@ -518,6 +518,7 @@ JAVA_HOME=<a JDK 21> ./native/build.sh      # writes native/out/librahasher.so a
 ./tests/native_lib_check.sh native/out/librahasher.so
 ./tests/vendored_check.py                   # rcheevos is upstream plus the patches listed, libchdr is upstream's files, and nothing else
 ./tests/native_repro_test.py                # files made to hurt rcheevos and the .wbfs and .chd readers, on a plain and a sanitized build
+./tests/rcheevos_rhash_test.sh              # rcheevos' own tests of its hashing, on the copy with the patches, plain and sanitized
 ```
 
 A few of the `.chd` images those rows hash were written by chdman and are

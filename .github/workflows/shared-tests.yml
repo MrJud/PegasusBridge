@@ -14,7 +14,8 @@
 #
 # The `native` job is the fresh build: native/build.sh with the image's own gcc,
 # then what the library asks of a system and shows to it, then rcheevos on
-# files made to crash it, each in a process of its own, and last the golden
+# files made to crash it, each in a process of its own, then rcheevos' own
+# tests of its hashing on the copy our patches are on, and last the golden
 # hashes again on the library just built. The committed binary was made by one
 # compiler on one machine; this is where another compiler has its say. The
 # checks themselves are tested there too, on libraries and compilers made to
@@ -184,6 +185,14 @@ jobs:
       - name: Files made to hurt rcheevos, each in a process of its own
         working-directory: shared
         run: ./tests/native_repro_test.py "$RUNNER_TEMP/native-tools"
+
+      # The step above holds what the patches refuse. This is the other half,
+      # in upstream's words: the tests rcheevos has of its own hashing, on the
+      # copy as the patches left it, compiled plain and with the sanitizers.
+      # A bound of ours drawn too tight fails a test of theirs.
+      - name: rcheevos' own tests of its hashing, on the copy with our patches
+        working-directory: shared
+        run: ./tests/rcheevos_rhash_test.sh "$RUNNER_TEMP/rhash-tests"
 
       # The second line is what shows the first tested the library it names:
       # the hasher logs the path it loaded from, and the test's results keep

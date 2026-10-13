@@ -48,7 +48,10 @@ again; write the manifest again from the upstream tree as it was unpacked, its
 
 with `left-out` in place of `file` for one that is kept out of the copy on
 purpose, which the check then wants absent; and keep this file and the patch
-level true. Then build the Android library from nothing (remove `hasher/.cxx`
+level true. Run `shared/tests/rcheevos_rhash_test.sh` then, and after any new
+patch: it is rcheevos' own tests of its hashing, on this copy, and fails where
+a patch changed what a valid file of theirs hashes to. Then build the Android
+library from nothing (remove `hasher/.cxx`
 first). A tree copied out of an archive with its dates carries upstream's,
 which are older than the objects of the last build, and a build that goes by
 dates takes a file the release changed and no patch touched for one it has

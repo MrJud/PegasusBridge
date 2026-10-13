@@ -494,7 +494,9 @@ see the comment at the top of `app/build.gradle.kts`.
 The desktop's `librahasher.so` is committed, in `shared/native/out/`, with a
 manifest beside it of everything it was compiled from. The tests load that
 file, so a change to the C under `hasher/src/main/cpp` has to come with the
-library built again, in the same commit:
+library built again, in the same commit. The C is two files of ours and six
+of rcheevos': `rahasher_jni.c`, which the JVM calls, and `pb_wbfs.c`, which
+reads a Wii disc out of a `.wbfs` container for rcheevos to hash.
 
 ```bash
 cd shared
@@ -502,7 +504,7 @@ JAVA_HOME=<a JDK 21> ./native/build.sh      # writes native/out/librahasher.so a
 ./tests/native_manifest_check.py            # fails when the library is older than its sources
 ./tests/native_lib_check.sh native/out/librahasher.so
 ./tests/vendored_check.py                   # rcheevos is upstream plus the patches listed, and nothing else
-./tests/native_repro_test.py                # files made to hurt rcheevos, on a plain and a sanitized build
+./tests/native_repro_test.py                # files made to hurt rcheevos and the .wbfs reader, on a plain and a sanitized build
 ```
 
 It needs gcc. `./native/build.sh <dir> --target=windows` builds `rahasher.dll`

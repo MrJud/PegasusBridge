@@ -95,8 +95,8 @@ if [[ -n "$tools" ]]; then
 fi
 cd "$repo"
 
-# One list of rcheevos sources, in the Android module's folder beside the
-# sources themselves. A line is a path from that folder; `#` starts a comment.
+# One list of sources, rcheevos' and ours, in the Android module's folder
+# beside the sources themselves. A line is a path from that folder; `#` starts a comment.
 rhash=()
 while IFS= read -r line || [[ -n "$line" ]]; do
     line="${line%%#*}"
@@ -123,7 +123,9 @@ defines=(-DRC_HASH_NO_ENCRYPTED)
 # out of the symbol table; rcheevos marks its own for export, and jni.map below
 # hides those.
 cflags=(-std=gnu11 -O2 -fPIC -fvisibility=hidden "${defines[@]}")
-rc_includes=(-I"$cpp/rcheevos/include" -I"$cpp/rcheevos/src" -I"$cpp/rcheevos/src/rhash")
+# The folder of the sources themselves is among them for the test program,
+# which is not in it and includes the header of the .wbfs reader that is.
+rc_includes=(-I"$cpp" -I"$cpp/rcheevos/include" -I"$cpp/rcheevos/src" -I"$cpp/rcheevos/src/rhash")
 # -isystem, so that the JDK's headers are not listed among the library's own.
 jni_includes=(-isystem "$JAVA_HOME/include" -isystem "$platform_inc")
 

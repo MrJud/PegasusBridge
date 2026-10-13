@@ -896,8 +896,13 @@ After install, on first run the theme creates `/sdcard/PegasusData/*` subdirs (o
 
 ### The hasher's library
 
-One C file and six of rcheevos' are the hasher, named in
-`hasher/src/main/cpp/rahasher.sources`, and three builds compile that list:
+Two C files of ours and six of rcheevos' are the hasher: `rahasher_jni.c`,
+which the JVM calls, and the list in `hasher/src/main/cpp/rahasher.sources`,
+rcheevos' six and `pb_wbfs.c`. That last one reads a Wii disc out of a `.wbfs`
+container, for which rcheevos has no reader, and hands rcheevos the disc
+through the callbacks rcheevos reads any file by. It is not a patch to
+rcheevos and is not in its folder, which `vendored_check.py` holds to
+upstream. Three builds compile that list:
 
 - **Android** — CMake, with the app, for each ABI.
 - **Linux** — `shared/native/build.sh`, into `shared/native/out/librahasher.so`,
@@ -919,8 +924,9 @@ One C file and six of rcheevos' are the hasher, named in
 
 CI's `native` job builds a fresh Linux library and runs the tests on that as
 well as on the committed one, and runs `shared/tests/native_repro_test.py`:
-files made to hurt rcheevos, each in a process of its own under a timeout, on
-a plain build and on one with the address and undefined-behaviour sanitizers.
+files made to hurt rcheevos, and containers made to hurt the `.wbfs` reader,
+each in a process of its own under a timeout, on a plain build and on one with
+the address and undefined-behaviour sanitizers.
 `hasher/src/main/cpp/rcheevos-patches/PATCHES.md` says what each local patch is
 for and which of those rows hold it.
 

@@ -18,6 +18,10 @@ test worker the first takes the worker with it and the second holds the build
 until its job is killed. Here each file is one process, killed after ten
 seconds, and what it did is a line of the output.
 
+The reader of .wbfs containers that is in the library beside rcheevos
+(pb_wbfs.c) is run the same way and for the same reason: it takes every
+number it works with from the file, and it is C.
+
 Every file is made here, from the few bytes that matter and filler; none is a
 game. Two kinds of row:
 
@@ -91,7 +95,9 @@ FAULTS = (
     ("undefined", "runtime error:", "a sum too large for an int"),
 )
 
-HASH_LINE = re.compile(r"[0-9a-f]{32}\|[0-9]+")
+# For a .wbfs two numbers follow the console: the bytes rcheevos read of the
+# disc, and how many of them were of blocks the container does not hold.
+HASH_LINE = re.compile(r"[0-9a-f]{32}\|[0-9]+(\|[0-9]+\|[0-9]+)?")
 
 # What a row that must pass expects when there is no hash to expect.
 REFUSED = "refused"
@@ -102,6 +108,11 @@ def refused(saying):
     line would refuse too if the one the row is for were gone: what is said
     is then all that tells the two apart."""
     return (REFUSED, saying)
+
+
+class Bare(str):
+    """The file of a row that is named to the program by its name alone, from
+    the folder it is in, where every other row gives the whole path."""
 
 
 def md5(data):
@@ -342,6 +353,86 @@ def wii_disc(encrypted, updates=(1, 0, 0, 0), segment_size=0x1FFC, metadata=0x2C
     put(image, data + 0x3000, table)
     assert len(image) == 0x70020
     return bytes(image)
+
+# What a Wii disc is said to hold whatever is on it, which is how many blocks
+# the table of a .wbfs has entries for (pb_wbfs.c, WBFS_DISC).
+WBFS_DISC = 286864 * 0x8000
+
+
+def in_blocks(image, shift=15, at=0):
+    """`image`, which lies `at` bytes into a disc, as the blocks of 2^shift
+    bytes it is kept in: the number of each block of the disc and its bytes."""
+    block = 1 << shift
+    assert at % block == 0
+    return {(at + start) >> shift: image[start:start + block]
+            for start in range(0, len(image), block)}
+
+
+def wbfs_pieces(blocks, shift=15, hd_shift=9, order=None, first=None, header=b""):
+    """A .wbfs that holds these blocks of a disc, as its size and what is
+    written where; every byte not written is zero. The container begins with
+    its header, a sector on the first 0x100 bytes of the disc, and from there
+    the table: for every block of a whole disc, 16 bits that say which block
+    of the container holds it, or 0 for one it does not hold. The blocks are
+    put one after another, in `order`, from the first block past the table,
+    which is 18 when a block is 32 KiB, or from `first`."""
+    block, sector = 1 << shift, 1 << hd_shift
+    count = (WBFS_DISC + block - 1) >> shift
+    if first is None:
+        first = (sector + 0x100 + 2 * count + block - 1) >> shift
+    order = list(sorted(blocks) if order is None else order)
+    table = bytearray(2 * count)
+    pieces = []
+    for place, disc_block in enumerate(order):
+        put(table, 2 * disc_block, (first + place).to_bytes(2, "big"))
+        pieces.append(((first + place) << shift, blocks[disc_block]))
+    size = (first + len(order)) << shift
+    head = bytearray(sector + 0x100 + len(table))
+    put(head, 0, b"WBFS" + (size >> hd_shift).to_bytes(4, "big") + bytes([hd_shift, shift]))
+    head[12] = 1    # the first slot holds a disc
+    put(head, sector, header[:0x100])
+    put(head, sector + 0x100, table)
+    return size, [(0, bytes(head))] + pieces
+
+
+def wbfs(image, shift=15, hd_shift=9, hold=None, order=None):
+    """`image` in a .wbfs: every block of it, or only the ones `hold` names."""
+    blocks = in_blocks(image, shift)
+    if hold is not None:
+        blocks = {number: data for number, data in blocks.items() if number in hold}
+    return assembled(*wbfs_pieces(blocks, shift, hd_shift, order, header=image))
+
+
+def assembled(size, pieces):
+    """A file of this size with these bytes at these places, and zeros
+    wherever nothing is put."""
+    image = bytearray(size)
+    for at, data in pieces:
+        put(image, at, data)
+    return bytes(image)
+
+
+def through_dolphin(parts, size):
+    """The first `size` bytes of the disc as Dolphin reads them out of a
+    container, whose parts are one run of bytes. Dolphin makes no case of a
+    block the table has 0 for: it reads block 0 of the container, the header
+    and the table themselves, at the same place inside the block. So that is
+    what a hash has to be made of for Dolphin to send the same one."""
+    container = b"".join(parts)
+    assert container[:4] == b"WBFS"
+    sector, shift = 1 << container[8], container[9]
+    block = 1 << shift
+    image = bytearray()
+    for number in range((size + block - 1) >> shift):
+        entry = sector + 0x100 + 2 * number
+        image += whole(container, int.from_bytes(container[entry:entry + 2], "big") << shift, block)
+    return bytes(image[:size])
+
+
+def in_parts(container, cuts):
+    """The container as the files it is split into at these offsets."""
+    edges = [0, *cuts, len(container)]
+    return [container[edges[i]:edges[i + 1]] for i in range(len(edges) - 1)]
 
 
 OPERA_SIGNATURE = bytes.fromhex("015A5A5A5A5A01")
@@ -1375,6 +1466,219 @@ def write_fixtures(directory):
          76, "pce.bin", refused("Unsupported console for buffer hash: 76")),
     ]
 
+    # ---- .wbfs: a Wii disc in a container, read by pb_wbfs.c.
+    #
+    # rcheevos has no reader for it, so the file beside it gives it the disc
+    # as Dolphin would read it out of the container. The disc is the
+    # encrypted one above, and wherever every block of it that is hashed is
+    # held the answer is that disc's own hash: what the container is laid out
+    # like, how large its blocks and sectors are and how many files it is
+    # split into change nothing. After the console come the bytes rcheevos
+    # read of the disc, and how many of them were of blocks the container does
+    # not hold.
+    def write_parts(name, parts):
+        """A container split into files named as Dolphin looks for them:
+        the last letter gives way to a digit."""
+        for number, part in enumerate(parts):
+            write(name if number == 0 else name[:-1] + str(number), part)
+
+    def write_sparse(name, size, pieces):
+        """A file with these bytes at these places and nothing between them
+        on the disk: one of 4 GiB that takes the room of what is written."""
+        with open(directory / name, "wb") as file:
+            for at, data in pieces:
+                file.seek(at)
+                file.write(data)
+            file.truncate(size)
+
+    block = 0x8000
+    whole_disc = f"{wii_md5(encrypted)}|19|64209|0"
+    container = wbfs(encrypted)
+    assert len(container) == 33 * block     # the table fills 18 blocks, the disc 15
+    assert through_dolphin([container], len(encrypted)) == encrypted
+    write("wbfs.wbfs", container)
+    write("wbfs-reversed.wbfs", wbfs(encrypted, order=range(14, -1, -1)))
+    write("wbfs-2mib.wbfs", wbfs(encrypted, shift=21))
+    write("wbfs-4k-sectors.wbfs", wbfs(encrypted, hd_shift=12))
+    # None of the blocks that are all zeros is read for the hash, so leaving
+    # them out leaves the count of bytes not held at 0 as well.
+    not_zero = {number for number, data in in_blocks(encrypted).items() if any(data)}
+    assert not_zero == {0, 8, 9, 10, 11, 12}
+    write("wbfs-no-zeros.wbfs", wbfs(encrypted, hold=not_zero))
+    # Split where real files are, at no boundary of a block: inside container
+    # block 29, the disc's block 11, whose bytes from 0x400 on are one read.
+    in_two = in_parts(container, [29 * block + 0x4000])
+    write_parts("wbfs-two.wbfs", in_two)
+    # In ten, the most files there can be. The first holds the table whole,
+    # which is the one thing asked of where the cuts fall: Dolphin reads the
+    # table from the first file and from no other, and so does the reader.
+    table_end = 18 * block
+    write_parts("wbfs-ten.wbfs", in_parts(
+        container, [table_end + (len(container) - table_end) * n // 10 + 7 for n in range(9)]))
+    write_parts("WBFS-CAPITALS.WBFS", in_two)
+    # A second file that is not needed is not looked at. Dolphin opens every
+    # part there is and would refuse this one.
+    write("wbfs-stray.wbfs", container)
+    write("wbfs-stray.wbf1", noise(4096, seed="a stray part"))
+    write_parts("wbfs-empty-part.wbfs", [in_two[0], b"", in_two[1]])
+    must_pass += [
+        ("a Wii disc in a .wbfs of 32 KiB blocks hashes as the disc does",
+         19, "wbfs.wbfs", whole_disc),
+        ("the same with no console given, which for a .wbfs asks for the Wii",
+         0, "wbfs.wbfs", whole_disc),
+        ("the same with its blocks kept in the reverse order", 19, "wbfs-reversed.wbfs", whole_disc),
+        ("the same in blocks of 2 MiB", 19, "wbfs-2mib.wbfs", whole_disc),
+        ("the same with sectors of 4096 bytes", 19, "wbfs-4k-sectors.wbfs", whole_disc),
+        ("the same with its blocks of zeros left out", 19, "wbfs-no-zeros.wbfs", whole_disc),
+        ("the same split in two inside a block that is hashed", 19, "wbfs-two.wbfs", whole_disc),
+        ("the same split in ten", 19, "wbfs-ten.wbfs", whole_disc),
+        ("the same split in two and named in capitals", 19, "WBFS-CAPITALS.WBFS", whole_disc),
+        ("the same whole, with a stray .wbf1 beside it", 19, "wbfs-stray.wbfs", whole_disc),
+        ("the same split in two with a .wbf1 of no bytes between them",
+         19, "wbfs-empty-part.wbfs", whole_disc),
+    ]
+
+    # Blocks the container does not hold, under bytes that are hashed. The
+    # game's data is the disc's blocks 11 and 12, of which 0x7C00 bytes each
+    # are read. What is read in their place is the container's own first
+    # block, and the hash is the hash of that: not the disc's, and the one
+    # Dolphin would send.
+    for name, missing, unheld in (("wbfs-no-data.wbfs", {11, 12}, 2 * 0x7C00),
+                                  ("wbfs-half-data.wbfs", {12}, 0x7C00)):
+        scrubbed = wbfs(encrypted, hold=set(range(15)) - missing)
+        as_read = through_dolphin([scrubbed], len(encrypted))
+        assert wii_md5(as_read) != wii_md5(encrypted)
+        write(name, scrubbed)
+        must_pass.append((f"a .wbfs without the disc's block(s) {sorted(missing)} is hashed as Dolphin reads it",
+                          19, name, f"{wii_md5(as_read)}|19|64209|{unheld}"))
+
+    # In those two, what is read in place of the data is zeros all the same:
+    # the first block of the container from 0x400 on is the table's entries
+    # for blocks 128 and up of a disc that has fifteen. So neither row tells
+    # Dolphin's way from reading zeros for what is not held. Here block 200 of
+    # the disc is held as well, which nothing reads, and its entry is 0x490
+    # bytes into the container: under the data that is read.
+    held = {number: data for number, data in in_blocks(encrypted).items() if number not in (11, 12)}
+    held[200] = noise(block, seed="a block far into the disc")
+    marked = assembled(*wbfs_pieces(held, header=encrypted))
+    as_read = through_dolphin([marked], len(encrypted))
+    zeros = bytearray(encrypted)
+    put(zeros, 11 * block, bytes(2 * block))
+    assert wii_md5(as_read) != wii_md5(zeros)
+    write("wbfs-no-data-marked.wbfs", marked)
+    must_pass.append(("the same without blocks 11 and 12, where what Dolphin reads for them is not zeros",
+                      19, "wbfs-no-data-marked.wbfs", f"{wii_md5(as_read)}|19|64209|{2 * 0x7C00}"))
+
+    # Past 4 GiB, where a seek worked out in 32 bits comes back to the start.
+    # Of the container: its one block of 2 MiB is block 2200 of the file,
+    # which is 4.3 GiB in, and the file takes the room of the two blocks
+    # written. Of the disc: the game's partition and its data are 4 GiB and
+    # 64 KiB into the disc, in a container of 33 blocks. What is hashed is
+    # the same bytes as before, from other places, so the hash is the same.
+    size, pieces = wbfs_pieces(in_blocks(encrypted, shift=21), shift=21, first=2200, header=encrypted)
+    assert size > 1 << 32 and pieces[1][0] > 1 << 32
+    write_sparse("wbfs-far-block.wbfs", size, pieces)
+    far = (1 << 32) + 0x10000
+    near, moved = bytearray(encrypted[:WII_PARTITION]), bytearray(encrypted[WII_PARTITION:])
+    put(near, WII_TABLE + 0x28, (far >> 2).to_bytes(4, "big"))      # the game's entry, after the update's
+    put(moved, 0x2B8, ((far + WII_DATA - WII_PARTITION) >> 2).to_bytes(4, "big"))
+    size, pieces = wbfs_pieces({**in_blocks(bytes(near)), **in_blocks(bytes(moved), at=far)}, header=near)
+    write_sparse("wbfs-far-partition.wbfs", size, pieces)
+    must_pass += [
+        ("a .wbfs whose one block lies past 4 GiB of the file", 19, "wbfs-far-block.wbfs", whole_disc),
+        ("a .wbfs of a disc whose game lies past 4 GiB of the disc",
+         19, "wbfs-far-partition.wbfs", whole_disc),
+    ]
+
+    # Containers that are refused, each by one check of the reader and with
+    # that check's words: every number the header and the table give is held
+    # to what it may be before it is used. Each is the container above with
+    # one thing wrong.
+    def spoiled(at, data, container=container):
+        image = bytearray(container)
+        put(image, at, data)
+        return bytes(image)
+
+    refusals = [
+        ("of no bytes", b"", "is empty"),
+        ("of 15 bytes", container[:15], "ends inside its header"),
+        ("that begins WBFT", spoiled(0, b"WBFT"), "does not begin"),
+        ("that counts no sectors", spoiled(4, bytes(4)), "counts no sectors"),
+        ("whose first slot is empty", spoiled(12, b"\0"), "holds no disc"),
+        ("with a sector more than its header says", container + bytes(512), "its header says"),
+        # The file is as long as its header says, and the table it has to
+        # hold would end 570 KiB past it.
+        ("that ends inside its table", spoiled(4, (8).to_bytes(4, "big"))[:0x1000],
+         "block table runs past the end of the file"),
+        ("whose table puts a block at 0xFFFF", spoiled(0x300 + 2 * 20, b"\xff\xff"), "past the end"),
+        # One block past the last: the first that is not in the file.
+        ("whose table puts a block one past the last", spoiled(0x300 + 2 * 20, (33).to_bytes(2, "big")),
+         "past the end"),
+        ("without the first block of the disc", spoiled(0x300, bytes(2)), "first block of the disc"),
+    ]
+    refusals += [(f"with a sector of 2^{shift} bytes", spoiled(8, bytes([shift])), "a sector of")
+                 for shift in (0, 8, 17, 255)]
+    refusals += [(f"with a block of 2^{shift} bytes", spoiled(9, bytes([shift])), "a block of")
+                 for shift in (0, 14, 31, 255)]
+    for number, (what, image, saying) in enumerate(refusals):
+        write(f"wbfs-refused-{number}.wbfs", image)
+        must_pass.append((f"a .wbfs {what}", 19, f"wbfs-refused-{number}.wbfs", refused(saying)))
+
+    # Parts that do not add up to what the header says: too few, which may be
+    # a copy still on its way and is said as a file that could not be opened;
+    # too much; and ten files that are still short, where no eleventh is
+    # looked for.
+    thirds = in_parts(container, [len(container) // 3, 2 * len(container) // 3])
+    elevenths = in_parts(container, [len(container) * n // 11 for n in range(1, 11)])
+    write_parts("wbfs-lone.wbfs", in_two[:1])
+    write_parts("wbfs-two-of-three.wbfs", thirds[:2])
+    write_parts("wbfs-too-much.wbfs", [in_two[0], in_two[1] + bytes(512)])
+    write_parts("wbfs-eleven.wbfs", elevenths[:10])
+    # And parts that do add up, with the table across the first two.
+    write_parts("wbfs-table-in-two.wbfs", in_parts(container, [9 * block]))
+    must_pass.append(("a .wbfs whose first file ends inside the table, the rest being in its .wbf1",
+                      19, "wbfs-table-in-two.wbfs", refused("block table runs past the end of the file")))
+    must_pass += [
+        ("a .wbfs whose .wbf1 is not there", 19, "wbfs-lone.wbfs", refused("Could not open part .wbf1")),
+        ("a .wbfs in three whose .wbf2 is not there",
+         19, "wbfs-two-of-three.wbfs", refused("Could not open part .wbf2")),
+        ("a .wbfs whose parts hold more than its header says",
+         19, "wbfs-too-much.wbfs", refused("more than the header says")),
+        ("a .wbfs that is still short after ten files", 19, "wbfs-eleven.wbfs", refused("ten parts")),
+    ]
+
+    # What the reader does not refuse, and rcheevos does. A block the file
+    # cuts short begins inside the container, which is all that is asked of
+    # it, as Dolphin asks no more; the read under it comes back short, with
+    # nothing put in place of what is missing, and rcheevos refuses the disc.
+    # The cut is under the second cluster of the data, a read rcheevos looks
+    # at. And a container that is right, of something that is no Wii disc.
+    short = bytearray(wbfs(encrypted, hold=set(range(13)))[:31 * block - 0x4000])
+    put(short, 4, (len(short) >> 9).to_bytes(4, "big"))
+    write("wbfs-short-block.wbfs", short)
+    write("wbfs-no-disc.wbfs", wbfs(noise(2 * block, seed="no disc")))
+    must_pass += [
+        ("a .wbfs whose last block the file cuts short under bytes that are hashed",
+         19, "wbfs-short-block.wbfs", refused("Partition cluster 1 runs past the end")),
+        ("a .wbfs of something that is not a Wii disc",
+         19, "wbfs-no-disc.wbfs", refused("Not a supported Wii file")),
+        ("a .wbfs under console 16, where only the Wii's is taken",
+         16, "wbfs.wbfs", refused("A .wbfs holds a Wii disc, and console 16 was asked for")),
+    ]
+
+    # A name is a container's by its last five bytes, the dot among them. A
+    # file called wbfs and nothing more is read as any file is, and this one,
+    # which is a container that would hash, is no Wii disc read that way. By
+    # its name alone the whole path is four bytes: the five are not looked
+    # for before the path's start.
+    write("wbfs", container)
+    must_pass += [
+        ("a container in a file named wbfs, with no dot, is not read as one",
+         19, "wbfs", refused("Not a supported Wii file")),
+        ("the same named to the program by those four letters alone",
+         19, Bare("wbfs"), refused("Not a supported Wii file")),
+    ]
+
     # (what the row shows, console, path from the folder of fixtures). The six
     # files there were are rows above since local patches 0001 to 0004, and
     # the path that was the seventh since rcheevos 12.5.0.
@@ -1416,11 +1720,11 @@ class Outcome:
         return None
 
 
-def run(binary, console, path, extra_env=None, seconds=TIMEOUT_SECONDS):
+def run(binary, console, path, extra_env=None, seconds=TIMEOUT_SECONDS, cwd=None):
     env = dict(os.environ)
     env.update(extra_env or {})
     try:
-        done = subprocess.run([str(binary), str(console), str(path)], env=env,
+        done = subprocess.run([str(binary), str(console), str(path)], env=env, cwd=cwd,
                               stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
                               stderr=subprocess.PIPE, timeout=seconds)
     except subprocess.TimeoutExpired as late:   # run() has killed it by now
@@ -1560,7 +1864,8 @@ def main(argv):
             print(f"must pass, {label} build:")
             for what, console, name, answer in must_pass:
                 # Joined as text: a Path would drop the separator a row may end with.
-                outcome = run(binary, console, f"{files}{os.sep}{name}", env, MUST_PASS_SECONDS)
+                path = name if isinstance(name, Bare) else f"{files}{os.sep}{name}"
+                outcome = run(binary, console, path, env, MUST_PASS_SECONDS, cwd=files)
                 wrong = check_must_pass(outcome, answer, sanitized=env is not None)
                 if wrong:
                     failures += 1

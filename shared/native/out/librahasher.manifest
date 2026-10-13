@@ -1,12 +1,14 @@
 # What librahasher.so beside this file was compiled from. native/build.sh writes
 # the two together and tests/native_manifest_check.py compares them: a
 # line that no longer holds is a library to build again.
-library 84e5edf8846ec5415f3aebbd4468504881ae05d9df651b4233bb4ed1a8f85c19 librahasher.so
+library da716e7089f4a7c604fd967b77f3c38b019177f8018ef93438789f04b552c3d8 librahasher.so
 compiler gcc (GCC) 16.2.1 20260810
 flags -std=gnu11 -O2 -fPIC -fvisibility=hidden -DRC_HASH_NO_ENCRYPTED -shared -Wl,-z,defs -Wl,-z,now -Wl,--version-script=hasher/src/main/cpp/jni.map
 input 3ff95500850ebe134589473059ae0616f450b1a99ebb77a9190c137d4b82785b hasher/src/main/cpp/jni.map
 input fbfaa123f573e6a17b65723c6a76ffd227d2fc83278cfe21845852ac06c7beb6 hasher/src/main/cpp/pb_patchlevel.h
-input 95f57624ee6f127ff9593ff05e595434e3a1c3f5526d6522ca176fb7cd4e07b2 hasher/src/main/cpp/rahasher.sources
+input 16fb3cdd938ef4fc7fbd3bd22a68e6f831eff372f7a18429897249fca8fae925 hasher/src/main/cpp/pb_wbfs.c
+input 0fa8c31653e9eb27659775fa9e33091e249bf62aff36a408f0ee26cb23f81428 hasher/src/main/cpp/pb_wbfs.h
+input 159934407ac51ad655d2138c7722e424226a23e14374009dac767327db3da892 hasher/src/main/cpp/rahasher.sources
 input 4ec79ca09731cc0f30851ac08cbb80223ec687267628ce884124bcffb2bc7ec7 hasher/src/main/cpp/rahasher_jni.c
 input 73c1178e501692a11fb702eb1d90d25a7c47ed1d02678c619bc087c9755b132b hasher/src/main/cpp/rcheevos/include/rc_consoles.h
 input 9683f979bb152781677ffd952a68fdddcb5d951eb227e96a2d1f7fd0feb3be62 hasher/src/main/cpp/rcheevos/include/rc_export.h
@@ -21,4 +23,4 @@ input dcf9e3e345ab709cffe8408f75fb15084a48e55d2b625deaa00614794376dca3 hasher/sr
 input fd38ee6a43316007d4aa816f23c24a8355c58df106b4c54e43ec44afc55df521 hasher/src/main/cpp/rcheevos/src/rhash/md5.c
 input 8341e2a307d7cfaeb816b261d92ce87a07be62e3eb58c98d2c769e75a6e2b959 hasher/src/main/cpp/rcheevos/src/rhash/md5.h
 input 90b930b1ce1f0c160640ed54627cd460a6cb32e73b0d12c464e206c3ed1e6870 hasher/src/main/cpp/rcheevos/src/rhash/rc_hash_internal.h
-input 3eaf595616fb29febd939f2c62cbf61d9414ac324c8101c6975392c54c46ede5 shared/native/build.sh
+input 4318a26ed4e5abf9d16a594c3bbc5dbb962058960b6b92bbb09f9177e4c0dd9b shared/native/build.sh

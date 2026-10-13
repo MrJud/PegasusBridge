@@ -17,13 +17,22 @@
  * console and no other. The library's hashForConsole takes its console the
  * same way, and like this program sets the callback for errors and no other.
  *
+ * A path that ends in .wbfs is handed to the reader in pb_wbfs.c, which the
+ * library calls for such a path too: what console may be asked for, how the
+ * container is read and what is counted are all in that file, and here the
+ * answer is only printed. It has two numbers more than any other, the bytes
+ * rcheevos read of the disc and how many of them were of blocks the container
+ * does not hold.
+ *
  * It ends in one of four ways, and a test may count on them:
- *   0  one line on stdout, "<md5>|<console>"
+ *   0  one line on stdout, "<md5>|<console>", or for a .wbfs
+ *      "<md5>|19|<bytes read>|<bytes not held>"
  *   1  no hash; what rcheevos said of it is on stderr, on one line
  *   2  it was not started with a console from 0 to 255 and a path
  *   3  rcheevos left a file open that it had opened: how many is on stderr,
  *      after what it would have said otherwise
- * Anything else is rcheevos, not this file: a signal, or a sanitizer's report.
+ * Anything else is rcheevos or the reader, not this file: a signal, or a
+ * sanitizer's report.
  *
  * The third is counted, since nothing else shows it. A file left open is not
  * memory, and neither sanitizer says a word of it; in this program it is gone
@@ -48,6 +57,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include "rc_hash.h"
+#include "pb_wbfs.h"
 
 /* Every error of one run, in the order rcheevos gave them. */
 struct reasons {
@@ -150,7 +160,10 @@ static int open_descriptors(void) {
 int main(int argc, char** argv) {
     rc_hash_iterator_t iterator;
     struct reasons reasons;
+    struct pb_wbfs_stats stats;
+    char why[PB_WBFS_REASON];
     char hash[33];
+    char answer[PB_WBFS_ANSWER]; /* which has room for the two fields of any other file as well */
     char* end;
     long console;
     int found;
@@ -169,6 +182,7 @@ int main(int argc, char** argv) {
 
     reasons.text[0] = '\0';
     reasons.length = 0;
+    hash[0] = '\0'; /* the answer is put together before it is known whether there is one */
 
     /*
      * The callback goes in after rc_hash_initialize_iterator and not before:
@@ -180,12 +194,21 @@ int main(int argc, char** argv) {
     iterator.userdata = &reasons;
     iterator.callbacks.error_message = keep_reason;
 
-    if (console > 0) {
+    if (pb_wbfs_names(argv[2])) {
+        found = pb_wbfs_hash(hash, (uint32_t)console, &iterator, &stats, why);
+        /* What the reader refused the container for goes where rcheevos'
+         * own reasons go; when rcheevos refused the disc, it is there already. */
+        if (!found && why[0])
+            keep_reason(why, &iterator);
+        pb_wbfs_answer(answer, hash, &stats);
+    } else if (console > 0) {
         found = rc_hash_generate(hash, (uint32_t)console, &iterator);
+        snprintf(answer, sizeof(answer), "%s|%ld", hash, console);
     } else {
         found = rc_hash_iterate(hash, &iterator);
         if (found)
             console = iterator.consoles[iterator.index - 1];
+        snprintf(answer, sizeof(answer), "%s|%ld", hash, console);
     }
 
     rc_hash_destroy_iterator(&iterator);
@@ -193,7 +216,7 @@ int main(int argc, char** argv) {
 
     if (before >= 0 && after > before) {
         if (found)
-            fprintf(stderr, "%s|%ld; ", hash, console);
+            fprintf(stderr, "%s; ", answer);
         else
             fprintf(stderr, "%s; ", reasons.text);
         fprintf(stderr, "%d file(s) left open\n", after - before);
@@ -206,6 +229,6 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    printf("%s|%ld\n", hash, console);
+    printf("%s\n", answer);
     return 0;
 }

@@ -11,13 +11,19 @@
  * com.pegasus.bridge.hasher.RcheevosNative.
  *
  *   hashForConsole(path, console, errorOut)   "<md5>|<console>", or null
- *   version()                                 "12.5.0+pb10"
+ *   version()                                 "12.5.0+pb10/wbfs1"
+ *
+ * A path that ends in .wbfs is a Wii disc in a container rcheevos has no
+ * reader for. pb_wbfs.c beside this file reads it, and the answer for one is
+ * "<md5>|19|<bytes read>|<bytes not held>".
  *
  * Nothing is logged from here and nothing is kept between calls: what
  * rcheevos said of a file it gave no hash for goes back to the caller, in the
- * caller's own buffer, and the caller decides who is told. So a call on one
- * thread knows nothing of a call on another, and the library needs nothing of
- * the system but its C library.
+ * caller's own buffer, and the caller decides who is told. One thing is kept
+ * for the length of a call, by pb_wbfs.c: which container rcheevos is
+ * reading, in a variable that is each thread's own. So a call on one thread
+ * knows nothing of a call on another, and the library needs nothing of the
+ * system but its C library.
  */
 
 #include <jni.h>
@@ -27,6 +33,7 @@
 #include "rc_hash.h"
 #include "rc_version.h"
 #include "pb_patchlevel.h"
+#include "pb_wbfs.h"
 
 /* Every error of one call, in the order rcheevos gave them. */
 struct reasons {
@@ -146,8 +153,13 @@ Java_com_pegasus_bridge_hasher_RcheevosNative_hashForConsole(
         JNIEnv* env, jclass clazz, jbyteArray path_utf8, jint console_id, jbyteArray error_out) {
     rc_hash_iterator_t iterator;
     struct reasons reasons;
+    struct pb_wbfs_stats stats;
+    char why[PB_WBFS_REASON];
     char hash[33];
-    char answer[64]; /* 32 hex digits, '|', a console of three digits at most, NUL */
+    /* 32 hex digits, '|', a console of three digits at most, NUL; and for a
+     * .wbfs the longer line the reader writes, which is what it is sized by */
+    char answer[PB_WBFS_ANSWER];
+    int container;
     char* path;
     jsize length;
     int found;
@@ -219,7 +231,16 @@ Java_com_pegasus_bridge_hasher_RcheevosNative_hashForConsole(
     iterator.userdata = &reasons;
     iterator.callbacks.error_message = keep_reason;
 
-    if (console_id > 0) {
+    /* What a .wbfs is, which console may be asked for one, what is counted
+     * of it and how the answer is written are the reader's to say, here and
+     * in the program the sanitized rows run: this only calls it and passes
+     * on what it said. */
+    container = pb_wbfs_names(iterator.path);
+    if (container) {
+        found = pb_wbfs_hash(hash, (uint32_t)console_id, &iterator, &stats, why);
+        if (!found && why[0])
+            keep_reason(why, &iterator);
+    } else if (console_id > 0) {
         found = rc_hash_generate(hash, (uint32_t)console_id, &iterator);
     } else {
         found = rc_hash_iterate(hash, &iterator);
@@ -238,7 +259,10 @@ Java_com_pegasus_bridge_hasher_RcheevosNative_hashForConsole(
         return NULL;
     }
 
-    snprintf(answer, sizeof(answer), "%s|%ld", hash, (long)console_id);
+    if (container)
+        pb_wbfs_answer(answer, hash, &stats);
+    else
+        snprintf(answer, sizeof(answer), "%s|%ld", hash, (long)console_id);
     return (*env)->NewStringUTF(env, answer);
 }
 
@@ -247,6 +271,11 @@ Java_com_pegasus_bridge_hasher_RcheevosNative_hashForConsole(
  * patches are on it. Two builds that differ in either do not answer alike,
  * so the caller holds this against the version it was written for, and it is
  * what a scan's answers are kept under.
+ *
+ * After the slash, the readers of our own that are in the library and which
+ * turn each is at. A reader answers for the files it reads and for no other,
+ * so it is no part of what every answer is kept under, and the caller takes
+ * the two apart at the slash.
  *
  * Put together from the three numbers. The string rcheevos makes of them
  * itself leaves out a patch number of 0, and would read "12.5".
@@ -257,8 +286,8 @@ Java_com_pegasus_bridge_hasher_RcheevosNative_version(JNIEnv* env, jclass clazz)
 
     (void)clazz;
 
-    snprintf(text, sizeof(text), "%d.%d.%d+pb%d",
+    snprintf(text, sizeof(text), "%d.%d.%d+pb%d/wbfs%d",
              RCHEEVOS_VERSION_MAJOR, RCHEEVOS_VERSION_MINOR, RCHEEVOS_VERSION_PATCH,
-             PB_RCHEEVOS_PATCHLEVEL);
+             PB_RCHEEVOS_PATCHLEVEL, PB_WBFS_READER);
     return (*env)->NewStringUTF(env, text);
 }

@@ -859,14 +859,20 @@ class NativeConsoleHashTest {
                 .find(File(cpp, header).readText())?.groupValues?.get(1)
                 ?: fail("$header does not define $name as a number")
 
-        val sources = listOf("MAJOR", "MINOR", "PATCH")
+        // The engine is rcheevos and its patches. The readers of our own
+        // follow a slash in the version and are no part of the engine: every
+        // verdict is kept under that, and a reader is to count only for the
+        // files it reads.
+        val engine = listOf("MAJOR", "MINOR", "PATCH")
             .joinToString(".") { defined("rcheevos/src/rc_version.h", "RCHEEVOS_VERSION_$it") } +
             "+pb" + defined("pb_patchlevel.h", "PB_RCHEEVOS_PATCHLEVEL")
+        val sources = engine + "/wbfs" + defined("pb_wbfs.h", "PB_WBFS_READER")
 
         assertEquals(sources, RcheevosNative.version(), "the library, against the headers in the tree")
         assertEquals(sources, RcheevosNative.EXPECTED_VERSION, "the version the Kotlin expects")
-        assertEquals(sources, native.engine, "the hasher's engine")
-        assertEquals(sources, ArchiveAwareHasher(native, File(dir, "tmp")).engine, "handed on by the archive hasher")
+        assertEquals(engine, RcheevosNative.engine(), "the part before the slash")
+        assertEquals(engine, native.engine, "the hasher's engine")
+        assertEquals(engine, ArchiveAwareHasher(native, File(dir, "tmp")).engine, "handed on by the archive hasher")
     }
 
     // The daemon is jars and a library, installed side by side, and a library

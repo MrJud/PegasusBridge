@@ -56,10 +56,10 @@ tasks.named<Test>("test") {
         .withPathSensitivity(PathSensitivity.NONE)
     // The same for what two other tests read of the hasher's C: the table of
     // extensions in hash.c that RomHashIOTest holds the Kotlin copy to, and
-    // the two headers the library's version is made from.
+    // the three headers the library's version is made from.
     val cpp = rootProject.file("../hasher/src/main/cpp")
     inputs.files(File(cpp, "rcheevos/src/rhash/hash.c"), File(cpp, "rcheevos/src/rc_version.h"),
-                 File(cpp, "pb_patchlevel.h"))
+                 File(cpp, "pb_patchlevel.h"), File(cpp, "pb_wbfs.h"))
         .withPropertyName("sourcesTheKotlinIsHeldTo").withPathSensitivity(PathSensitivity.NONE)
 
     // NativeCrashReproTest makes each native call in a JVM it starts itself,

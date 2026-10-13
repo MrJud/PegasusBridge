@@ -20,7 +20,7 @@ object NativeHasher : RomHasher {
     override fun hashForConsole(path: String, consoleId: Int): HashOutcome =
         RcheevosNative.hash(path, consoleId)
 
-    override val engine: String get() = RcheevosNative.version()
+    override val engine: String get() = RcheevosNative.engine()
 
     /**
      * One call into the library, for a scan to make before it starts.

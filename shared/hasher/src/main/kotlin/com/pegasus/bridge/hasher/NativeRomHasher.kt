@@ -25,7 +25,7 @@ class NativeRomHasher private constructor() : RomHasher {
     override fun hashForConsole(path: String, consoleId: Int): HashOutcome =
         RcheevosNative.hash(path, consoleId)
 
-    override val engine: String get() = RcheevosNative.version()
+    override val engine: String get() = RcheevosNative.engine()
 
     companion object {
         private const val TAG = "NativeRomHasher"

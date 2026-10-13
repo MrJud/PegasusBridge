@@ -24,7 +24,14 @@ data class HashResult(
     val fileMd5: String = "",
     val fileCrc32: String = "",
     /** Which entry inside an archive these describe, or empty for a plain file. */
-    val archiveEntry: String = ""
+    val archiveEntry: String = "",
+    /**
+     * What the hasher has to say of a hash it did give, or empty: for a
+     * `.wbfs`, that some of what was hashed came from blocks the container
+     * does not hold ([RcheevosNative.wbfsCaveat]). The hash is looked up all
+     * the same, and this goes with the verdict where there is no match.
+     */
+    val caveat: String = ""
 )
 
 /**

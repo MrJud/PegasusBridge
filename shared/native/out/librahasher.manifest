@@ -1,7 +1,7 @@
 # What librahasher.so beside this file was compiled from. native/build.sh writes
 # the two together and tests/native_manifest_check.py compares them: a
 # line that no longer holds is a library to build again.
-library da716e7089f4a7c604fd967b77f3c38b019177f8018ef93438789f04b552c3d8 librahasher.so
+library d4b0f70f04e6e00522b1bd86a45483b33662b1e1183b1bb79fd83c78b9d45763 librahasher.so
 compiler gcc (GCC) 16.2.1 20260810
 flags -std=gnu11 -O2 -fPIC -fvisibility=hidden -DRC_HASH_NO_ENCRYPTED -shared -Wl,-z,defs -Wl,-z,now -Wl,--version-script=hasher/src/main/cpp/jni.map
 input 3ff95500850ebe134589473059ae0616f450b1a99ebb77a9190c137d4b82785b hasher/src/main/cpp/jni.map
@@ -9,7 +9,7 @@ input fbfaa123f573e6a17b65723c6a76ffd227d2fc83278cfe21845852ac06c7beb6 hasher/sr
 input 16fb3cdd938ef4fc7fbd3bd22a68e6f831eff372f7a18429897249fca8fae925 hasher/src/main/cpp/pb_wbfs.c
 input 0fa8c31653e9eb27659775fa9e33091e249bf62aff36a408f0ee26cb23f81428 hasher/src/main/cpp/pb_wbfs.h
 input 159934407ac51ad655d2138c7722e424226a23e14374009dac767327db3da892 hasher/src/main/cpp/rahasher.sources
-input 4ec79ca09731cc0f30851ac08cbb80223ec687267628ce884124bcffb2bc7ec7 hasher/src/main/cpp/rahasher_jni.c
+input 5d8eb982070e996aa665633e5352ee68465b0c18245e12f30a0a77b43ba3f422 hasher/src/main/cpp/rahasher_jni.c
 input 73c1178e501692a11fb702eb1d90d25a7c47ed1d02678c619bc087c9755b132b hasher/src/main/cpp/rcheevos/include/rc_consoles.h
 input 9683f979bb152781677ffd952a68fdddcb5d951eb227e96a2d1f7fd0feb3be62 hasher/src/main/cpp/rcheevos/include/rc_export.h
 input b2eeb7eb928ed07094463eefd8111ecc69a2f8aeb04e63b23172dcf3663a271b hasher/src/main/cpp/rcheevos/include/rc_hash.h

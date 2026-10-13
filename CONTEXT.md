@@ -125,10 +125,20 @@ Both hash with the same library: rcheevos behind one JNI file,
 `RcheevosNative`. `hashForConsole` takes the console to hash the file as, or 0
 to leave that to the file's extension, and hands back what rcheevos said of a
 file it gave no hash for; the scan records that after the file's name
-(`the hasher could not read X: <reason>`). `version` is the rcheevos release and
-the number of local patches on it (`12.5.0+pb10`). `NativeHasher` and
+(`the hasher could not read X: <reason>`). `version` is the rcheevos release,
+the number of local patches on it and, after a slash, the readers of our own
+with the turn each is at (`12.5.0+pb10/wbfs1`). `NativeHasher` and
 `NativeRomHasher` only load the library, and each holds that version against
-the one it was built for before any file is hashed. The rcheevos it is compiled
+the one it was built for before any file is hashed. The part before the slash
+is the hasher's `engine`, which every verdict is kept under; a reader is
+counted for the files it reads and no other. For a path that ends in `.wbfs`
+the library answers through `pb_wbfs.c`, as a Wii disc whatever console was
+asked, and says with the hash how many bytes were hashed and how many of them
+came from blocks the container does not hold. `RcheevosNative.wbfsCaveat`
+makes a note of the two, which begins `scrubbed copy` when they are half or
+more, and `HashResult.caveat` carries it. No note means that no byte of a
+missing block was hashed, not that the copy is a full one: a tool can blank
+what a disc does not use inside blocks that are held. The rcheevos it is compiled
 from is the folder `hasher/src/main/cpp/rcheevos`: upstream's tree as
 `rcheevos.version` beside it names it, file by file, with the patches of
 `rcheevos-patches/` on it, which `shared/tests/vendored_check.py` holds it to.

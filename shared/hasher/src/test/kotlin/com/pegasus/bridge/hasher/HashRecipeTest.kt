@@ -214,6 +214,46 @@ class HashRecipeTest {
         assertNotNull(edited.canSkip("/roms/snes/Miss.sfc", snes, 10, 20, now = 1000), "a collection of another row")
     }
 
+    // A row that is new, for a collection the table had none for, is the
+    // same to the ledger as a row that is edited: the collections it is the
+    // row of have their files looked at again, once. The first recipe here
+    // is this build's with the rows of the Neo Geo CD and the Jaguar CD
+    // taken out again, which is the build before they were written.
+    //
+    // That nobody else's number moves is not shown here, and two recipes
+    // of one build cannot show it: they are made of one table, and give any
+    // other collection one number whatever was done to that table. It is
+    // held by what is written out further down, the line every number
+    // starts from and the numbers of three collections, which a commit
+    // that adds a row has to leave as they are.
+    @Test fun `a row a collection gains redoes that collection`() {
+        val gained = listOf("neogeocd", "neogeocdjp", "atarijaguarcd", "jaguarcd").map { CollectionRef.inferred(it) }
+        val before = HashRecipe("none") { c -> if (c in gained) RcConsoles.describe(null) else rowOf(c) }
+        val after = HashRecipe("none")
+
+        for (c in gained) {
+            assertNotEquals("unknown", rowOf(c), "${c.dirName} has no row")
+            assertNotEquals(before.versionFor(c), after.versionFor(c), c.dirName)
+            assertNotEquals(before.versionFor(c, "chd"), after.versionFor(c, "chd"), c.dirName)
+        }
+
+        // The ledger goes by it: what the build before kept for a file of
+        // such a folder, a sheet or an image the guess had hashed and
+        // nobody knew, does not stand for the build that has the row.
+        val neogeocd = gained.first()
+        ScanLedger(ledgerFile, before).apply {
+            record("/roms/neogeocd/Miss.cue", neogeocd, ScanLedger.State.NOT_FOUND, 10, 20, now = 1000)
+            record("/roms/neogeocd/Miss.chd", neogeocd, ScanLedger.State.NOT_FOUND, 10, 20, now = 1000, extension = "chd")
+            save { f, text -> BridgePaths.writeAtomic(f, text) }
+        }
+        val same = ScanLedger(ledgerFile, before)
+        assertNotNull(same.canSkip("/roms/neogeocd/Miss.cue", neogeocd, 10, 20, now = 1000))
+        assertNotNull(same.canSkip("/roms/neogeocd/Miss.chd", neogeocd, 10, 20, now = 1000, extension = "chd"))
+        val withTheRow = ScanLedger(ledgerFile, after)
+        assertNull(withTheRow.canSkip("/roms/neogeocd/Miss.cue", neogeocd, 10, 20, now = 1000))
+        assertNull(withTheRow.canSkip("/roms/neogeocd/Miss.chd", neogeocd, 10, 20, now = 1000, extension = "chd"))
+    }
+
     // ── The file's collection ───────────────────────────────────────────────
 
     // A verdict is on a file of the collection it was in. The folder may be

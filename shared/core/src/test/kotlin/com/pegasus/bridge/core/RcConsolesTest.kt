@@ -228,6 +228,9 @@ class RcConsolesTest {
             "mastersystem" to 11, "sms" to 11, "gamegear" to 15, "gg" to 15, "sg1000" to 33,
             "pcengine" to 8, "tg16" to 8, "pcenginecd" to 76, "tgcd" to 76, "pcfx" to 49,
             "jaguar" to 17, "atarijaguar" to 17, "lynx" to 13, "atarilynx" to 13,
+            // The two consoles of discs that had no row: each folder is its
+            // console, and the Neo Geo CD is not the arcade board.
+            "jaguarcd" to 77, "atarijaguarcd" to 77, "neogeocd" to 56, "neogeocdjp" to 56,
             "atari2600" to 25, "atari7800" to 51, "wii" to 19, "gc" to 16, "gamecube" to 16, "ngc" to 16,
             "adam" to 44, "colecovision" to 44, "amstradcpc" to 37, "cpc" to 37, "apple2" to 38,
             "arcadia" to 73, "arduboy" to 71, "c64" to 30, "commodore64" to 30, "channelf" to 57,
@@ -325,6 +328,11 @@ class RcConsolesTest {
         assertEquals(setOf(11, 15, 33), family("mastersystem", "gamegear"))
         assertEquals(setOf(5, 4, 6), family("gba", "gb"))
         assertEquals(setOf(8, 76), family("pcengine", "pcenginecd"))
+        // A folder of Jaguar CD games in a collection that calls itself
+        // `jaguar` holds discs first, and a cartridge there is no stray.
+        assertEquals(77, console("jaguar", "atarijaguarcd"))
+        assertEquals(setOf(17, 77), family("jaguar", "atarijaguarcd"))
+        assertEquals(setOf(77), family("atarijaguarcd", "atarijaguarcd"))
         val narrowed = RcConsoles.resolve("megadrive", "sega32x") as RcConsoles.Hashable
         assertEquals(RcConsoles.row("sega32x"), narrowed.copy(family = setOf(10)))
         assertEquals("sega32x=10 family[1,9,10,11,15,33]", RcConsoles.describe(narrowed))
@@ -340,6 +348,14 @@ class RcConsolesTest {
         val ngpc = RcConsoles.resolve("ngpc", "neogeo") as RcConsoles.Hashable
         assertEquals(14, ngpc.console)
         assertTrue(!ngpc.arcade, "a folder called neogeo that declares ngpc is not an arcade collection")
+        // Nor is a Neo Geo CD collection one, in a folder of either name:
+        // the arcade board and the console share a name and no file.
+        for (name in listOf("neogeocd", "neogeocdjp", "Neo Geo CD")) {
+            val neogeocd = RcConsoles.resolve(name, name) as RcConsoles.Hashable
+            assertEquals(56, neogeocd.console, name)
+            assertTrue(!neogeocd.arcade, "$name is an arcade collection")
+        }
+        assertEquals(56, console("neogeocd", "neogeo"))
         // And it never turns a collection that is refused into one that is hashed, or the reverse.
         assertTrue(RcConsoles.resolve("vita", "psvita") is RcConsoles.NotOnRa)
         assertTrue(RcConsoles.resolve("switch", "nes") is RcConsoles.NotOnRa)
@@ -364,6 +380,8 @@ class RcConsolesTest {
                      "size[bin+img>33554432:9]", RcConsoles.describe(RcConsoles.row("megadrive")))
         assertEquals("wii=19 family[16,19] ext[gcm:16] alt[iso:16]", RcConsoles.describe(RcConsoles.row("wii")))
         assertEquals("neogeo=27 family[27] arcade", RcConsoles.describe(RcConsoles.row("neogeo")))
+        assertEquals("neogeocd=56 family[56]", RcConsoles.describe(RcConsoles.row("neogeocdjp")))
+        assertEquals("jaguarcd=77 family[77]", RcConsoles.describe(RcConsoles.row("atarijaguarcd")))
         assertEquals("3ds=62 no algorithm", RcConsoles.describe(RcConsoles.row("n3ds")))
         assertEquals("psvita not on RetroAchievements", RcConsoles.describe(RcConsoles.row("vita")))
 

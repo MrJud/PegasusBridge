@@ -981,6 +981,44 @@ class RomScanPipelineTest {
         }
     }
 
+    // The two consoles of discs whose folders had no row, and were left to
+    // rcheevos' guess. A Neo Geo CD image is handed over as console 56, in
+    // the folder of either name ES-DE keeps, and never as the arcade set a
+    // `neogeo` folder holds. A Jaguar CD .chd is outside the consoles a .chd
+    // is read as: it is turned away by its name, kept so, and not opened.
+    // Nothing in either folder is guessed for any more.
+    @Test fun `a Neo Geo CD image is hashed as its console and a Jaguar CD chd is refused by name`(): Unit = runBlocking {
+        class Told : RomHasher {
+            val consoles = java.util.concurrent.ConcurrentHashMap<String, Int>()
+            val guessed = java.util.concurrent.ConcurrentLinkedQueue<String>()
+            override fun hash(path: String): HashResult? { guessed += File(path).name; return null }
+            override fun hashForConsole(path: String, consoleId: Int): HashOutcome {
+                consoles[File(path).parentFile.name + "/" + File(path).name] = consoleId
+                return HashOutcome.Ok(HashResult("hash-of-" + File(path).name, consoleId))
+            }
+        }
+        rom("neogeocd", "Lantern Keep (World).chd", "x")
+        rom("neogeocdjp", "Lantern Keep (Japan).chd", "x")
+        rom("neogeocd", "Lantern Keep (World).iso", "x")
+        val refused = rom("atarijaguarcd", "Paper Orbit (World).chd", "x")
+        val tmp = Files.createTempDirectory("hasher-tmp").toFile()
+        try {
+            val h = Told()
+            val s = RomScanPipeline(paths, ArchiveAwareHasher(h, tmp), MapLookup(emptyMap()), throttleMs = { 0L })
+                .scan(listOf(romRoot.absolutePath))
+
+            assertEquals(mapOf("neogeocd/Lantern Keep (World).chd" to 56, "neogeocdjp/Lantern Keep (Japan).chd" to 56,
+                               "neogeocd/Lantern Keep (World).iso" to 56),
+                         h.consoles.toMap())
+            assertEquals(emptyList(), h.guessed.toList(), "files left to rcheevos' guess")
+            assertEquals(mapOf(ScanLedger.State.NOT_FOUND to 3, ScanLedger.State.UNSUPPORTED_FORMAT to 1), s.states)
+            assertEquals("a .chd is read as a disc of nine consoles, and console 77 is not one of them",
+                         ledgerEntry(refused).getString("detail"))
+        } finally {
+            tmp.deleteRecursively()
+        }
+    }
+
     // And it is the short name wherever the folder says nothing more: a
     // folder called anything at all, and one named for a console that is not
     // of the short name's family, which the short name is taken to know

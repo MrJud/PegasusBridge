@@ -184,8 +184,11 @@ console would hash the container's bytes, and the PC-FX and the Jaguar CD ask
 for tracks in ways nothing has held against a disc. In a collection nothing is
 known of, rcheevos tries the `.chd` as each console it knows one of, and a hash
 it gives under a console outside the nine is a failure that is kept
-(`rcheevos takes this .chd for console 49, ...`). There is no row for a
-collection of Neo Geo CD games, so those are hashed by that guess. What the
+(`rcheevos takes this .chd for console 49, ...`). A folder of Neo Geo CD
+games has a row (`neogeocd`, and `neogeocdjp` as ES-DE keeps the Japanese
+one), which is the console and not the arcade board of `neogeo`, and so has
+one of Jaguar CD games (`jaguarcd`, `atarijaguarcd`), whose `.chd` is turned
+away by its name like any other outside the nine. What the
 reader refuses in a collection that is known is `UNHASHABLE` with the reader's
 reason in its detail, which begins `CHD:`: a version before 5, a difference
 against a parent image, a hunk that cannot be read (the image is cut short or

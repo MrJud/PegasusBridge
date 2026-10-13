@@ -307,12 +307,25 @@ object RcConsoles {
         hashable("pcfx", 49),
         // ── Atari ──
         hashable("jaguar", 17, "atarijaguar", family = setOf(17, 77), byExtension = mapOf("cue" to 77)),
+        // A folder of Jaguar CD games alone, as ES-DE keeps one. With no row
+        // its files were left to rcheevos' guess, which tries a `.cue` as
+        // eight other consoles before this one. The row says nothing of a
+        // `.chd`, which so stays what it is under `jaguar`: outside the
+        // consoles one is read as, and turned away by its name.
+        hashable("jaguarcd", 77, "atarijaguarcd"),
         hashable("lynx", 13, "atarilynx"),
         hashable("atari2600", 25),
         hashable("atari7800", 51),
         // ── SNK ──
         hashable("ngp", 14),
         hashable("ngpc", 14),
+        // The console, and not the arcade board `neogeo` is the row of
+        // further down: its games are discs, hashed by what is on them.
+        // ES-DE keeps a second folder under the Japanese name. Left to the
+        // guess, a `.chd` here was opened as the discs of up to nine other
+        // consoles before this one, and one the reader refuses was tried
+        // again at every scan.
+        hashable("neogeocd", 56, "neogeocdjp"),
         // ── The rest ──
         hashable("3do", 43),
         // The Adam ran ColecoVision cartridges. Console 44 is the MD5 of the

@@ -116,6 +116,10 @@ class ChooseConsoleTest {
             Case("saturn", "x.chd", hash(39)),
             Case("dreamcast", "x.chd", hash(40)),
             Case("3do", "x.chd", hash(43)),
+            Case("neogeocd", "x.chd", hash(56)),
+            Case("neogeocdjp", "x.chd", hash(56)),
+            Case("neogeocdjp", "x.cue", hash(56)),
+            Case("neogeocd", "x.iso", hash(56)),
             // And of no other: a cartridge console would hash the bytes of
             // the container, and the PC-FX and the Jaguar CD ask for tracks
             // in ways the reader has not been held to.
@@ -124,6 +128,12 @@ class ChooseConsoleTest {
             Case("wii", "x.chd", UNSUPPORTED_FORMAT),
             Case("pcfx", "x.chd", UNSUPPORTED_FORMAT),
             Case("atarijaguar", "x.chd", UNSUPPORTED_FORMAT),
+            // A folder of Jaguar CD games is that console for its sheets,
+            // and its .chd is turned away as under `jaguar`.
+            Case("atarijaguarcd", "x.cue", hash(77)),
+            Case("jaguarcd", "x.cue", hash(77)),
+            Case("atarijaguarcd", "x.chd", UNSUPPORTED_FORMAT),
+            Case("jaguarcd", "X.CHD", UNSUPPORTED_FORMAT, insideArchive = true),
             Case("nes", "x.chd", UNSUPPORTED_FORMAT, insideArchive = true),
             Case("psp", "x.iso", hash(41)),
             Case("psp", "x.cso", UNSUPPORTED_FORMAT),
@@ -238,6 +248,7 @@ class ChooseConsoleTest {
         assertEquals("a .chd is read as a disc of nine consoles, and console 49 is not one of them", words("pcfx", "CHD"))
         assertEquals("a .chd is read as a disc of nine consoles, and console 77 is not one of them",
                      words("atarijaguar", "chd"))
+        assertEquals(words("atarijaguar", "chd"), words("atarijaguarcd", "chd"))
         assertEquals("an arcade set is a .zip or a .7z, and this is a .bin", words("arcade", "bin"))
         assertEquals("an arcade set is a .zip or a .7z, and this is a .chd", words("arcade", "chd"))
         assertEquals("an arcade set inside an archive has lost its name", words("arcade", "zip", insideArchive = true))

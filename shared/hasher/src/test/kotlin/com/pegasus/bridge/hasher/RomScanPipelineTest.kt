@@ -8,6 +8,7 @@ import com.pegasus.bridge.core.StderrLog
 import com.sun.net.httpserver.HttpServer
 import kotlinx.coroutines.runBlocking
 import org.json.JSONObject
+import org.junit.jupiter.api.Assumptions.assumeTrue
 import java.io.File
 import java.net.InetSocketAddress
 import java.nio.file.Files
@@ -597,7 +598,7 @@ class RomScanPipelineTest {
         stub("nes", "Nothing (World).nes", "")
         stub("nes", "Not Here Yet (World).nes")
         rom("switch", "Game.nes", "hash-switch")
-        rom("wii", "Game.wbfs", "never read")
+        rom("ps2", "Game.chd", "never read")
         zip("nes", "Two Games.zip", "first.nes" to "hash-first", "second.nes" to "hash-second")
         zip("nes", "Patch.zip", "Patch.ips" to "x".repeat(64), "readme.txt" to "x")
         zip("psx", "Disc.zip", "Disc.ccd" to "[CloneCD]", "Disc.img" to "x".repeat(4096))
@@ -1119,7 +1120,7 @@ class RomScanPipelineTest {
             rom("n3ds", "x.cci", "never read")
                 to "rcheevos' algorithm for RC_CONSOLE_NINTENDO_3DS (id 62) is not built in: it needs decryption keys")
         val unsupportedFormat = mapOf(
-            rom("wii", "x.wbfs", "never read") to ".wbfs is a format this build has no reader for",
+            rom("gc", "x.rvz", "never read") to ".rvz is a format rcheevos does not read",
             rom("ps2", "x.chd", "never read") to ".chd is a format this build has no reader for",
             rom("psp", "x.cso", "never read") to ".cso is a format rcheevos does not read",
             rom("arcade", "chip.bin", "never read") to "an arcade set is a .zip or a .7z, and this is a .bin",
@@ -1573,7 +1574,7 @@ class RomScanPipelineTest {
         val stubs = listOf(stub("psp", "Not Here Yet.cso"), stub("dreamcast", "Not Here Yet.cdi"),
                            stub("wii", "Not Here Yet.wbfs"), stub("ps2", "Not Here Yet.chd"),
                            stub("arcade", "nothere.bin"), stub("psx", "Not Here Yet.pbp"))
-        val images = listOf(rom("psp", "Small And Real.cso", "CISO"), rom("wii", "Small And Real.wbfs", "WBFS"))
+        val images = listOf(rom("psp", "Small And Real.cso", "CISO"), rom("ps2", "Small And Real.chd", "MComprHD"))
         val notes = stub("psp", "launcher.cfg", "kept beside the games")
         val expected = counts(new = 0, cached = 0, skipped = 6, unmatched = 0, incompatible = 0,
                               hashFailed = 3, failedLookups = 0)
@@ -1589,7 +1590,7 @@ class RomScanPipelineTest {
             assertEquals("PLACEHOLDER" to "text file, ${f.length()} bytes: not a ROM image",
                          ledgerEntry(f).let { it.getString("state") to it.getString("detail") }, f.path)
         }
-        assertEquals(listOf(".cso is a format rcheevos does not read", ".wbfs is a format this build has no reader for",
+        assertEquals(listOf(".cso is a format rcheevos does not read", ".chd is a format this build has no reader for",
                             "a .cfg file is not a game"),
                      (images + notes).map { ledgerEntry(it).getString("detail") })
 
@@ -1603,6 +1604,178 @@ class RomScanPipelineTest {
         assertEquals(expected, s2.counts())
         assertEquals(states, s2.states)
         assertEquals("PLACEHOLDER", ledgerEntry(unread).getString("state"), "a stub that stood was opened again")
+    }
+
+    // ── .wbfs ───────────────────────────────────────────────────────────────
+
+    /** [ContentHasher] as the Wii, with a word to say of every .wbfs it hashes, and what it was handed. */
+    private class NotedHasher(private val caveat: String) : RomHasher {
+        val handed: MutableList<String> = java.util.Collections.synchronizedList(mutableListOf())
+        override fun hash(path: String): HashResult? {
+            val f = File(path)
+            handed += f.name
+            return HashResult(f.readText().removeSuffix(NUL).trim(), 19,
+                              caveat = if (f.extension == "wbfs") caveat else "")
+        }
+    }
+
+    // The build before this one turned every .wbfs away by its name, and
+    // kept that for a season. Taking the extension off the list of what is
+    // turned away is not enough: the old verdict is then found standing and
+    // the file is not read. And a number raised for every file would have
+    // the whole library read again. The reader is in the number of a .wbfs
+    // and of nothing else, so the ledger an older build left is believed
+    // for every other file and not for that one.
+    @Test fun `a wbfs an older build would not read is hashed at the next scan and nothing else is`(): Unit = runBlocking {
+        val disc = rom("wii", "Disc.wbfs", "hash-wbfs")
+        val image = rom("wii", "Image.iso", "hash-iso")
+        val cartridge = rom("nes", "Cartridge.nes", "hash-nes")
+        val recipe = HashRecipe("none")
+        val wii = recipe.versionFor(CollectionRef.inferred("wii"))
+        val nes = recipe.versionFor(CollectionRef.inferred("nes"))
+        val now = BridgePaths.epochSeconds()
+        fun entry(f: File, state: String, version: Int, detail: String = "") = JSONObject()
+            .put("state", state).put("checkedAt", now).put("fileSize", f.length())
+            .put("lastModified", f.lastModified()).put("algorithmVersion", version).put("detail", detail)
+        File(paths.cache, ScanLedger.FILE_NAME).writeText(JSONObject()
+            .put("schemaVersion", ScanLedger.SCHEMA_VERSION).put("algorithmVersion", recipe.versionFor(null))
+            .put("entries", JSONObject()
+                .put(disc.canonicalPath, entry(disc, "UNSUPPORTED_FORMAT", wii,
+                                               ".wbfs is a format this build has no reader for"))
+                .put(image.canonicalPath, entry(image, "NOT_FOUND", wii))
+                .put(cartridge.canonicalPath, entry(cartridge, "NOT_FOUND", nes)))
+            .toString())
+
+        val h = NotedHasher(""); val l = MixedLookup()
+        val s = pipeline(h, l).scan(listOf(romRoot.absolutePath))
+
+        assertEquals(listOf("Disc.wbfs"), h.handed.toList(), "the files read")
+        assertEquals(listOf("hash-wbfs"), l.asked.toList(), "the hashes asked about")
+        assertEquals(counts(new = 0, cached = 0, skipped = 0, unmatched = 3, incompatible = 0,
+                            hashFailed = 0, failedLookups = 0), s.counts())
+        assertEquals("NOT_FOUND", ledgerEntry(disc).getString("state"))
+        assertEquals(recipe.versionFor(CollectionRef.inferred("wii"), "wbfs"), ledgerEntry(disc).getInt("algorithmVersion"))
+        assertEquals(wii, ledgerEntry(image).getInt("algorithmVersion"))
+        assertEquals(nes, ledgerEntry(cartridge).getInt("algorithmVersion"))
+
+        val h2 = NotedHasher(""); val l2 = MixedLookup()
+        pipeline(h2, l2).scan(listOf(romRoot.absolutePath))
+        assertEquals(emptyList(), h2.handed.toList(), "read a second time")
+        assertEquals(emptyList(), l2.asked.toList(), "asked about a second time")
+    }
+
+    // The ledger knows a file by where it really lies, and the plan and the
+    // hasher go by the name the walk found it under. For a link the two can
+    // end otherwise: a disc kept as Disc.img, and a link to it called
+    // Disc.wbfs in the library. The build before turned that away by the
+    // link's name and kept it under the number of the collection, which by
+    // the name the file lies under is its number still. So the scan tells
+    // the ledger the name it went by, when it asks and when it records: the
+    // old verdict does not stand for this file either, and the new one does.
+    @Test fun `a wbfs that is a link to a file of another name is hashed at the next scan too`(): Unit = runBlocking {
+        val store = Files.createTempDirectory("hasher-store").toFile()
+        try {
+            val lying = File(store, "Disc.img").apply { writeText(romText("hash-linked")) }
+            val link = File(File(romRoot, "wii").apply { mkdirs() }, "Disc.wbfs")
+            try {
+                Files.createSymbolicLink(link.toPath(), lying.toPath())
+            } catch (e: Exception) {
+                assumeTrue(false, "Symbolic links are unavailable: ${e.message}")
+            }
+            val recipe = HashRecipe("none")
+            val wii = CollectionRef.inferred("wii")
+            File(paths.cache, ScanLedger.FILE_NAME).writeText(JSONObject()
+                .put("schemaVersion", ScanLedger.SCHEMA_VERSION).put("algorithmVersion", recipe.versionFor(null))
+                .put("entries", JSONObject().put(lying.canonicalPath, JSONObject()
+                    .put("state", "UNSUPPORTED_FORMAT").put("checkedAt", BridgePaths.epochSeconds())
+                    .put("fileSize", lying.length()).put("lastModified", lying.lastModified())
+                    .put("algorithmVersion", recipe.versionFor(wii))
+                    .put("detail", ".wbfs is a format this build has no reader for")))
+                .toString())
+
+            val h = NotedHasher(""); val l = MixedLookup()
+            pipeline(h, l).scan(listOf(romRoot.absolutePath))
+
+            assertEquals(listOf("Disc.wbfs"), h.handed.toList(), "the files read")
+            assertEquals(listOf("hash-linked"), l.asked.toList(), "the hashes asked about")
+            assertEquals("NOT_FOUND" to recipe.versionFor(wii, "wbfs"),
+                         ledgerEntry(lying).let { it.getString("state") to it.getInt("algorithmVersion") })
+
+            val h2 = NotedHasher("")
+            pipeline(h2, MixedLookup()).scan(listOf(romRoot.absolutePath))
+            assertEquals(emptyList(), h2.handed.toList(), "read a second time")
+        } finally {
+            store.deleteRecursively()
+        }
+    }
+
+    // A copy with blocks left out hashes to what Dolphin sends for it, which
+    // is not the disc's hash. Where the lists do not have it the verdict is
+    // the miss it would be for Dolphin, and the reason goes with it, which a
+    // miss otherwise has none of: whoever reads the ledger or an audit's
+    // table is to see a copy that was cut down and not a game nobody has
+    // made achievements for.
+    @Test fun `a scrubbed copy the lists do not know is a miss that says so`(): Unit = runBlocking {
+        val note = RcheevosNative.wbfsCaveat(33_239_859, 30_513_562)
+        assertTrue(note.startsWith(RcheevosNative.SCRUBBED), note)
+        val disc = rom("wii", "Disc.wbfs", "hash-scrubbed")
+
+        val s = pipeline(NotedHasher(note), MixedLookup()).scan(listOf(romRoot.absolutePath))
+
+        assertEquals(counts(new = 0, cached = 0, skipped = 0, unmatched = 1, incompatible = 0,
+                            hashFailed = 0, failedLookups = 0), s.counts())
+        assertEquals("NOT_FOUND" to note, ledgerEntry(disc).let { it.getString("state") to it.getString("detail") })
+    }
+
+    // A copy made the same way by whoever added it to RetroAchievements
+    // gives the same bytes, so the hash is looked up like any other and may
+    // be there. Then it is that game, and the note has nothing to add.
+    @Test fun `a scrubbed copy the lists know is a match like any other`(): Unit = runBlocking {
+        val disc = rom("wii", "Disc.wbfs", "hash-match-7")
+
+        val s = pipeline(NotedHasher(RcheevosNative.wbfsCaveat(100, 100)), MixedLookup())
+            .scan(listOf(romRoot.absolutePath))
+
+        assertEquals(counts(new = 1, cached = 0, skipped = 0, unmatched = 0, incompatible = 0,
+                            hashFailed = 0, failedLookups = 0), s.counts())
+        val kept = ledgerEntry(disc)
+        assertEquals(Triple("MATCHED", 2007, ""),
+                     Triple(kept.getString("state"), kept.getInt("gameId"), kept.optString("detail")))
+        assertTrue(paths.metadata("2007").isFile, "the game's metadata file")
+    }
+
+    @Test fun `a miss of any other file has no detail`(): Unit = runBlocking {
+        val image = rom("wii", "Image.iso", "hash-iso")
+        val cartridge = rom("nes", "Cartridge.nes", "hash-nes")
+
+        pipeline(NotedHasher("a word that is for a .wbfs alone"), MixedLookup()).scan(listOf(romRoot.absolutePath))
+
+        for (f in listOf(image, cartridge)) {
+            assertEquals("NOT_FOUND" to "", ledgerEntry(f).let { it.getString("state") to it.optString("detail") }, f.name)
+        }
+    }
+
+    // An archive's entry is copied out to be hashed, and a .wbfs is several
+    // GiB of that. A disc that is split has left its other files outside
+    // the copy as well, so the reader would call it a file to try again and
+    // the archive would be unpacked at every scan. It is turned away by the
+    // entry's name, as it was while there was no reader, and kept so.
+    @Test fun `a zip whose one entry is a wbfs is turned away without being unpacked`(): Unit = runBlocking {
+        val packed = zip("wii", "Disc.zip", "Disc.wbfs" to "x".repeat(4096))
+        val tmp = Files.createTempDirectory("hasher-tmp").toFile()
+        try {
+            val h = ContentHasher()
+            val s = RomScanPipeline(paths, ArchiveAwareHasher(h, tmp), NeverAsked(), throttleMs = { 0L })
+                .scan(listOf(romRoot.absolutePath))
+
+            assertEquals(mapOf(ScanLedger.State.UNSUPPORTED_FORMAT to 1), s.states)
+            assertEquals(0, h.calls.get(), "something out of the archive was handed to rcheevos")
+            assertEquals(emptyList(), tmp.walkTopDown().filter { it.isFile }.toList(), "copied out of the archive")
+            assertEquals("'Disc.wbfs' in the archive: a .wbfs inside an archive is not unpacked",
+                         ledgerEntry(packed).getString("detail"))
+        } finally {
+            tmp.deleteRecursively()
+        }
     }
 
     // A size of no bytes is also what the system answers for a file that

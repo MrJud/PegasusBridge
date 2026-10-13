@@ -195,6 +195,46 @@ class NativeWbfsTest {
                      native.hashForConsole(path.toString(), WII))
     }
 
+    // ------------------------------------------------------------- a scan
+
+    // What a scan hands the hasher: the file and its collection, and the
+    // plan made from those two is what reaches the library. A .wbfs is the
+    // Wii's in a Wii folder, in another console's and in one nothing is
+    // known of, where rcheevos left to guess would take the extension for a
+    // Game Boy cartridge and hash the container's bytes. A part that is
+    // missing is a failure to try again at the next scan, since it may be
+    // on its way; a container that is spoiled is one to keep, and is not
+    // read again until it changes.
+    @Test
+    fun `a wbfs in a library goes to the reader, and only a missing part is tried again`() {
+        val container = wbfs(blocksOf(disc))
+        val expected = hashOfIso("Disc.iso", disc)
+        val scan = ArchiveAwareHasher(native, File(dir, "tmp"))
+        fun inFolder(folder: String, name: String, bytes: ByteArray) =
+            File(dir, "$folder/$name").apply { parentFile.mkdirs(); writeBytes(bytes) }
+
+        for (folder in listOf("wii", "ps2", "somefolder")) {
+            val file = inFolder(folder, "Disc.wbfs", container)
+            val result = ok(scan.hashDetailed(file.path, CollectionRef.inferred(folder)))
+            assertEquals(expected to WII, result.hash to result.consoleId, "under $folder")
+            assertEquals("", result.caveat, "under $folder")
+        }
+
+        val scrubbed = inFolder("wii", "Half.wbfs", wbfs(blocksOf(disc) - 12))
+        assertTrue(ok(scan.hashDetailed(scrubbed.path, CollectionRef.inferred("wii"))).caveat.isNotEmpty(),
+                   "the note comes through the hasher a scan uses")
+
+        val lone = inFolder("wii", "Lone.wbfs", container.copyOf(container.size / 2))
+        val missing = assertIs<HashOutcome.Failed>(scan.hashDetailed(lone.path, CollectionRef.inferred("wii")))
+        assertTrue(missing.retryable, missing.reason)
+        assertTrue("Could not open part .wbf1" in missing.reason, missing.reason)
+
+        val spoiled = inFolder("wii", "Spoiled.wbfs", container.copyOf().also { it[9] = 3 })
+        val refused = assertIs<HashOutcome.Failed>(scan.hashDetailed(spoiled.path, CollectionRef.inferred("wii")))
+        assertFalse(refused.retryable, refused.reason)
+        assertTrue("a block of 2^3 bytes" in refused.reason, refused.reason)
+    }
+
     // ------------------------------------------------------------- threads
 
     // rcheevos' callback for opening a file is given a path and nothing

@@ -205,6 +205,9 @@ class ScanAuditTest {
         rom("snes/Known.sfc", "hash-known")
         assertEquals(0, audit())
         assertEquals("# recipe\t" + HashRecipe("none").global, out.readLines().first())
+        // And after it the readers of our own, which that line does not
+        // count: it is every file's, and a reader is for the files it reads.
+        assertEquals("# readers\twbfs1", out.readLines()[1])
 
         val named = object : RomHasher {
             override val engine: String get() = "made up 1.0"

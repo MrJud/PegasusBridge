@@ -1,6 +1,7 @@
 package com.pegasus.bridge.hasher
 
 import com.pegasus.bridge.core.RcConsoles
+import java.util.Locale
 import java.util.concurrent.ConcurrentHashMap
 import java.util.zip.CRC32
 
@@ -24,6 +25,11 @@ import java.util.zip.CRC32
  * names, its row in the console table, the extensions it declares. A table
  * that gains an entry changes the number by itself, for every collection or
  * for the one whose row it is, and nobody has to remember to.
+ *
+ * One thing holds for the files of one extension and no other: a reader of
+ * our own in the library ([READERS]). It is in the number of the files it
+ * reads, so that a build that gains one, or reads otherwise, has those
+ * files looked at again and leaves the rest of the library as it stands.
  *
  * What cannot be read off a table is the code that uses them, and for that
  * a number is still raised by hand, [RULES].
@@ -64,7 +70,10 @@ class HashRecipe internal constructor(
      *   long a sheet and a track's name may be ([DescriptorSet]), and how
      *   far into a playlist its first entry is looked for
      *   ([PlaylistReader.READ_LIMIT]);
-     * - `deny`: the three lists of files nobody hashes ([ConsoleChoice]);
+     * - `deny`: the three lists of files nobody hashes ([ConsoleChoice]),
+     *   the second with the extensions of [READERS] still in it, as they
+     *   were while this build had no reader for them: taken out, the line
+     *   would be another, and every verdict of every library with it;
      * - `containers`: [CONTAINERS];
      * - `ph`: [PLACEHOLDERS], and what [PlaceholderRule] goes by.
      */
@@ -84,7 +93,7 @@ class HashRecipe internal constructor(
             " playlist<=${PlaylistReader.READ_LIMIT}"),
         "deny=" + crc(
             "always[" + ConsoleChoice.DENIED_ALWAYS.sorted().joinToString(",") + "]" +
-            " build[" + ConsoleChoice.DENIED_THIS_BUILD.sorted().joinToString(",") + "]" +
+            " build[" + (ConsoleChoice.DENIED_THIS_BUILD + READERS.keys).sorted().joinToString(",") + "]" +
             " not[" + ConsoleChoice.NOT_A_ROM.sorted().joinToString(",") + "]"),
         "containers=$CONTAINERS",
         "ph=$PLACEHOLDERS,${PlaceholderRule.TEXT_LIMIT}," + crc(PlaceholderRule.TEXT_BY_NATURE.sorted().joinToString(","))
@@ -93,8 +102,12 @@ class HashRecipe internal constructor(
     /** The number of [global] alone: what the ledger's own header carries. */
     private val ofNoCollection = fold(checksum(global))
 
-    /** Worked out once for a collection: a scan asks for every file of it, and for most of them twice. */
-    private val known = ConcurrentHashMap<CollectionRef, Int>()
+    /**
+     * Worked out once for a collection and what reads the file, which is no
+     * reader of ours for nearly all of them: a scan asks for every file of
+     * the collection, and for most of them twice.
+     */
+    private val known = ConcurrentHashMap<Pair<CollectionRef?, String>, Int>()
 
     /**
      * The number a verdict on a file of [collection] is kept under, or with
@@ -114,12 +127,21 @@ class HashRecipe internal constructor(
      * reached once through a link and once through what the link points at
      * can so have two numbers, and is then read again each time the way
      * changes.
+     *
+     * [extension] is the file's own, in any case and without the dot. For
+     * one a reader of ours reads ([READERS]) the number has the reader in
+     * it, with a collection and without one; for every other file, and for
+     * a caller that names none, the number is what it was before there
+     * were readers.
      */
-    fun versionFor(collection: CollectionRef?): Int {
-        if (collection == null) return ofNoCollection
-        return known.computeIfAbsent(collection) {
-            fold(checksum(listOf(global, it.shortName, it.dirName, describeRow(it),
-                                 it.declaredExtensions.sorted().joinToString(",")).joinToString("|")))
+    fun versionFor(collection: CollectionRef?, extension: String = ""): Int {
+        val reader = readerOf(extension)
+        if (collection == null && reader.isEmpty()) return ofNoCollection
+        return known.computeIfAbsent(collection to reader) {
+            val parts = if (collection == null) listOf(global)
+                        else listOf(global, collection.shortName, collection.dirName, describeRow(collection),
+                                    collection.declaredExtensions.sorted().joinToString(","))
+            fold(checksum((parts + listOfNotNull(reader.takeIf { it.isNotEmpty() })).joinToString("|")))
         }
     }
 
@@ -145,12 +167,35 @@ class HashRecipe internal constructor(
         const val RULES = 6
 
         /**
-         * The readers this build has for the two packed formats it could
-         * read and does not: none of either. A build that gains one writes
-         * its number here, and a later one that reads the format otherwise
-         * raises it.
+         * Frozen as it stood when this build had no reader for either
+         * packed format. A reader was to write its number here, and that
+         * would have redone every verdict of every collection for the sake
+         * of one extension: this text is in [global], of which a character
+         * changed is another number for every file there is. Readers are
+         * counted in [READERS] and nothing here moves again.
          */
         const val CONTAINERS = "wbfs0,chd0"
+
+        /**
+         * The readers of our own that the library has, by the extension
+         * each reads, and the turn each is at: what the library's version
+         * says after its slash ([RcheevosNative.EXPECTED_VERSION]). A file
+         * of such an extension is kept under a number with the reader in
+         * it ([versionFor]), so a reader that is new, or that comes to
+         * answer otherwise and is counted up, redoes those files and no
+         * other. Another reader is another entry, and moves nobody else's
+         * number.
+         */
+        val READERS: Map<String, Int> = mapOf("wbfs" to 1)
+
+        /** The readers on one line, for a log and for an audit's table: `wbfs1`. */
+        val readers: String = READERS.toSortedMap().entries.joinToString(",") { "${it.key}${it.value}" }
+
+        /** What the number of a file with [extension] gains, or nothing when no reader of ours reads it. */
+        private fun readerOf(extension: String): String {
+            val ext = extension.lowercase(Locale.ROOT)
+            return READERS[ext]?.let { "reader=$ext$it" }.orEmpty()
+        }
 
         /**
          * Raised with a change to what [PlaceholderRule] takes for text. A

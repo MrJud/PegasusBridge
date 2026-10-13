@@ -34,11 +34,12 @@ object ConsoleChoice {
 
     /**
      * Formats that could be read and are not by this build: `chd` needs
-     * libchdr compiled in, `wbfs` a reader of its own. Kept apart from the
-     * list above because a build that gains a reader takes its extension out
-     * of this one, and every verdict reached through it is then to be redone.
+     * libchdr compiled in. Kept apart from the list above because a build
+     * that gains a reader takes its extension out of this one, as `wbfs`
+     * was taken out, and counts the reader in [HashRecipe.READERS], which
+     * redoes the verdicts on the files of that extension and on no other.
      */
-    val DENIED_THIS_BUILD: Set<String> = setOf("chd", "wbfs")
+    val DENIED_THIS_BUILD: Set<String> = setOf("chd")
 
     /**
      * Files that are no game whatever folder they lie in: what an archive
@@ -53,6 +54,12 @@ object ConsoleChoice {
 
     /** RC_CONSOLE_ARCADE. */
     internal const val ARCADE = 27
+
+    /** RC_CONSOLE_WII. */
+    internal const val WII = 19
+
+    /** A Wii disc in a container, which the library has a reader of its own for. */
+    private const val WII_CONTAINER = "wbfs"
 
     /** The one file of an arcade collection that is hashed by its bytes. */
     private const val NEO_GEO_CARTRIDGE = "neo"
@@ -138,10 +145,22 @@ object ConsoleChoice {
         //    handed the playlist, most of rcheevos hashes its text.
         if (ext == "m3u") return Plan.ResolvePlaylist
 
-        // 6. Nothing known of the collection.
+        // 6. A .wbfs holds a Wii disc wherever it lies, in a folder nothing
+        //    is known of as well: left to guess, rcheevos has no console
+        //    for the extension and would take the file for a Game Boy
+        //    cartridge. Not one that came out of an archive, though. The
+        //    entry is several GiB to copy out, and a disc that is split has
+        //    left its other files behind: the reader would ask for them at
+        //    every scan, and the archive be unpacked again each time.
+        if (ext == WII_CONTAINER) {
+            return if (insideArchive) Plan.UnsupportedFormat("a .wbfs inside an archive is not unpacked")
+            else Plan.Hash(WII, foreign = known != null && WII !in known.family)
+        }
+
+        // 7. Nothing known of the collection.
         if (known == null) return Plan.Guess
 
-        // 7. A known collection. What the row says of the extension or the
+        // 8. A known collection. What the row says of the extension or the
         //    size comes first; then the extension's own console, when rcheevos
         //    gives it one: in the family it is simply taken, outside it the
         //    file is a stray, hashed as what it is when that can be hashed.

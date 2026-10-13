@@ -264,6 +264,9 @@ class RomScanPipeline(
         // between two builds when a scan reads a library again.
         val recipe = HashRecipe(hasher.engine)
         BridgeLog.i(TAG, "verdicts are kept under the recipe ${recipe.global}")
+        // Beside it and not in it: the line above is what every verdict is
+        // kept under, and a reader counts for the files it reads alone.
+        BridgeLog.i(TAG, "and those of the files a reader of ours reads, under ${HashRecipe.readers} as well")
         val ledger = ScanLedger(File(paths.cache, ScanLedger.FILE_NAME), recipe)
         val now = BridgePaths.epochSeconds()
 
@@ -454,7 +457,7 @@ class RomScanPipeline(
                                 failedLookups++
                                 ledger.record(canonical(job.file), job.collection, ScanLedger.State.API_RETRY,
                                               job.fileSize, job.lastModified, now,
-                                              detail = "the source did not answer")
+                                              detail = "the source did not answer", extension = job.file.extension)
                             }
                             // RA knows the dump, but only as one it does not consider playable
                             // as it is: a Virtual Console Metroid comes back as 1100001487,
@@ -484,21 +487,29 @@ class RomScanPipeline(
                                 ledger.record(canonical(job.file), job.collection, ScanLedger.State.KNOWN_UNSUPPORTED,
                                               job.fileSize, job.lastModified, now,
                                               gameId = outcome.gameId,
-                                              detail = outcome.reason.words)
+                                              detail = outcome.reason.words, extension = job.file.extension)
                             }
                             is LookupOutcome.Match -> {
                                 writeMetadata(job, outcome.game); newEntries++
                                 ledger.record(canonical(job.file), job.collection, ScanLedger.State.MATCHED,
                                               job.fileSize, job.lastModified, now,
-                                              gameId = outcome.game.gameId)
+                                              gameId = outcome.game.gameId, extension = job.file.extension)
                             }
                             // The hash is in none of the lists of the consoles it may be
                             // of, each of them read whole. A real verdict, remembered
                             // until its TTL runs out.
+                            //
+                            // With what the hasher had to say of the hash, where it said
+                            // anything: of a .wbfs, that it is not the hash of a full copy.
+                            // The verdict is the true one all the same, since Dolphin sends
+                            // the same hash and is told the same, and whoever reads the
+                            // ledger or an audit's table learns why from the detail. A
+                            // match needs no such word: the lists know that copy.
                             LookupOutcome.NotFound -> {
                                 unmatched++
                                 ledger.record(canonical(job.file), job.collection, ScanLedger.State.NOT_FOUND,
-                                              job.fileSize, job.lastModified, now)
+                                              job.fileSize, job.lastModified, now,
+                                              detail = job.hash.caveat, extension = job.file.extension)
                             }
                         }
                     }
@@ -669,12 +680,19 @@ class RomScanPipeline(
         val path        = canonical(file)
         val size        = file.length()
         val modified    = file.lastModified()
+        // Of the name the walk found, which is the one the plan below goes
+        // by and the one the hasher is handed. The ledger's key is where
+        // the file really lies, and for a link that can end otherwise:
+        // going by the key, a link named .wbfs to a file of another name
+        // would be read by the reader and kept under a number without it.
+        val extension   = file.extension
 
         // Counted with the platforms skipped, whether decided now or found
         // standing: for whoever reads the counts it is a file there was no
         // game in to look for, and not one that failed.
         suspend fun placeholder(detail: String) {
-            ledger.record(path, collection, ScanLedger.State.PLACEHOLDER, size, modified, now, detail = detail)
+            ledger.record(path, collection, ScanLedger.State.PLACEHOLDER, size, modified, now,
+                          detail = detail, extension = extension)
             resultQueue.send(ResultJob(HashJob(file, "", HashResult("", 0), collection, size, modified),
                                        preRecorded = ScanLedger.State.PLACEHOLDER))
         }
@@ -695,7 +713,8 @@ class RomScanPipeline(
         // The collection: nobody can hash for its console, whatever the
         // file. Counted as a platform skipped, as it always was.
         if (plan is ConsoleChoice.Plan.Unsupported) {
-            ledger.record(path, collection, ScanLedger.State.UNSUPPORTED, size, modified, now, detail = plan.reason)
+            ledger.record(path, collection, ScanLedger.State.UNSUPPORTED, size, modified, now,
+                          detail = plan.reason, extension = extension)
             resultQueue.send(ResultJob(HashJob(file, "", HashResult("", 0), collection, 0, 0),
                                        skipped = true))
             return
@@ -744,7 +763,7 @@ class RomScanPipeline(
         // or a `.cfg` a collection lists, is what it says and not a stub.
         if (plan is ConsoleChoice.Plan.UnsupportedFormat) {
             if (size in 1..PlaceholderRule.TEXT_LIMIT && file.extension.lowercase() !in ConsoleChoice.NOT_A_ROM) {
-                val standing = ledger.canSkip(path, collection, size, modified, now)
+                val standing = ledger.canSkip(path, collection, size, modified, now, extension = extension)
                 if (standing?.state == ScanLedger.State.PLACEHOLDER) {
                     ledger.count(path, standing)
                     resultQueue.send(ResultJob(HashJob(file, "", HashResult("", 0), collection, size, modified),
@@ -757,7 +776,7 @@ class RomScanPipeline(
                 }
             }
             ledger.record(path, collection, ScanLedger.State.UNSUPPORTED_FORMAT, size, modified, now,
-                          detail = plan.reason)
+                          detail = plan.reason, extension = extension)
             resultQueue.send(ResultJob(
                 HashJob(file, "", HashResult("", 0), collection, size, modified),
                 preRecorded = ScanLedger.State.UNSUPPORTED_FORMAT))
@@ -766,7 +785,7 @@ class RomScanPipeline(
 
         val cacheKey = FuzzyMatch.makeCacheKey(file.nameWithoutExtension, rawPlatform)
 
-        val settled = ledger.canSkip(path, collection, size, modified, now)
+        val settled = ledger.canSkip(path, collection, size, modified, now, extension = extension)
 
         // A match from a previous scan that is still standing: the file is the
         // one it was, under the number it was matched under, and the ledger
@@ -790,7 +809,8 @@ class RomScanPipeline(
             val named = meta.keyOfGame[settled.gameId]
             val vouched = named != null && (named == cacheKey || walked[named].orEmpty().any { other ->
                 val standing = ledger.canSkip(canonical(other.file), other.collection,
-                                              other.file.length(), other.file.lastModified(), now)
+                                              other.file.length(), other.file.lastModified(), now,
+                                              extension = other.file.extension)
                 standing?.state == ScanLedger.State.MATCHED && standing.gameId == settled.gameId
             })
             if (vouched) {
@@ -818,7 +838,7 @@ class RomScanPipeline(
         if (known != null && known.hash.isNotEmpty() &&
             known.fileSize == size && known.lastModified == modified) {
             ledger.record(path, collection, ScanLedger.State.MATCHED, size, modified, now,
-                          gameId = known.gameId)
+                          gameId = known.gameId, extension = extension)
             resultQueue.send(ResultJob(
                 HashJob(file, cacheKey, HashResult(known.hash, 0), collection, size, modified),
                 cached = true))
@@ -880,7 +900,7 @@ class RomScanPipeline(
                 BridgeLog.w(TAG, "${file.name}: ${outcome.candidates.size} entries could each " +
                                  "be the ROM (${outcome.candidates.take(3).joinToString(", ")})")
                 ledger.record(path, collection, ScanLedger.State.AMBIGUOUS_ARCHIVE, size, modified, now,
-                              detail = outcome.candidates.joinToString(", "))
+                              detail = outcome.candidates.joinToString(", "), extension = extension)
                 resultQueue.send(ResultJob(
                     HashJob(file, cacheKey, HashResult("", 0), collection, size, modified),
                     preRecorded = ScanLedger.State.AMBIGUOUS_ARCHIVE))
@@ -890,7 +910,8 @@ class RomScanPipeline(
                 // hash is kept for a while, or every scan would ask the same question.
                 val state = if (outcome.retryable) ScanLedger.State.HASH_FAILED
                             else ScanLedger.State.UNHASHABLE
-                ledger.record(path, collection, state, size, modified, now, detail = outcome.reason)
+                ledger.record(path, collection, state, size, modified, now,
+                              detail = outcome.reason, extension = extension)
                 resultQueue.send(ResultJob(
                     HashJob(file, cacheKey, HashResult("", 0), collection, size, modified),
                     preRecorded = state))
@@ -900,14 +921,14 @@ class RomScanPipeline(
             // archive will hold the same at the next scan.
             is HashOutcome.NoPlayableEntry -> {
                 ledger.record(path, collection, ScanLedger.State.NO_PLAYABLE_ENTRY, size, modified, now,
-                              detail = outcome.reason)
+                              detail = outcome.reason, extension = extension)
                 resultQueue.send(ResultJob(
                     HashJob(file, cacheKey, HashResult("", 0), collection, size, modified),
                     preRecorded = ScanLedger.State.NO_PLAYABLE_ENTRY))
             }
             is HashOutcome.UnsupportedFormat -> {
                 ledger.record(path, collection, ScanLedger.State.UNSUPPORTED_FORMAT, size, modified, now,
-                              detail = outcome.reason)
+                              detail = outcome.reason, extension = extension)
                 resultQueue.send(ResultJob(
                     HashJob(file, cacheKey, HashResult("", 0), collection, size, modified),
                     preRecorded = ScanLedger.State.UNSUPPORTED_FORMAT))

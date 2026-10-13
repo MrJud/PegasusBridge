@@ -349,6 +349,13 @@ object ScanAudit {
      * with ([HashRecipe.global]): the library that hashed, and a number for
      * each table a file is judged by. Two tables whose rows differ are of
      * two builds, and this line says in what the builds differ.
+     *
+     * The second is the readers of our own the library has
+     * ([HashRecipe.readers]). They are not in the recipe's line, which
+     * every verdict is kept under: a reader counts for the files it reads,
+     * and the line would otherwise say `containers=wbfs0` of a build that
+     * reads a `.wbfs` and leave whoever compares two tables to guess why
+     * those rows moved.
      */
     private fun table(recipe: String, request: Request, oracle: OracleLookup?,
                       summary: RomScanPipeline.Summary?,
@@ -356,6 +363,7 @@ object ScanAudit {
                       live: RaApiHashLookup?, rows: List<List<String>>, readByProcess: Long?): String {
         val head = mutableListOf<List<String>>()
         head += listOf("# recipe", recipe)
+        head += listOf("# readers", HashRecipe.readers)
         request.roots.forEach { head += listOf("# root", canonical(it)) }
         request.largerThan?.let { head += listOf("# skip-larger-than", it.toString()) }
         request.skip.forEach { head += listOf("# skip", canonical(it)) }

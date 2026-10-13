@@ -104,7 +104,16 @@ class ChooseConsoleTest {
             Case("wii", "x.iso", hash(19, 16)),
             Case("wii", "x.gcm", hash(16)),
             Case("wii", "x.wad", hash(19)),
-            Case("wii", "x.wbfs", UNSUPPORTED_FORMAT),
+            // A .wbfs holds a Wii disc wherever it lies, and is a stray
+            // where the Wii is not of the collection's family. Not one out
+            // of an archive, which would be several GiB copied out to read
+            // a disc whose other files may have stayed behind.
+            Case("wii", "x.wbfs", hash(19)),
+            Case("wii", "X.WBFS", hash(19)),
+            Case("gc", "x.wbfs", hash(19)),
+            Case("ps2", "x.wbfs", hash(19, foreign = true)),
+            Case("wii", "x.wbfs", UNSUPPORTED_FORMAT, insideArchive = true),
+            Case("arcade", "x.wbfs", UNSUPPORTED_FORMAT),
             Case("gc", "x.iso", hash(16, 19)),
             Case("gc", "x.gcm", hash(16)),
             Case("gc", "x.rvz", UNSUPPORTED_FORMAT),
@@ -160,7 +169,10 @@ class ChooseConsoleTest {
             Case("somefolder", "x.bin", Plan.Guess, size = 40 * MIB),
             Case("somefolder", "x.cue", Plan.Guess),
             Case("somefolder", "x.md", Plan.Guess),
-            Case("somefolder", "x.wbfs", UNSUPPORTED_FORMAT),
+            // Not guessed either: rcheevos has no console for the extension,
+            // and its guess for one it does not know is the Game Boy.
+            Case("somefolder", "x.wbfs", hash(19)),
+            Case("somefolder", "x.wbfs", UNSUPPORTED_FORMAT, insideArchive = true),
             Case("somefolder", "x.cso", UNSUPPORTED_FORMAT),
             Case("somefolder", "x.txt", UNSUPPORTED_FORMAT),
             Case("somefolder", "x.m3u", Plan.ResolvePlaylist),
@@ -196,6 +208,7 @@ class ChooseConsoleTest {
         assertEquals("an arcade set is a .zip or a .7z, and this is a .bin", words("arcade", "bin"))
         assertEquals("an arcade set inside an archive has lost its name", words("arcade", "zip", insideArchive = true))
         assertEquals("an archive inside an archive is not opened", words("nes", "7z", insideArchive = true))
+        assertEquals("a .wbfs inside an archive is not unpacked", words("wii", "wbfs", insideArchive = true))
         assertEquals("a .md file in this collection is not a Mega Drive cartridge", words("psx", "md"))
         assertEquals("rcheevos reads a .pbp only as a PSP game", words("psx", "pbp"))
         assertEquals("a .cue describes a disc, and console 3 is not hashed as one", words("snes", "cue"))
@@ -274,7 +287,7 @@ class ChooseConsoleTest {
     @Test fun `the three lists of extensions that are never hashed`() {
         assertEquals(setOf("rvz", "wia", "gcz", "ciso", "cso", "zso", "isz", "ecm", "cdi", "nrg", "nsp", "xci",
                            "nsz", "xcz", "ccd", "toc", "mds", "sub"), ConsoleChoice.DENIED_ALWAYS)
-        assertEquals(setOf("chd", "wbfs"), ConsoleChoice.DENIED_THIS_BUILD)
+        assertEquals(setOf("chd"), ConsoleChoice.DENIED_THIS_BUILD)
         assertEquals(ArchiveSelector.NEVER_THE_ROM + setOf("bml", "sbi", "lst", "elf"), ConsoleChoice.NOT_A_ROM)
         assertTrue("txt" in ConsoleChoice.NOT_A_ROM && "sav" in ConsoleChoice.NOT_A_ROM)
         // Markdown to most software and a Mega Drive cartridge here: the collection decides, not a list.

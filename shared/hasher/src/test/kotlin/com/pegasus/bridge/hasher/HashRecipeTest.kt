@@ -456,6 +456,62 @@ class HashRecipeTest {
             "number. 'rules' is for a change to the code that judges, which no table shows.")
     }
 
+    // ── The readers ─────────────────────────────────────────────────────────
+
+    // A reader of our own counts for the files it reads. In the line above
+    // it would count for every file there is, and the build that first read
+    // a .wbfs would have had every library read again for the sake of some
+    // twenty discs. So the line is what it was, to the byte, which the test
+    // above holds unedited, and the reader is in the number of a .wbfs
+    // alone: with a collection and without one, in either case of letters.
+    @Test fun `a wbfs is kept under a number of its own and no other file is`() {
+        val recipe = HashRecipe("none")
+        val wii = CollectionRef.inferred("wii")
+
+        assertNotEquals(recipe.versionFor(wii), recipe.versionFor(wii, "wbfs"))
+        assertEquals(recipe.versionFor(wii, "wbfs"), recipe.versionFor(wii, "WBFS"))
+        assertEquals(recipe.versionFor(wii), recipe.versionFor(wii, "iso"), "a file no reader of ours reads")
+        assertEquals(recipe.versionFor(wii), recipe.versionFor(wii, ""), "a file with no extension")
+        assertNotEquals(recipe.versionFor(null), recipe.versionFor(null, "wbfs"), "with no collection too")
+        assertEquals(recipe.versionFor(null), recipe.versionFor(null, "iso"))
+        assertNotEquals(recipe.versionFor(wii, "wbfs"), recipe.versionFor(CollectionRef.inferred("gc"), "wbfs"),
+                        "the collection is in the number as it is for any file")
+        assertNotEquals(recipe.versionFor(null, "wbfs"), recipe.versionFor(wii, "wbfs"))
+
+        // The ledger goes by the same: an entry written for the file under
+        // the number its collection had before there was a reader does not
+        // stand for a .wbfs, and stands for anything else.
+        val before = recipe.versionFor(wii)
+        val file = File(dataRoot, "ledger.json")
+        val entry = { path: String -> """"$path":{"state":"NOT_FOUND","checkedAt":1000,"fileSize":10,""" +
+                                      """"lastModified":20,"algorithmVersion":$before}""" }
+        file.writeText("""{"schemaVersion":${ScanLedger.SCHEMA_VERSION},"entries":{""" +
+                       entry("/roms/wii/Disc.wbfs") + "," + entry("/roms/wii/Disc.iso") + "}}")
+        val ledger = ScanLedger(file, recipe)
+        assertNotNull(ledger.canSkip("/roms/wii/Disc.iso", wii, 10, 20, now = 1000))
+        assertNull(ledger.canSkip("/roms/wii/Disc.wbfs", wii, 10, 20, now = 1000))
+        // And by the name the scan found the file under, where that is
+        // another than the one it lies under.
+        assertNull(ledger.canSkip("/roms/wii/Disc.iso", wii, 10, 20, now = 1000, extension = "wbfs"))
+        ledger.record("/roms/wii/Disc.iso", wii, ScanLedger.State.NOT_FOUND, 10, 20, now = 1000, extension = "wbfs")
+        assertNotNull(ledger.canSkip("/roms/wii/Disc.iso", wii, 10, 20, now = 1000, extension = "wbfs"))
+        assertNull(ledger.canSkip("/roms/wii/Disc.iso", wii, 10, 20, now = 1000))
+    }
+
+    // The library says which readers it has after the slash of its version,
+    // and a library that says otherwise than the Kotlin expects is not
+    // loaded. So a reader counted up in the C is a literal to change, and
+    // this is what then has the recipe follow: the files it reads are done
+    // again by the build that carries it.
+    @Test fun `the readers the library is expected to have are the ones the recipe counts`() {
+        assertEquals(RcheevosNative.EXPECTED_VERSION.substringAfter('/', ""), HashRecipe.readers)
+        assertEquals("wbfs1", HashRecipe.readers)
+        // No reader for a format that is still turned away by its name: the
+        // two lists would be saying two things of one extension.
+        assertEquals(emptySet(), HashRecipe.READERS.keys intersect
+                                 (ConsoleChoice.DENIED_THIS_BUILD + ConsoleChoice.DENIED_ALWAYS + ConsoleChoice.NOT_A_ROM))
+    }
+
     // What the `disc` part is the checksum of, written out. Three limits
     // decide what a sheet or a playlist comes to, and the third was not in
     // it: how far into a playlist its first entry is looked for. A playlist

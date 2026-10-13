@@ -7,7 +7,9 @@ Pegasus Bridge does those things on the theme's behalf and answers over a small
 local API, so a theme stays a renderer:
 
 - **RetroAchievements** — profile, per-game progress, and identifying which RA
-  game a library entry is, by ROM hash (rcheevos) with a fuzzy fallback.
+  game a library entry is, by ROM hash (rcheevos) with a fuzzy fallback. A Wii
+  disc is hashed from a `.wbfs`, split or whole, as well as from an `.iso`; a
+  `.chd` is not read.
 - **Scraping** — SteamGridDB, IGDB, IGN and Steam.
 - **Trailers** — YouTube search, stream resolution and download.
 

@@ -163,6 +163,29 @@ a hash rcheevos then gives under a console that is held back
 (`RcConsoles.HELD_BACK`: the PlayStation 3, which it tries an `.iso` as) is a
 failure that is kept, and not a hash.
 
+A `.wbfs` is a Wii disc wherever it lies, in a collection nothing is known of
+as well, and is hashed as one by the library's own reader (`pb_wbfs.c`): in a
+collection whose family the Wii is not of it is a stray, and in an arcade
+collection it is refused like any file that is no set. The container is read as
+Dolphin reads it, since RetroAchievements' hashes of Wii discs are Dolphin's.
+Its parts (`Game.wbfs`, `Game.wbf1` to `.wbf9`) have to add up to what its
+header says, to the byte; one that is missing is a file that could not be
+opened, so it is `HASH_FAILED` and tried at every scan, and a container that is
+wrong in itself is `UNHASHABLE` with the reader's reason, which begins `WBFS:`.
+A block the container does not hold is read as Dolphin reads it, which is the
+container's own first block at the same place and not zeros, so a copy with
+such blocks under what is hashed has a hash that is not the disc's. It is
+looked up all the same, and matches where somebody's copy made the same way
+is in the lists. Where it does not, it is `NOT_FOUND` with the note of
+`RcheevosNative.wbfsCaveat` as its detail: `scrubbed copy: 29.1 of 31.7 MiB
+hashed are blocks the .wbfs does not hold; RetroAchievements knows a disc by a
+full copy` when such bytes are half or more of what was hashed, and below that
+the two numbers with `not the hash of a full copy`. A miss with no detail is
+not thereby a full copy: no byte of a missing block was hashed, which is all
+that is counted. The theme is told `not_in_database` either way. A `.wbfs`
+inside an archive is not unpacked and stays `UNSUPPORTED_FORMAT`, as does a
+`.chd` anywhere, for which this build has no reader.
+
 Beside the hash a scan keeps the MD5 and CRC of the file itself (`rom.fileMd5`,
 `rom.fileCrc32`), and takes them only where the read they need costs next to
 nothing (`ArchiveAwareHasher.digestInScan`): of a loose file of at most 1 MiB,
@@ -217,11 +240,19 @@ same game. Past a change of number, or with a ledger that lost it, the match
 is taken back from the metadata file that describes that very file, by key,
 size and date, with no read and no request. A file that shares its game's
 metadata file with another, a second dump or a track beside its sheet, is not
-described by it, and is then read and looked up once. What no table shows is
+described by it, and is then read and looked up once. One thing is in the
+number of some files only: a reader of our own in the library
+(`HashRecipe.READERS`, today `wbfs1`) is in the number of the files of its
+extension, by the name the scan found the file under, and of no other. So the
+build that first reads a `.wbfs`, or a later one whose reader answers
+otherwise, has those files hashed once more and leaves every other verdict
+standing; the line all numbers share is what it was, `containers=wbfs0,chd0`
+included, which is frozen for that reason. What no table shows is
 the code that judges, and for a change to that a number in the recipe is still
 raised by hand, `HashRecipe.RULES`, with two beside it for one corner each:
 `PLACEHOLDERS` and `CONTAINERS`. The scan logs the line the numbers are made
-from, and an audit's table begins with it.
+from and the readers after it, and an audit's table begins with the two
+(`# recipe`, `# readers`).
 
 Every file a scan processes ends in one of eleven states (`ScanLedger.State`),
 which is what the ledger keeps for it and what the daemon's result counts
@@ -232,12 +263,12 @@ size, its date and its number are what they were:
 | state | what it says of the file | counter | stands for |
 | --- | --- | --- | --- |
 | `MATCHED` | a list of the source has a game for the hash | `newEntries`, or `cachedHits` when found unchanged | as long as the file does |
-| `NOT_FOUND` | every list the hash was to be looked up in was had whole, and none has it | `unmatched` | 14 days |
+| `NOT_FOUND` | every list the hash was to be looked up in was had whole, and none has it. With a detail only for a `.wbfs` of which blocks the container does not hold were hashed | `unmatched` | 14 days |
 | `KNOWN_UNSUPPORTED` | the source knows the dump and does not let it count: untested, incompatible, or in need of a patch. No scan reaches it any more, and an entry an earlier build left stands its time | `incompatible` | 30 days |
 | `API_RETRY` | a list the hash was to be looked up in could not be had | `failedLookups` | never kept |
 | `UNSUPPORTED` | its collection is of a console nobody can hash for | `skippedPlatforms` | 90 days, and decided again at every scan |
 | `PLACEHOLDER` | an empty file, or a few lines of text under a ROM's name | `skippedPlatforms` | as long as the file does |
-| `UNSUPPORTED_FORMAT` | the collection can be hashed and this file cannot: a format nobody reads, a file that is no game | `hashFailed` | 90 days, and decided again at every scan where the name says it |
+| `UNSUPPORTED_FORMAT` | the collection can be hashed and this file cannot: a format nobody reads or this build has no reader for (`.chd`; a `.wbfs` inside an archive), a file that is no game | `hashFailed` | 90 days, and decided again at every scan where the name says it |
 | `NO_PLAYABLE_ENTRY` | an archive that opened and holds no game of its collection | `hashFailed` | 30 days |
 | `AMBIGUOUS_ARCHIVE` | an archive in which several entries could each be the game | `hashFailed` | 7 days |
 | `UNHASHABLE` | the console of its collection read the file and refused it, or its archive or its disc's sheet is one nothing can be made of | `hashFailed` | 30 days |

@@ -280,15 +280,21 @@ class ScanLedger(private val file: File, private val recipe: HashRecipe = HashRe
      * and the entry has to carry that very number. So the verdict also
      * goes when the file's collection is another than it was, or is
      * described otherwise by the console table.
+     *
+     * [extension] is that of the name the scan found the file under, which
+     * says what reads it ([HashRecipe.versionFor]). [path] is where the
+     * file really lies, and for a link the two names can differ; a caller
+     * with no other name leaves it to the path's.
      */
-    fun canSkip(path: String, collection: CollectionRef, size: Long, modified: Long, now: Long): Entry? {
+    fun canSkip(path: String, collection: CollectionRef, size: Long, modified: Long, now: Long,
+                extension: String = File(path).extension): Entry? {
         // Under the same lock as [record]. The producers call both at once, and an
         // unlocked read of a HashMap another thread is resizing can come back null
         // for an entry that is there — a spurious rehash at best.
         val e = synchronized(entries) { entries[path] } ?: return null
         if (!e.state.cacheable) return null
         if (e.fileSize != size || e.lastModified != modified) return null
-        if (e.algorithmVersion != recipe.versionFor(collection)) return null
+        if (e.algorithmVersion != recipe.versionFor(collection, extension)) return null
         val ttl = e.state.retryAfterSeconds
         if (ttl != Long.MAX_VALUE && now - e.checkedAt > ttl) return null
         return e
@@ -329,7 +335,7 @@ class ScanLedger(private val file: File, private val recipe: HashRecipe = HashRe
     /**
      * Keeps [state] for [path], under the number [recipe] gives a file of
      * [collection]: the collection the scan took the file to be in when it
-     * reached the verdict.
+     * reached the verdict. [extension] as for [canSkip].
      */
     fun record(
         path: String,
@@ -339,10 +345,11 @@ class ScanLedger(private val file: File, private val recipe: HashRecipe = HashRe
         modified: Long,
         now: Long,
         gameId: Int = 0,
-        detail: String = ""
+        detail: String = "",
+        extension: String = File(path).extension
     ) {
         synchronized(entries) {
-            entries[path] = Entry(state, now, size, modified, recipe.versionFor(collection), gameId, detail)
+            entries[path] = Entry(state, now, size, modified, recipe.versionFor(collection, extension), gameId, detail)
             unsaved++
         }
         count(path, state, detail)

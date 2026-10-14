@@ -503,10 +503,11 @@ starts nothing when:
   2147483647.
 
 What the user gets is a toast, in English or Italian. *GameNative is not
-installed*. *Pegasus Bridge has no all-files access*, when that is what is
-missing, since without it every marker reads as a file that is not there. *Not a
-GameNative game*, with the file's name, for every path refused above; which of
-the reasons it was is a line in Logcat under `DataLayerRouter`.
+installed*. *GameNative could not be started*, when Android refuses the start.
+*Pegasus Bridge has no all-files access*, when that is what is missing, since
+without it every marker reads as a file that is not there. *Not a GameNative
+game*, with the file's name, for every path refused above; which of the reasons
+it was is a line in Logcat under `DataLayerRouter`.
 
 Only a `.steam` number means anything outside the install that wrote it. It is
 the `appId` the `steam-account` source below takes, which is how a theme shows

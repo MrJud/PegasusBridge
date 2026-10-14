@@ -270,7 +270,9 @@ those headers, so a theme has nothing to do, and must not add one. This is not
 authentication: any local process can still call the daemon.
 
 Android: `pegasus-data://<verb>?…` intents, with results written as JSON under
-`<dataRoot>`.
+`<dataRoot>`. A `jobId` names those files, so one that is empty, longer than
+100 characters or holds a `/` is taken as none and the job gets an id of its
+own; the theme's `prefix_time_random` ids are well inside that.
 
 ### Finding `<dataRoot>` from a theme
 

@@ -72,6 +72,18 @@ object Paths {
      */
     fun markDone(jobId: String) = done(jobId).writeText("done")
 
+    /**
+     * Whether [name], taken from a request, may name a file in one of the
+     * folders above: not empty, no longer than the daemon lets a job id be,
+     * and with no `/` and no NUL in it. Every name gets an extension here, so
+     * `.` and `..` end up as files' names; a `/` reaches out of the folder,
+     * and `jobId=../config/credentials` would write a job's answer over every
+     * key there is. A web page can send any verb, so the router holds a name
+     * to this before it comes here.
+     */
+    fun isFileName(name: String): Boolean =
+        name.isNotEmpty() && name.length <= 100 && name.none { it == '/' || it == '\u0000' }
+
     fun profile(user: String)     = File(PROFILE,    "$user.json")
     fun cache(name: String)       = File(CACHE,      name)
     fun artwork(name: String)     = File(ARTWORK,    name)

@@ -45,7 +45,12 @@ class DataLayerRouter : Activity() {
 
     private fun dispatch(uri: Uri) {
         val verb  = uri.host ?: run { finish(); return }
-        val jobId = uri.getQueryParameter("jobId") ?: java.util.UUID.randomUUID().toString()
+        // A job id names the files of the answer, so one that is not a file
+        // name of its own (Paths.isFileName) is taken as none, as the daemon
+        // takes one it cannot use. Otherwise any verb, from a web page too,
+        // could write its answer over credentials.json.
+        val jobId = uri.getQueryParameter("jobId")?.takeIf(Paths::isFileName)
+            ?: java.util.UUID.randomUUID().toString()
 
         when (verb) {
             "scan" -> {
@@ -61,7 +66,9 @@ class DataLayerRouter : Activity() {
                 })
             }
             "scrape-media" -> {
-                val gameId   = uri.getQueryParameter("gameId")   ?: return stub(jobId, verb)
+                // Names media/{gameId}.json, so held as a job id is.
+                val gameId   = uri.getQueryParameter("gameId")?.takeIf(Paths::isFileName)
+                    ?: return stub(jobId, verb)
                 val title    = uri.getQueryParameter("title")    ?: return stub(jobId, verb)
                 val platform = uri.getQueryParameter("platform") ?: ""
                 startForegroundService(Intent(this, MediaService::class.java).apply {
@@ -91,7 +98,10 @@ class DataLayerRouter : Activity() {
                 })
             }
             "refresh-ra-profile" -> {
-                val user = uri.getQueryParameter("user") ?: return stub(jobId, verb)
+                // Names profile/{user}.json and completion/{user}.json, so held
+                // as a job id is.
+                val user = uri.getQueryParameter("user")?.takeIf(Paths::isFileName)
+                    ?: return stub(jobId, verb)
                 startForegroundService(Intent(this, RaService::class.java).apply {
                     putExtra(RaService.EXTRA_VERB,   RaService.VERB_PROFILE)
                     putExtra(RaService.EXTRA_USER,   user)

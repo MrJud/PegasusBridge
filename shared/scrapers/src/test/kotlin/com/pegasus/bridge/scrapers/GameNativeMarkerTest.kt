@@ -6,6 +6,7 @@ import com.pegasus.bridge.scrapers.GameNativeLaunch.Result
 import com.pegasus.bridge.scrapers.GameNativeLaunch.Source
 import org.junit.jupiter.api.Assumptions.assumeTrue
 import java.io.File
+import java.io.RandomAccessFile
 import java.nio.file.Files
 import kotlin.test.AfterTest
 import kotlin.test.BeforeTest
@@ -346,6 +347,32 @@ class GameNativeMarkerTest {
         marker("Hollow Knight.steam")
         assertEquals(refused(MarkerRefusal.NOT_A_FILE), launch(File(games, "Not There.steam").path))
         assertEquals(refused(MarkerRefusal.NOT_A_FILE), launch(File(games, "no folder/Not There.steam").path))
+    }
+
+    // The verb reads the file on the thread the screen is drawn on, and a FIFO
+    // makes whoever opens it wait: for a writer, and then for what it writes.
+    // So one is refused for what it is, and nothing of it is read. This one
+    // holds a good app id and has a writer, for three seconds: were it opened
+    // all the same, the id would be read and the test would say so, late,
+    // and would not hang.
+    @Test fun `a FIFO is refused and never opened`() {
+        marker("Hollow Knight.steam")
+        val fifo = File(games, "A Pipe.steam")
+        val made = runCatching { ProcessBuilder("mkfifo", fifo.path).start().waitFor() == 0 }.getOrDefault(false)
+        assumeTrue(made && fifo.exists() && !fifo.isFile, "this system makes no FIFO")
+
+        // Read and write, which is the one way to open a FIFO that does not wait.
+        val writer = RandomAccessFile(fifo, "rw")
+        val closer = Thread { runCatching { Thread.sleep(3000) }; runCatching { writer.close() } }
+        try {
+            writer.write("367520".toByteArray())
+            closer.start()
+            assertEquals(refused(MarkerRefusal.NOT_A_FILE), launch(fifo.path))
+        } finally {
+            closer.interrupt()
+            closer.join()
+            writer.close()
+        }
     }
 
     @Test fun `a file of more than 16 bytes is refused, however much more`() {

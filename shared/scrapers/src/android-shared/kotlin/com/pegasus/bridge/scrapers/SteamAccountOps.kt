@@ -2,6 +2,7 @@ package com.pegasus.bridge.scrapers
 
 import com.pegasus.bridge.core.BridgeLog
 import com.pegasus.bridge.core.BridgePaths
+import com.pegasus.bridge.core.SteamAccountCache
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
@@ -63,7 +64,7 @@ import java.util.Locale
 object SteamAccountOps {
 
     /** The folder of everything kept here, under the data root's cache. */
-    const val DIR = "steam"
+    const val DIR = SteamAccountCache.DIR
 
     internal const val LIBRARY_TTL_SECONDS = 10L * 60
     internal const val PROGRESS_TTL_SECONDS = 10L * 60
@@ -101,9 +102,6 @@ object SteamAccountOps {
 
     private const val TAG = "SteamAccountOps"
 
-    /** A progress file's name, or that of one a write was stopped in the middle of. */
-    private val KEPT_PROGRESS = Regex("[0-9]{1,10}\\.json(\\.tmp)?")
-
     /**
      * The clock, in milliseconds. A var as [BridgeLog.current] is: nothing
      * else lets a test see a file go old or the budget run out without
@@ -111,7 +109,9 @@ object SteamAccountOps {
      */
     @Volatile internal var clock: () -> Long = { System.currentTimeMillis() }
 
-    private val lock = Any()
+    // SteamAccountCache's, the one its forget holds: on Android RaService
+    // drops these files through that and not through here.
+    private val lock = SteamAccountCache.lock
 
     /**
      * What a request came to. [wire] is the word a theme reads.
@@ -251,26 +251,11 @@ object SteamAccountOps {
      *
      * Only the files this writes are deleted, by their names, in folders
      * named as a SteamID is. Nothing else is touched, and a folder goes only
-     * when that leaves it empty.
+     * when that leaves it empty. The files are listed and deleted by
+     * SteamAccountCache, in the core, where Android's RaService reaches
+     * the same code without reaching this.
      */
-    fun forget(cacheDir: File?) {
-        if (cacheDir == null) return
-        synchronized(lock) {
-            for (account in cacheDir.listFiles().orEmpty()) {
-                if (!isSteamId(account.name) || !account.isDirectory) continue
-                File(account, "library.json").delete()
-                File(account, "library.json.tmp").delete()
-                val progress = File(account, "progress")
-                for (f in progress.listFiles().orEmpty())
-                    if (KEPT_PROGRESS.matches(f.name)) f.delete()
-                progress.delete()
-                account.delete()
-            }
-        }
-    }
-
-    // Spelled out, and not `\d`: on Android that takes the digits of every script.
-    private fun isSteamId(s: String): Boolean = s.length == 17 && s.all { it in '0'..'9' }
+    fun forget(cacheDir: File?) = SteamAccountCache.forget(cacheDir)
 
     private fun refreshOf(params: Map<String, String>): Boolean =
         params["refresh"].let { it == "1" || it == "true" }
@@ -296,7 +281,7 @@ object SteamAccountOps {
     private fun accountOf(c: SteamAccountClient.Credentials?): SteamAccountClient.Credentials? {
         if (c == null || c.apiKey.isBlank()) return null
         val steamId = c.steamId.trim()
-        if (!isSteamId(steamId)) return null
+        if (!SteamAccountCache.isSteamId(steamId)) return null
         return SteamAccountClient.Credentials(c.apiKey.trim(), steamId)
     }
 

@@ -93,8 +93,13 @@ class BridgeDaemon(
     val boundPort: Int get() = if (::server.isInitialized) server.port else 0
 
     fun start(): Int {
-        paths = DaemonPaths.bridgePaths(dataRoot)
+        paths = BridgePaths(dataRoot)
         val config = Config(paths, DaemonPaths.appDefaultsFile())
+        // Before ensureAll, which would make config/ with the umask's
+        // permissions. Credentials an older build left open to others are
+        // closed here too, before the first request is served.
+        config.keepToOwner()
+        paths.ensureAll()
         jobs = JobRegistry(paths)
 
         // Scanning is optional: without a native hasher the daemon still serves

@@ -398,9 +398,27 @@ class Config(
         return json
     }
 
+    // Every key the user has is in this file, and so it is its owner's only:
+    // made so before a byte of it is written, in a folder only they can open.
     private fun persist(json: JSONObject) {
         json.put("updatedAt", BridgePaths.epochSeconds())
-        BridgePaths.writeAtomic(paths.credentials, json.toString(2))
+        BridgePaths.writeAtomic(paths.credentials, json.toString(2), ownerOnly = true)
+    }
+
+    /**
+     * Keeps the credentials and their folder to their owner, as an older build
+     * did not: it wrote them with the umask's permissions, a file every account
+     * on the machine could read wherever the folder let it in. The daemon asks
+     * for this as it starts, before it makes the other folders, so that a
+     * config folder made here is its owner's from the start. The next write
+     * would narrow both as well.
+     *
+     * Only permissions change. The file is neither read nor written, and the
+     * log names what was narrowed and nothing it holds.
+     */
+    fun keepToOwner() {
+        BridgePaths.ownerOnlyDir(paths.config)
+        BridgePaths.keepToOwner(paths.credentials)
     }
 
     private companion object {

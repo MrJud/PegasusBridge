@@ -36,8 +36,13 @@
 # device with USB debugging on which the Bridge has run once.
 
 # First of all: under `bash -x` every assignment below would be printed, the
-# one that holds the key among them.
-set +x
+# one that holds the key among them. Under `bash -a`, or with allexport in a
+# SHELLOPTS that was exported, every one would be put into the environment of
+# adb and of python3. And so would any made to a name the caller's environment
+# holds already, which a shell goes on exporting whatever is assigned to it, a
+# local of that name too. These four are the names the files are kept under.
+set +x +a
+unset -v merged without text written
 set -euo pipefail
 
 prefix="$HOME/.local/share/pegasus-bridge"

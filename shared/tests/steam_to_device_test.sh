@@ -411,6 +411,35 @@ check "the script ends well" test $? -eq 0
 check "the steam block is the PC's" json_is "$device/config/credentials.json" "$BLOCK"
 check "the key is in no argument, no environment and no output" nothing_seen_of_secrets
 
+echo "== a shell told to export what it assigns"
+new_sandbox; device_file_with_blocks
+env -i HOME="$sandbox/home" PATH="$sandbox/bin" "$BASH" -a "$script" --credentials "$pc" \
+    > "$sandbox/out.txt" 2>&1 </dev/null
+check "bash -a: the script ends well" test $? -eq 0
+check "the steam block is the PC's" json_is "$device/config/credentials.json" "$BLOCK"
+check "the key is in no argument, no environment and no output" nothing_seen_of_secrets
+new_sandbox; device_file_with_blocks
+run_script SHELLOPTS=allexport -- --credentials "$pc"
+check "allexport in SHELLOPTS: the script ends well" test $rc -eq 0
+check "the key is in no argument, no environment and no output" nothing_seen_of_secrets
+run_script SHELLOPTS=allexport -- --remove
+check "and with --remove" test $rc -eq 0
+check "the key is in no argument, no environment and no output" nothing_seen_of_secrets
+
+# A variable that came in with the environment is exported again with whatever
+# is assigned to it, and a local of its name is too.
+echo "== an environment that holds the names the script keeps the files under"
+new_sandbox; device_file_with_blocks
+run_script merged=x without=x text=x written=x -- --credentials "$pc"
+check "the script ends well" test $rc -eq 0
+check "the steam block is the PC's" json_is "$device/config/credentials.json" "$BLOCK"
+check "the key is in no argument, no environment and no output" nothing_seen_of_secrets
+check "and an environment was written down" grep -qF "PATH=" "$seen"
+run_script merged=x without=x text=x written=x -- --remove
+check "and with --remove" test $rc -eq 0
+check "the steam block is gone" json_is "$device/config/credentials.json" '"steam" not in d'
+check "the key is in no argument, no environment and no output" nothing_seen_of_secrets
+
 # ── 10. the rest ───────────────────────────────────────────────────────────
 echo "== an option it does not know, and --help"
 new_sandbox

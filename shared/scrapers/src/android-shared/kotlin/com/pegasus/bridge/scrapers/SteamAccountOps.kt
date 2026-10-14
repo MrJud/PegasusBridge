@@ -10,8 +10,8 @@ import java.util.Locale
 /**
  * The `steam-account` source, whole: what each op answers, in what state, and
  * what of it is kept on disk. It lies in the folder both shells compile, and
- * for now only the desktop's dispatcher hands it a request: the Android app
- * builds this file and has no route to it yet.
+ * the dispatcher of each hands it its requests, with the steam block of its
+ * own Config and the cache folder of its own data root.
  *
  * ── A state, not an error ──────────────────────────────────
  *

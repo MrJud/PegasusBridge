@@ -5,6 +5,8 @@ import com.pegasus.bridge.core.Paths
 import com.pegasus.bridge.hasher.PlainRomHasher
 import com.pegasus.bridge.scrapers.ScreenScraperClient
 import com.pegasus.bridge.scrapers.ScreenScraperSystemMap
+import com.pegasus.bridge.scrapers.SteamAccountClient
+import com.pegasus.bridge.scrapers.SteamAccountOps
 import java.io.File
 import com.pegasus.bridge.media.sources.IgdbClient
 import com.pegasus.bridge.media.sources.IgnClient
@@ -38,6 +40,7 @@ object ScrapeSourceDispatcher {
             "steam" -> dispatchSteam(op, params)
             "igdb"  -> dispatchIgdb(op, params)
             "ss"    -> dispatchScreenScraper(op, params)
+            "steam-account" -> dispatchSteamAccount(op, params)
             else    -> throw IllegalArgumentException("unknown source: $source")
         }
     }
@@ -433,6 +436,26 @@ object ScrapeSourceDispatcher {
             .put("type", media.type)
             .put("region", media.region)
             .put("bytes", target.length())
+    }
+
+    // ── Steam account ───────────────────────────────────────────────────────
+    //
+    // Separate from `steam`, which is the public store and needs no credentials.
+    // Nothing of it is written here: SteamAccountOps is compiled from the one copy
+    // in `shared/scrapers/src/android-shared`, and answers the theme with the same
+    // `results` on both shells, a state in it for whatever Steam did. What is left
+    // to this file is what the shells disagree about, where the steam block is
+    // read from and where the cache lies.
+    //
+    // An op or a parameter that is wrong is thrown from there as it is from every
+    // other source, and MediaService writes it as the error it is.
+
+    private fun dispatchSteamAccount(op: String, params: Map<String, String>): Result {
+        val steam = Config.load().steam
+        return Result(SteamAccountOps.run(
+            op, params,
+            steam?.let { SteamAccountClient.Credentials(it.apiKey, it.steamId) },
+            File(Paths.CACHE, SteamAccountOps.DIR)))
     }
 
     private const val TAG = "ScrapeSourceDispatcher"

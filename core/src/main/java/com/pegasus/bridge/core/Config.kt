@@ -44,12 +44,25 @@ data class ScreenScraperCreds(
     }
 }
 
+/**
+ * The Steam **account**, which is not the Steam store.
+ *
+ * The store needs nothing: it serves public product data to anybody. This is the
+ * user's own Web API key and their 64-bit id, and it only ever answers about
+ * them — so it is a separate block, granted separately, and cleared separately.
+ *
+ * The daemon's copy in shared/core has had this block for some time and this
+ * one had not, so the `steam-account` source had nothing to read here.
+ */
+data class SteamCreds(val apiKey: String, val steamId: String)
+
 data class Credentials(
     val ra: RaCreds? = null,
     val steamGridDb: SgdbCreds? = null,
     val igdb: IgdbCreds? = null,
     val rawg: RawgCreds? = null,
-    val screenScraper: ScreenScraperCreds? = null
+    val screenScraper: ScreenScraperCreds? = null,
+    val steam: SteamCreds? = null
 )
 
 object Config {
@@ -84,7 +97,13 @@ object Config {
         ssDevPassword: String? = null,
         ssUser: String? = null,
         ssPassword: String? = null,
-        ssSoftname: String? = null
+        ssSoftname: String? = null,
+        // Parameters as the daemon's copy has them, and with no caller: the
+        // set-credentials verb does not carry them. Its fields travel in the
+        // intent's URI, which is no place for the key. The block is put in the
+        // file from the PC, over the cable, by shared/steam-to-device.sh.
+        steamApiKey: String? = null,
+        steamId: String? = null
     ) {
         val current = Paths.CREDENTIALS
         val json = if (current.exists()) {
@@ -127,6 +146,13 @@ object Config {
             ssPassword?.takeIf    { it.isNotEmpty() }?.let { ss.put("ssPassword", it) }
             ssSoftname?.takeIf    { it.isNotEmpty() }?.let { ss.put("softname", it) }
             json.put("screenScraper", ss)
+        }
+
+        if (!steamApiKey.isNullOrEmpty() || !steamId.isNullOrEmpty()) {
+            val steam = json.optJSONObject("steam") ?: JSONObject()
+            steamApiKey?.takeIf { it.isNotEmpty() }?.let { steam.put("apiKey", it) }
+            steamId?.takeIf     { it.isNotEmpty() }?.let { steam.put("steamId", it) }
+            json.put("steam", steam)
         }
 
         json.put("updatedAt", System.currentTimeMillis() / 1000L)
@@ -173,8 +199,18 @@ object Config {
                 .put("hasUser", c.screenScraper?.ssid?.isNotEmpty() == true
                              && c.screenScraper.ssPassword.isNotEmpty())
                 .put("user", c.screenScraper?.ssid.orEmpty()))
+            // Presence, and the one identifier a settings screen needs to show
+            // which account is set up. The id is on the account's public profile
+            // page; the key is never here.
+            .put("steam", JSONObject()
+                .put("configured", c.steam?.apiKey?.isNotEmpty() == true
+                                && c.steam.steamId.isNotEmpty())
+                .put("steamId", c.steam?.steamId.orEmpty()))
     }
 
+    // No "steam", which the daemon's copy has. clear-credentials is a verb any
+    // app on the device can send, and nothing on the device writes that block:
+    // it is put there and taken away over the cable, by the same script.
     private val KNOWN_BLOCKS = setOf("ra", "steamGridDb", "igdb", "screenScraper")
 
     // Atomic write: write temp file then rename to avoid torn reads during overlap phase
@@ -230,6 +266,9 @@ object Config {
                         softname    = it.optString("softname")
                                         .ifBlank { ScreenScraperCreds.DEFAULT_SOFTNAME }
                     )
+                },
+                steam = j.optJSONObject("steam")?.let {
+                    SteamCreds(it.optString("apiKey"), it.optString("steamId"))
                 }
             )
         } catch (e: Exception) {

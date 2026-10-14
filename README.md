@@ -137,6 +137,10 @@ The Bridge stores every API key, in `<dataRoot>/config/credentials.json`. A them
 never keeps a copy — it can ask which are configured, and it gets back yes/no
 plus the RetroAchievements username, never a value.
 
+On Android that file is `/sdcard/PegasusData/config/credentials.json`, on shared
+storage: any app on the device that holds all-files access can read it, every
+key in it included.
+
 Enter them from the theme's own settings screen. What you need:
 
 | service | what to get | where |
@@ -449,7 +453,7 @@ Correcting an emulator the build already knows about is unaffected.
 | `igdb` | `token`, `search`, `details`, `covers`, `screenshots`, `artworks` | Twitch client id/secret |
 | `ign` | `search`, `details`, `images` | — |
 | `steam` | `search`, `assets` | — (public store) |
-| `steam-account` | `library`, `progress`, `achievements`, `resolve` | the user's own Steam Web API key and SteamID. Desktop daemon only, for now |
+| `steam-account` | `library`, `progress`, `achievements`, `resolve` | the user's own Steam Web API key and SteamID |
 | `romm` | `heartbeat`, `platforms`, `roms` | a RomM server, optionally a `rmm_…` client token |
 
 `steam` and `steam-account` are deliberately separate: the first is public
@@ -466,9 +470,21 @@ answered with `status: "ok"` and a `results` object, and what happened is
 `results.state`. `status: "error"` means the op or a parameter was wrong, and
 nothing else.
 
-For now it is the desktop daemon that answers this source, and the daemon alone.
-The Android app builds the same code, has no route to it and holds no Steam key:
-asked for `steam-account`, it answers that the source is unknown.
+Both shells answer it, from one copy of the code, and what differs is how the
+`steam` block gets into `credentials.json`:
+
+```json
+"steam": { "apiKey": "…", "steamId": "7656119…" }
+```
+
+On the desktop the two are fields of `POST /credentials`, `steamApiKey` and
+`steamId`, and `/credentials/clear?block=steam` forgets them. On Android nothing
+on the device writes the block. `set-credentials` does not take the two fields,
+since its fields travel in the URI of an intent, which is no place for a key,
+and `clear-credentials` does not know the block, since any app can send that
+verb. The block is copied from the PC over the cable, by a command run on the
+PC, and taken away the same way. `credentials-status` reports it on both, as
+`configured` and `steamId`, never the key.
 
 Every `results` carries `namespace: "steam"`, `state`, `message`, `cached`,
 `stale` and `fetchedAt`. `message` is one fixed English sentence per state, never

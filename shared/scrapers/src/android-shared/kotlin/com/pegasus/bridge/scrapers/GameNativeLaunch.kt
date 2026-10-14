@@ -319,7 +319,10 @@ object GameNativeLaunch {
      * [readPath] reads the extra that names the file. It is not called for
      * an intent that is dropped, and it may throw: extras are a parcel the
      * sender wrote, and one written to hurt throws as it is opened. What it
-     * throws is a file that was not named.
+     * throws is a file that was not named, an Error as much as an Exception:
+     * a value nested deep enough is read until the stack is full, and a
+     * StackOverflowError left to rise would end the router, and the Bridge's
+     * process with it, whatever else that was doing.
      *
      * [canReadStorage] is whether the Bridge has all-files access. Without
      * it every marker reads as a file that is not there, which would be said
@@ -334,7 +337,7 @@ object GameNativeLaunch {
     ): Verdict {
         if (categories != null && CATEGORY_BROWSABLE in categories) return Verdict.Ignore
         if (!canReadStorage) return Verdict.NoAccess
-        val path = try { readPath() } catch (e: Exception) { null }
+        val path = try { readPath() } catch (e: Throwable) { null }
         return when (val answer = fromMarkerFile(path, allowedRoots, forbiddenRoots)) {
             is Result.Ok       -> Verdict.Start(answer.request)
             is Result.Rejected -> Verdict.NotAGame(shownName(path), answer.reason)

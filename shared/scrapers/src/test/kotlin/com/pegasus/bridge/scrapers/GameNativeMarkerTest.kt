@@ -454,6 +454,8 @@ class GameNativeMarkerTest {
         val missing = GameNativeLaunch.Verdict.NotAGame("", MarkerRefusal.MISSING.reason)
         assertEquals(missing, verdict(null, true) { throw IllegalStateException("a parcel written to hurt") })
         assertEquals(missing, verdict(null, true) { throw ClassCastException("not a String") })
+        // Not an Exception: what reading a value nested ten thousand deep ends in.
+        assertEquals(missing, verdict(null, true) { throw StackOverflowError("a list nested to hurt") })
         assertEquals(missing, verdict(null, true) { null })
     }
 

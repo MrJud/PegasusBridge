@@ -139,6 +139,13 @@ androidComponents {
     }
 }
 
+// RouterManifestTest reads src/main/AndroidManifest.xml as it runs, as
+// :pegasus's AndroidEmulatorsTest reads its own. Said here, or the task is
+// UP-TO-DATE after the manifest changes.
+tasks.withType<Test>().configureEach {
+    inputs.file("src/main/AndroidManifest.xml").withPathSensitivity(PathSensitivity.RELATIVE)
+}
+
 dependencies {
     implementation(project(":core"))
     implementation(project(":media"))
@@ -149,4 +156,5 @@ dependencies {
     implementation("androidx.appcompat:appcompat:1.7.0")
     implementation("androidx.core:core-ktx:1.13.1")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1")
+    testImplementation("junit:junit:4.13.2")
 }

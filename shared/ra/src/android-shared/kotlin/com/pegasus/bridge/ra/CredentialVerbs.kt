@@ -51,13 +51,16 @@ object CredentialVerbs {
      * Whether the router may act on a credential [verb] that came with
      * [categories]: not when a browser sent it.
      *
-     * The router's filter takes BROWSABLE, so a web page can reach it with an
-     * `intent:` URL, and such a URL can carry categories and extras as well as
-     * the query. A page that wrote a key or cleared one would be acting on the
-     * user's own accounts. A theme's Qt.openUrlExternally never sets the
-     * category, and launch-gamenative drops such an intent on the same mark.
-     * Dropped is nothing written and nothing cleared, no pending and no done
-     * file, and a line that names the verb alone.
+     * A browser marks every intent it sends for a page, an `intent:` URL's
+     * too, with BROWSABLE, and such a URL can carry categories and extras as
+     * well as the query. The router's filter does not take that category,
+     * so such an intent matches nothing there; this is the second line, for
+     * one that reaches the router all the same. A page that wrote a key or
+     * cleared one would be acting on the user's own accounts. A theme's
+     * Qt.openUrlExternally never sets the category, and launch-gamenative
+     * drops such an intent on the same mark. Dropped is nothing written and
+     * nothing cleared, no pending and no done file, and a line that names
+     * the verb alone.
      */
     fun admits(verb: String, categories: Set<String>?): Boolean {
         if (categories == null || CATEGORY_BROWSABLE !in categories) return true

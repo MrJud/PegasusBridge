@@ -30,6 +30,11 @@
         tools:targetApi="35">
 
         <!-- ── Router principale (unico scheme: pegasus-data://) ───────── -->
+        <!-- No BROWSABLE: a browser puts it on every intent it sends for a
+             page, and an intent matches only a filter that lists each of its
+             categories, so no page reaches the router. Qt's openUrlExternally
+             and Pegasus' `am start` launch lines set none of it.
+             RouterManifestTest holds the filter to this. -->
         <activity
             android:name=".DataLayerRouter"
             android:exported="true"
@@ -38,7 +43,6 @@
             <intent-filter>
                 <action android:name="android.intent.action.VIEW" />
                 <category android:name="android.intent.category.DEFAULT" />
-                <category android:name="android.intent.category.BROWSABLE" />
                 <data android:scheme="pegasus-data" />
             </intent-filter>
         </activity>

@@ -309,12 +309,13 @@ object GameNativeLaunch {
     /**
      * What to do with a `launch-gamenative` intent.
      *
-     * [categories] are the intent's. The router's filter takes BROWSABLE,
-     * so a web page can start the router too, with an `intent:` URL, and
-     * such a URL can carry extras. A browser marks what it sends for a page
-     * with [CATEGORY_BROWSABLE]. Pegasus' launch line does not, and neither
-     * does a theme, so an intent that has it is taken for a page's and is
-     * dropped before anything else of it is read.
+     * [categories] are the intent's. A browser marks what it sends for a
+     * page with [CATEGORY_BROWSABLE], an `intent:` URL's too, and such a URL
+     * can carry extras. The router's filter does not take that category, so
+     * such an intent matches nothing there; this is the second line, for one
+     * that reaches the router all the same. Pegasus' launch line does not
+     * set it, and neither does a theme, so an intent that has it is taken
+     * for a page's and is dropped before anything else of it is read.
      *
      * [readPath] reads the extra that names the file. It is not called for
      * an intent that is dropped, and it may throw: extras are a parcel the

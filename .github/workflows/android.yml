@@ -86,7 +86,7 @@ jobs:
       # and the check of the APK's licence text after the packaging. Lint is
       # what notices a call newer than minSdk, and looks at the one module
       # that holds the scan. The unit tests are those of every module that has
-      # any, which today are :core, :hasher, :media and :pegasus.
+      # any, which today are :app, :core, :hasher, :media and :pegasus.
       - name: Build the app, lint the hasher's module, run the Android build's own tests
         run: ./gradlew --no-daemon :app:assembleDebug :hasher:lintDebug testDebugUnitTest
 

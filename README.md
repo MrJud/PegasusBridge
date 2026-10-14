@@ -574,7 +574,10 @@ theme's settings screen had it written, and puts it into the device's
 other block of the device's file is written back as it was read, and a device
 with no file gets one with that block alone. A file there that is not JSON stops
 the command before anything is written. The new file is written beside the old
-one under a name of its own, read back, and then renamed over it.
+one under a name of its own, `credentials.json.cable`, read back, and then
+renamed over it. A command that is stopped in between removes that file. When
+it is the device that went away, the file stays there with every key in it, and
+the command says so: run again, or with `--remove`, it removes it.
 
 It refuses a blank key, a SteamID that is not 17 digits, and a device with no
 `/sdcard/PegasusData`, which is one the Bridge has never run on. The key is

@@ -191,11 +191,14 @@ on_device() { "${adb[@]}" shell "$1" </dev/null; }
 to_device() { "${adb[@]}" shell "$1"; }
 
 # The new file lies on the device under its temporary name from the write to
-# the rename. Whatever ends the script in between, it does not stay there.
+# the rename. Whatever ends the script in between, it does not stay there,
+# unless what ended it is the device going away: then nothing can remove it,
+# and that is said, since every key of the new file is in it.
 tmp_on_device=0
 cleanup() {
     if [[ $tmp_on_device -eq 1 ]]; then
-        "${adb[@]}" shell "rm -f $device_tmp" >/dev/null 2>&1 || true
+        on_device "rm -f $device_tmp" >/dev/null 2>&1 \
+            || echo "steam-to-device: $device_tmp could not be removed from the device, and it holds every key of the new file: run this again, or with --remove, which removes it" >&2
     fi
 }
 trap cleanup EXIT
@@ -260,6 +263,12 @@ if [[ $remove -eq 1 ]]; then
             *) exit 1 ;;
         esac
     fi
+    # A run that the device went away from, between its write and its rename,
+    # left the new file there under the temporary name, the key in it. A file
+    # with no steam block is not written again, so nothing above has removed
+    # that one, and the key is not off the device while it lies there.
+    on_device "rm -f $device_tmp" \
+        || die "a file an earlier run left on the device, $device_tmp, could not be removed"
     accounts="$(forget_on_device)" \
         || die "what the device's Bridge keeps of the account could not be removed"
     accounts="${accounts//$'\r'/}"

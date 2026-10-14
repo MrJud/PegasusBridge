@@ -66,6 +66,8 @@ new_sandbox() {
 { printf '%s\n' "\$@"; export -p; } >> "$seen"
 if [[ "\${1:-}" == -s ]]; then shift 2; fi
 if [[ -n "\${FAKE_NO_DEVICE:-}" ]]; then echo "adb: no devices/emulators found" >&2; exit 1; fi
+# A device that goes away once it has been written to: no call after that one reaches it.
+if [[ -n "\${FAKE_GONE_AFTER_WRITE:-}" && -e "$sandbox/gone" ]]; then echo "adb: no devices/emulators found" >&2; exit 1; fi
 if [[ "\${1:-}" != shell ]]; then echo "fake adb: only shell is played" >&2; exit 64; fi
 shift
 cmd="\$*"
@@ -73,6 +75,11 @@ cmd="\${cmd//\/sdcard\/PegasusData/$device}"
 # A device that loses the end of what it is sent.
 if [[ -n "\${FAKE_TRUNCATE:-}" ]]; then cmd="\${cmd//cat > /head -c 40 > }"; fi
 export PATH=/usr/bin:/bin
+if [[ -n "\${FAKE_GONE_AFTER_WRITE:-}" && "\$cmd" == *"cat > "* ]]; then
+    sh -c "\$cmd"; status=\$?; : > "$sandbox/gone"; exit \$status
+fi
+# A script that a signal ends at the rename, which is not done.
+if [[ -n "\${FAKE_SIGNAL_AT_RENAME:-}" && "\$cmd" == "mv "* ]]; then kill -"\$FAKE_SIGNAL_AT_RENAME" \$PPID; exit 1; fi
 exec sh -c "\$cmd"
 FAKE
     cat > "$sandbox/bin/python3" <<FAKE
@@ -376,6 +383,38 @@ check_not "it is not renamed"            logged "mv "
 check_not "the cut file does not stay"   test -e "$device/config/credentials.json.cable"
 check "what the Bridge keeps is still there" test -f "$device/cache/steam/76561198000000009/library.json"
 check "the key is in no argument, no environment and no output" nothing_seen_of_secrets
+
+echo "== a script that a signal ends at the rename"
+for signal in TERM HUP; do
+    new_sandbox; device_file_with_blocks
+    # The shell that waited says which signal it was, on its own standard error.
+    run_script FAKE_SIGNAL_AT_RENAME=$signal -- --credentials "$pc" 2>/dev/null
+    check "$signal is what ends it"                    test $rc -gt 128
+    check "the real file is byte for byte what it was" cmp -s "$device/config/credentials.json" "$sandbox/device-before.json"
+    check "the new file was written, and was to be renamed" logged "mv -f /sdcard/PegasusData/config/credentials.json.cable"
+    check_not "it does not stay under its temporary name" test -e "$device/config/credentials.json.cable"
+done
+
+echo "== a device that goes away between the write and the rename"
+new_sandbox; kept_files
+mkdir -p "$device/config"
+printf '{"ra": {"user": "device-user", "apiKey": "DEVICE-RA-KEY"}}' > "$device/config/credentials.json"
+cp "$device/config/credentials.json" "$sandbox/device-before.json"
+run_script FAKE_GONE_AFTER_WRITE=1 -- --credentials "$pc"
+check "the script refuses" test $rc -ne 0
+check "the real file is byte for byte what it was" cmp -s "$device/config/credentials.json" "$sandbox/device-before.json"
+check "the new file stays there, the key in it, since nothing reaches the device" grep -qF "$KEY" "$device/config/credentials.json.cable"
+check "and the script says that it does, and where" said "credentials.json.cable could not be removed"
+check "the key is in no argument, no environment and no output" nothing_seen_of_secrets
+
+echo "== --remove after that, on a file that has no steam block"
+: > "$adb_log"
+run_script -- --remove
+check "the script ends well" test $rc -eq 0
+check_not "the file the earlier run left is removed" test -e "$device/config/credentials.json.cable"
+check "the real file is byte for byte what it was" cmp -s "$device/config/credentials.json" "$sandbox/device-before.json"
+check_not "it is not written again"                logged "cat >"
+check_not "the key is nowhere under the data root" grep -rqF "$KEY" "$device"
 
 # ── 8. where the PC's file is looked for ───────────────────────────────────
 echo "== the PC's file where install.sh puts the data root"

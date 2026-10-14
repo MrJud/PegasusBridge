@@ -4,12 +4,18 @@ import java.io.File
 import java.io.FileDescriptor
 import java.io.FileOutputStream
 import java.io.IOException
+import java.nio.ByteBuffer
 import java.nio.channels.FileChannel
 import java.nio.file.FileAlreadyExistsException
 import java.nio.file.Files
+import java.nio.file.LinkOption
+import java.nio.file.NoSuchFileException
+import java.nio.file.OpenOption
 import java.nio.file.Path
 import java.nio.file.StandardCopyOption
 import java.nio.file.StandardOpenOption
+import java.nio.file.attribute.PosixFileAttributeView
+import java.nio.file.attribute.PosixFileAttributes
 import java.nio.file.attribute.PosixFilePermission
 import java.nio.file.attribute.PosixFilePermissions
 
@@ -143,23 +149,25 @@ class BridgePaths(val root: File) {
          * with no permission for anyone else before a byte is written to it:
          * made so, not changed to it after, which would leave the secret open
          * to every account on the machine for as long as the write took. The
-         * move keeps what the file was made with. A temporary file that a
-         * write cut off left behind is removed first rather than written
-         * over, since what it was made with is not known. Where the file
-         * system has no POSIX permissions, as on Windows, the write is the
-         * one any other is.
+         * bytes go in through the call that made it, never through its name
+         * again, and nothing already at that name is written into: a
+         * temporary file a cut-off write left behind is removed first, and a
+         * link or a file another account puts there in the meantime makes the
+         * write fail, neither followed nor narrowed. The move keeps what the
+         * file was made with. Where the file system has no POSIX permissions,
+         * as on Windows, the write is the one any other is.
          */
         fun writeAtomic(target: File, content: String, durable: Boolean = false, ownerOnly: Boolean = false) {
-            if (ownerOnly) target.absoluteFile.parentFile?.let(::ownerOnlyDir) else target.parentFile?.mkdirs()
+            if (ownerOnly && posix(target.toPath())) return writeOwnerOnly(target, content, durable)
+            target.parentFile?.mkdirs()
             val tmp = File(target.parentFile, "${target.name}.tmp")
-            if (ownerOnly) tmp.delete()
-            write(tmp, content, durable, ownerOnly)
+            write(tmp, content, durable)
             try {
                 Files.move(tmp.toPath(), target.toPath(),
                            StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING)
             } catch (_: IOException) {
                 if (!tmp.renameTo(target)) {
-                    write(target, content, durable, ownerOnly)
+                    write(target, content, durable)
                     tmp.delete()
                 }
             }
@@ -167,37 +175,82 @@ class BridgePaths(val root: File) {
         }
 
         // The text as writeText writes it, and forced before the file is
-        // closed when the write is a durable one. An owner-only file is made
-        // so before it is opened.
-        private fun write(file: File, content: String, durable: Boolean, ownerOnly: Boolean) {
-            if (!durable && !ownerOnly) return file.writeText(content)
-            if (ownerOnly) makeOwnerOnly(file)
+        // closed when the write is a durable one.
+        private fun write(file: File, content: String, durable: Boolean) {
+            if (!durable) return file.writeText(content)
             FileOutputStream(file).use { out ->
-                if (ownerOnly) watch?.invoke(file)
                 out.write(content.toByteArray())
-                if (ownerOnly) watch?.invoke(file)
-                if (durable) force.file(file, out.fd)
+                force.file(file, out.fd)
             }
         }
 
-        private fun makeOwnerOnly(file: File) {
-            val path = file.toPath()
-            if (!posix(path)) return
+        // writeAtomic for a secret, where there are POSIX permissions. Its
+        // fallbacks are any write's, but for one thing: where neither move can
+        // be made, the target is written in place only when it is a plain
+        // file of the account that made the temporary one, and narrowed before
+        // a byte goes in. Anything else at that name (a link, a folder, a file
+        // of another account's, which a folder open to all with the sticky bit
+        // keeps from being replaced) is not written into: the write fails, the
+        // temporary file is removed and the target is left as it was.
+        private fun writeOwnerOnly(target: File, content: String, durable: Boolean) {
+            target.absoluteFile.parentFile?.let(::ownerOnlyDir)
+            val tmp = File(target.parentFile, "${target.name}.tmp")
+            tmp.delete()
+            writeNew(tmp, content, durable)
             try {
-                Files.createFile(path, PosixFilePermissions.asFileAttribute(OWNER_FILE))
-            } catch (_: FileAlreadyExistsException) {
-                // The target, written in place where the move could not
-                // replace it, or a file made in the meantime: narrowed before
-                // a byte goes into it. A folder is left to the write to refuse.
-                if (file.isFile) keepToOwner(file)
+                Files.move(tmp.toPath(), target.toPath(),
+                           StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING)
+            } catch (_: IOException) {
+                if (!tmp.renameTo(target)) {
+                    try { writeInPlace(target, tmp, content, durable) } finally { tmp.delete() }
+                }
             }
+            if (durable) target.absoluteFile.parentFile?.let { dir -> runCatching { force.directory(dir) } }
+        }
+
+        /**
+         * Makes [file] with no permission for anyone but its owner and writes
+         * [content] through the call that made it. Anything already at that
+         * name, a link included, is an error and is left as it is: not
+         * followed, not narrowed, not written into.
+         */
+        internal fun writeNew(file: File, content: String, durable: Boolean) {
+            FileChannel.open(file.toPath(),
+                             setOf<OpenOption>(StandardOpenOption.CREATE_NEW, StandardOpenOption.WRITE,
+                                               LinkOption.NOFOLLOW_LINKS),
+                             PosixFilePermissions.asFileAttribute(OWNER_FILE))
+                .use { writeAll(file, it, content, durable) }
+        }
+
+        private fun writeInPlace(target: File, tmp: File, content: String, durable: Boolean) {
+            val path = target.toPath()
+            val was = try {
+                Files.readAttributes(path, PosixFileAttributes::class.java, LinkOption.NOFOLLOW_LINKS)
+            } catch (_: NoSuchFileException) {
+                return writeNew(target, content, durable)
+            }
+            if (!was.isRegularFile || was.owner() != Files.getOwner(tmp.toPath(), LinkOption.NOFOLLOW_LINKS))
+                throw IOException("$target is not a plain file of this account's: nothing was written into it")
+            narrow(path, was.permissions())
+            FileChannel.open(path, setOf<OpenOption>(StandardOpenOption.WRITE, StandardOpenOption.TRUNCATE_EXISTING,
+                                                     LinkOption.NOFOLLOW_LINKS))
+                .use { writeAll(target, it, content, durable) }
+        }
+
+        private fun writeAll(file: File, channel: FileChannel, content: String, durable: Boolean) {
+            watch?.invoke(file)
+            val bytes = ByteBuffer.wrap(content.toByteArray())
+            while (bytes.hasRemaining()) channel.write(bytes)
+            watch?.invoke(file)
+            if (durable) channel.force(true)
         }
 
         /**
          * Makes [dir] a folder only its owner can open: made so when it is
          * not there, its parents as `mkdirs` makes them, and narrowed when it
          * is there and open wider. Where the file system has no POSIX
-         * permissions it is only made.
+         * permissions it is only made. A link is left as [keepToOwner] leaves
+         * one.
          */
         fun ownerOnlyDir(dir: File) {
             val path = dir.toPath()
@@ -221,25 +274,46 @@ class BridgePaths(val root: File) {
          * own permissions stay as they are. True when there was something to
          * take away and it was taken.
          *
-         * Nothing where there is no such file, nor where the file system has
-         * no POSIX permissions. Where they cannot be changed (a file somebody
-         * else owns, a mount that sets its own) a warning, and nothing fails.
+         * A link is not followed: what it points to may be anybody's file, and
+         * it is left as it is, with a warning. So is anything that is neither
+         * a file nor a folder. Nothing where there is no such file, nor where
+         * the file system has no POSIX permissions. Where they cannot be
+         * changed (a file somebody else owns, a mount that sets its own) a
+         * warning, and nothing fails.
          */
         fun keepToOwner(file: File): Boolean {
             val path = file.toPath()
-            if (!file.exists() || !posix(path)) return false
+            if (!posix(path)) return false
             return try {
-                val was = Files.getPosixFilePermissions(path)
-                val now = was - OTHERS
-                if (now == was) return false
-                Files.setPosixFilePermissions(path, now)
-                BridgeLog.i(TAG, "$file was open to others (${PosixFilePermissions.toString(was)}):" +
-                                 " now only its owner's (${PosixFilePermissions.toString(now)})")
-                true
+                val was = Files.readAttributes(path, PosixFileAttributes::class.java, LinkOption.NOFOLLOW_LINKS)
+                when {
+                    was.isSymbolicLink -> {
+                        BridgeLog.w(TAG, "$file is a link: what it points to is left as it is"); false
+                    }
+                    !was.isRegularFile && !was.isDirectory -> {
+                        BridgeLog.w(TAG, "$file is neither a file nor a folder: left as it is"); false
+                    }
+                    else -> narrow(path, was.permissions())
+                }
+            } catch (_: NoSuchFileException) {
+                false
             } catch (e: Exception) {
                 BridgeLog.w(TAG, "could not keep $file to its owner: ${e.javaClass.simpleName}")
                 false
             }
+        }
+
+        // Takes from [path], which is not followed if it is a link, whatever
+        // [was] lets anybody but its owner do, and logs it. True when there
+        // was something to take; throws where it cannot be taken.
+        private fun narrow(path: Path, was: Set<PosixFilePermission>): Boolean {
+            val now = was - OTHERS
+            if (now == was) return false
+            Files.getFileAttributeView(path, PosixFileAttributeView::class.java, LinkOption.NOFOLLOW_LINKS)
+                .setPermissions(now)
+            BridgeLog.i(TAG, "$path was open to others (${PosixFilePermissions.toString(was)}):" +
+                             " now only its owner's (${PosixFilePermissions.toString(now)})")
+            return true
         }
 
         /**

@@ -2,6 +2,8 @@ package com.pegasus.bridge.core
 
 import org.junit.jupiter.api.Assumptions.assumeTrue
 import java.io.File
+import java.io.IOException
+import java.nio.file.FileAlreadyExistsException
 import java.nio.file.FileSystems
 import java.nio.file.Files
 import java.nio.file.attribute.PosixFilePermissions
@@ -10,6 +12,8 @@ import kotlin.test.BeforeTest
 import kotlin.test.Test
 import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
+import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 /**
@@ -160,5 +164,107 @@ class CredentialsOwnerOnlyTest {
         assertEquals(perms(plainDir), perms(fresh.config))
         assertEquals(perms(plain), perms(fresh.credentials))
         assertTrue(logged.none { "open to others" in it || "could not keep" in it }, "$logged")
+    }
+
+    /** A file outside the config folder, the way another account would leave one to be written into. */
+    private fun outside(name: String = "elsewhere.json"): File =
+        File(root, name).apply { writeText("""{"note":"not the credentials"}"""); setPerms(this, "rw-r--r--") }
+
+    private fun link(at: File, to: File) = Files.createSymbolicLink(at.toPath(), to.toPath()).toFile()
+
+    // The temporary file is made by the call that opens it, and anything at its
+    // name by then is an error: a link another account puts there between the
+    // removal and the making is not followed into a file of theirs, nor is what
+    // it points to narrowed. One there before the write is removed, as a link.
+    @Test fun `nothing at the temporary name is followed or written into`() {
+        val target = outside()
+        val before = target.readBytes()
+        paths.config.mkdirs()
+        val tmp = File(paths.config, "credentials.json.tmp")
+        link(tmp, target)
+
+        assertFailsWith<FileAlreadyExistsException> { BridgePaths.writeNew(tmp, "RA-SECRET", durable = false) }
+        assertContentEquals(before, target.readBytes())
+        assertEquals("rw-r--r--", perms(target))
+
+        Config(paths).writeCredentials(raUser = "MrJud", raApiKey = "RA-SECRET")
+        assertContentEquals(before, target.readBytes())
+        assertEquals("rw-r--r--", perms(target))
+        assertFalse(Files.isSymbolicLink(paths.credentials.toPath()))
+        assertEquals("rw-------", perms(paths.credentials))
+        assertEquals(listOf("credentials.json"), paths.config.list()!!.toList())
+        assertEquals("RA-SECRET", Config(paths).load().ra?.apiKey)
+    }
+
+    // Where neither move can be made (here the folder is made read-only once
+    // the temporary file is written) the target is written in place, as any
+    // write does then: a plain file of this account's, narrowed before the
+    // bytes go in, and never what a link at its name points to.
+    @Test fun `written in place, only a plain file of its owner's and narrowed first`() {
+        val config = Config(paths)
+        config.writeCredentials(sgdbKey = "OLD-SECRET")
+        setPerms(paths.credentials, "rw-r--r--")
+        val seen = mutableListOf<String>()
+        BridgePaths.watch = { f ->
+            seen += "${f.name} ${perms(f)}"
+            if (seen.size == 2) setPerms(paths.config, "r-x------")
+        }
+        try {
+            config.writeCredentials(sgdbKey = "SG-SECRET")
+        } finally {
+            setPerms(paths.config, "rwx------")
+        }
+        assertEquals("credentials.json rw-------", seen[2], "$seen")
+        assertEquals("rw-------", perms(paths.credentials))
+        assertEquals("SG-SECRET", Config(paths).load().steamGridDb?.apiKey)
+
+        File(paths.config, "credentials.json.tmp").delete()
+        paths.credentials.delete()
+        val target = outside()
+        val before = target.readBytes()
+        link(paths.credentials, target)
+        seen.clear()
+        try {
+            assertFailsWith<IOException> { config.writeCredentials(sgdbKey = "SG-SECRET") }
+        } finally {
+            setPerms(paths.config, "rwx------")
+        }
+        assertContentEquals(before, target.readBytes())
+        assertEquals("rw-r--r--", perms(target))
+        assertTrue(Files.isSymbolicLink(paths.credentials.toPath()))
+    }
+
+    // A link at the file's name, or at the folder's, may point to anybody's
+    // file: what it points to is left as it is, and the log says so.
+    @Test fun `keepToOwner does not follow a link to narrow what it points to`() {
+        val target = outside()
+        paths.config.mkdirs()
+        link(paths.credentials, target)
+
+        Config(paths).keepToOwner()
+        assertEquals("rw-r--r--", perms(target))
+        assertTrue(logged.any { it.startsWith("${paths.credentials} is a link") }, "$logged")
+
+        val elsewhere = File(root, "elsewhere-config").apply { mkdirs() }
+        setPerms(elsewhere, "rwxr-xr-x")
+        val linked = BridgePaths(File(root, "linked")).also { it.root.mkdirs() }
+        link(linked.config, elsewhere)
+        Config(linked).keepToOwner()
+        assertEquals("rwxr-xr-x", perms(elsewhere))
+        assertTrue(logged.any { it.startsWith("${linked.config} is a link") }, "$logged")
+    }
+
+    // A write an older build cut off left its temporary file, every key in it,
+    // with the umask's permissions; only a next write would remove it.
+    @Test fun `keepToOwner narrows a temporary file a cut-off write left behind`() {
+        leftByOlderBuild()
+        val tmp = File(paths.config, "credentials.json.tmp").apply { writeText(OLD) }
+        setPerms(tmp, "rw-r--r--")
+
+        Config(paths).keepToOwner()
+
+        assertEquals("rw-------", perms(tmp))
+        assertEquals(OLD, tmp.readText())
+        assertTrue(logged.none { "SECRET" in it }, "$logged")
     }
 }

@@ -411,14 +411,17 @@ class Config(
      * on the machine could read wherever the folder let it in. The daemon asks
      * for this as it starts, before it makes the other folders, so that a
      * config folder made here is its owner's from the start. The next write
-     * would narrow both as well.
+     * would narrow both as well. So is a temporary file that an older build's
+     * write left behind when it was cut off, which holds every key the file
+     * does and which only that next write would remove.
      *
-     * Only permissions change. The file is neither read nor written, and the
-     * log names what was narrowed and nothing it holds.
+     * Only permissions change. The file is neither read nor written, a link is
+     * not followed, and the log names what was narrowed and nothing it holds.
      */
     fun keepToOwner() {
         BridgePaths.ownerOnlyDir(paths.config)
         BridgePaths.keepToOwner(paths.credentials)
+        BridgePaths.keepToOwner(File(paths.config, "${paths.credentials.name}.tmp"))
     }
 
     private companion object {

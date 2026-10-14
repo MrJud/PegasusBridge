@@ -142,8 +142,10 @@ read and written by the account the daemon runs as and by nobody else (`0600`),
 and is made so before a key goes into it; the `config` folder opens to that
 account alone (`0700`). A file or folder an older build left open to others is
 narrowed when the daemon starts, without the file being rewritten, and the log
-says which, never what is in it. Where the file system has no such permissions,
-as on Windows, the file is written as it always was.
+says which, never what is in it. A link at the file's name or the folder's is
+not followed: what it points to is left as it is, and the log says so. Where the
+file system has no such permissions, as on Windows, the file is written as it
+always was.
 
 On Android that file is `/sdcard/PegasusData/config/credentials.json`, on shared
 storage: any app on the device that holds all-files access can read it, every

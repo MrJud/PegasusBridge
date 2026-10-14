@@ -1,7 +1,8 @@
 # The tests of shared/, the pure-JVM half both shells are built from, on every
 # push and pull request. Until now a regression there reached the tablet and the
 # desktop with nothing in between. Beside them, once and with no JDK, the test of
-# install.sh, which points the Pegasus themes at the data root.
+# install.sh, which points the Pegasus themes at the data root, and the test of
+# steam-to-device.sh, which copies the Steam block to an Android device.
 #
 # Deliberately narrow: no Android build here. It needs the SDK and the NDK, and
 # is the workflow beside this one, android.yml, which says what it downloads
@@ -312,6 +313,24 @@ jobs:
       - name: Themes are pointed at the data root in every layout
         working-directory: shared
         run: ./tests/install_pointers_test.sh
+
+  cable:
+    # Bash, coreutils and the image's python3, which the script itself needs
+    # for the JSON. No device and no adb: the test writes an `adb` that plays
+    # a device as a folder of its temporary directory and puts it first on the
+    # script's PATH, with a throwaway HOME, so nothing outside that directory
+    # is read or written. What it holds besides the merge is that the Steam
+    # key is in no argument of any process the script starts, in no
+    # environment and in no line of output.
+    name: steam-to-device.sh
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: The Steam block is copied to a device, merged, and the key seen by nobody
+        working-directory: shared
+        run: ./tests/steam_to_device_test.sh
 
   package:
     # The other jobs run the classes and the library where Gradle keeps them.

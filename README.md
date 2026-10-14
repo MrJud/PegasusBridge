@@ -557,6 +557,32 @@ verb. The block is copied from the PC over the cable, by a command run on the
 PC, and taken away the same way. `credentials-status` reports it on both, as
 `configured` and `steamId`, never the key.
 
+That command is `shared/steam-to-device.sh`, run from a checkout of this
+repository with the device on the cable and USB debugging allowed:
+
+```bash
+shared/steam-to-device.sh                      # the block of ~/.local/share/pegasus-bridge
+shared/steam-to-device.sh --prefix <dataRoot>  # of a Bridge installed somewhere else
+shared/steam-to-device.sh --credentials FILE   # of any credentials.json
+shared/steam-to-device.sh --serial SERIAL      # when more than one device is attached
+shared/steam-to-device.sh --remove             # take the block off the device again
+```
+
+It reads the `steam` block out of the PC Bridge's `credentials.json`, where a
+theme's settings screen had it written, and puts it into the device's
+`/sdcard/PegasusData/config/credentials.json`. Only that block changes. Every
+other block of the device's file is written back as it was read, and a device
+with no file gets one with that block alone. A file there that is not JSON stops
+the command before anything is written. The new file is written beside the old
+one under a name of its own, read back, and then renamed over it.
+
+It refuses a blank key, a SteamID that is not 17 digits, and a device with no
+`/sdcard/PegasusData`, which is one the Bridge has never run on. The key is
+never shown, and on its way it is in no command line and no environment
+variable: it goes to adb through a pipe, and no file is made of it on the PC.
+The command needs `adb` and `python3`. A key changed on the PC is not changed
+on the device until the command is run again.
+
 Every `results` carries `namespace: "steam"`, `state`, `message`, `cached`,
 `stale` and `fetchedAt`. `message` is one fixed English sentence per state, never
 Steam's own text. A `results` with `stale: true` also carries `staleState`:
@@ -620,7 +646,9 @@ it reads `state: "offline"`, `stale: true`, and the old counts in `items`.
 What is kept of an account, its library and its unlock lists, is dropped when a
 Steam key or SteamID is written through `/credentials` and when the `steam`
 block is cleared. The files are named by the SteamID, and would otherwise answer
-for a key that is no longer the one in use. The schemas stay.
+for a key that is no longer the one in use. The schemas stay. On a device it is
+`steam-to-device.sh` that drops them, after it has written the block and after
+it has removed it.
 
 `/ra/match` is the one worth knowing about. Ask it *which RetroAchievements game
 this is*, with the path of the game's file, and it answers with what the scan

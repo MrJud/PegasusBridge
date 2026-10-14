@@ -274,6 +274,13 @@ Android: `pegasus-data://<verb>?…` intents, with results written as JSON under
 100 characters or holds a `/` is taken as none and the job gets an id of its
 own; the theme's `prefix_time_random` ids are well inside that.
 
+The router's intent filter takes the action `VIEW`, the category `DEFAULT` and
+the scheme `pegasus-data`, and not the category `BROWSABLE`. A browser puts that
+category on every intent it sends for a page, and an intent matches only a
+filter that lists each of its categories, so no web page reaches the router. A
+theme's `Qt.openUrlExternally` and Pegasus' `am start` launch lines set no
+category and are not affected.
+
 ### Finding `<dataRoot>` from a theme
 
 On Android it is always `/sdcard/PegasusData`. On desktop it is wherever the
@@ -499,8 +506,9 @@ The path is a string from another app, and nothing of it is passed on. The verb
 starts nothing when:
 
 - the intent has the category `BROWSABLE`, which is how a web page would send
-  it. Pegasus' launch line does not set it. Such an intent is dropped unread and
-  nothing is shown;
+  it. Pegasus' launch line does not set it, and the router's filter does not
+  take it, so such an intent does not reach the router; one that does all the
+  same is dropped unread and nothing is shown;
 - the path is missing, longer than 1024 characters, holds a NUL or is not
   absolute;
 - it is not under `/storage/`, or is under `/storage/emulated/0/PegasusData` or
@@ -569,17 +577,35 @@ forgets them. Each is optional and an empty one is ignored, as every other
 field of that verb; a `steamId` that is not 17 digits is not written there,
 and a request that carries nothing else is answered as one that carries
 nothing, with an error in `pending/{jobId}.json`. `credentials-status` reports
-the block on both, as `configured` and `steamId`, never the key: after the done
-marker of a `set-credentials`, that `steamId` is how a theme sees the one it
-sent was taken. The key travels in the intent's URI as the RetroAchievements
-key does; Android 13 logs such a URI without its query.
+the block on both, as `configured` and `steamId`, never the key. The key
+travels in the intent's URI as the RetroAchievements key does; Android 13 logs
+such a URI without its query.
 
-Neither credential verb acts on an intent a browser sent. The router's filter
-takes `BROWSABLE`, so a web page can reach it with an `intent:` URL, and a
-browser marks what it sends that way with the category `BROWSABLE`; a theme
-does not set it. Such a `set-credentials` or `clear-credentials` is dropped:
-nothing is written or cleared, no `pending` and no `done` file is made, and the
-log says only which verb it was.
+A write is answered on both in one shape, the blocks it wrote and never a
+value. The daemon answers `POST /credentials` with it; on Android
+`set-credentials` writes it to `credentials/{jobId}.json` under the data root,
+which is where a theme's file transport reads a credentials job:
+
+```json
+{ "schemaVersion": 1, "status": "ok", "updated": ["steam"] }
+```
+
+When the write fails, the answer is
+`{ "schemaVersion": 1, "status": "error", "error": "the credentials could not be written" }`
+and the done marker holds `error` where a write that took leaves `done`. A
+request that carried nothing that can be written is answered there as the
+daemon answers it, with `"error": "no credential fields supplied"`, beside its
+error in `pending/`. The done marker `done/{jobId}.done` is written as before,
+for a theme that waits for it alone. `clear-credentials` writes no such answer:
+a theme waits for its done marker and reads `credentials-status`.
+
+Neither credential verb acts on an intent a browser sent. A browser marks what
+it sends for a page, an `intent:` URL's too, with the category `BROWSABLE`, and
+the router's filter does not take it, so such an intent does not reach the
+router. One that reaches it all the same, a `set-credentials` or a
+`clear-credentials` with that category, is dropped: nothing is written or
+cleared, no `pending` and no `done` file is made, and the log says only which
+verb it was.
 
 The block can also be copied from the PC over the cable, for whoever prefers
 that to typing the key on the device, and taken away the same way. The command
@@ -857,7 +883,7 @@ It looks at one module, the `android-shared` directory that module adds
 included.
 
 That job also runs the unit tests of the Android modules that have any
-(`./gradlew testDebugUnitTest`, today `:core`, `:hasher` and `:pegasus`), and holds the
+(`./gradlew testDebugUnitTest`, today `:app`, `:core`, `:hasher`, `:media` and `:pegasus`), and holds the
 native library, as it lies in the debug APK, to a layout for pages of 16 KB.
 It builds with the NDK the Android Gradle plugin asks for when the build
 names none, 27.0.12077973, and CMake 3.22.1, and fails if the build found

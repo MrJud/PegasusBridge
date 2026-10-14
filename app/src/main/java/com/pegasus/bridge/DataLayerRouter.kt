@@ -178,7 +178,13 @@ class DataLayerRouter : Activity() {
                 // ActivityTaskManager logs the URI without its query (measured
                 // on Android 13).
                 val fields = CredentialVerbs.fields { uri.getQueryParameter(it) }
-                if (fields.isEmpty()) return stub(jobId, verb)
+                if (fields.isEmpty()) {
+                    // Answered where the theme reads a credentials job too, as
+                    // the daemon answers such a request: an error, at once.
+                    CredentialVerbs.writeAnswer(Paths.credentialAnswer(jobId),
+                                                error = CredentialVerbs.NOTHING_TO_WRITE)
+                    return stub(jobId, verb)
+                }
 
                 startForegroundService(Intent(this, RaService::class.java).apply {
                     putExtra(RaService.EXTRA_VERB, RaService.VERB_SET_CREDENTIALS)

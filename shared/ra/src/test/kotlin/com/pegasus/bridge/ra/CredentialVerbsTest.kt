@@ -1,7 +1,12 @@
 package com.pegasus.bridge.ra
 
 import com.pegasus.bridge.core.BridgeLog
+import com.pegasus.bridge.core.BridgePaths
+import com.pegasus.bridge.core.Config
+import com.pegasus.bridge.core.SchemaVersion
 import com.pegasus.bridge.core.StderrLog
+import org.json.JSONException
+import org.json.JSONObject
 import java.io.File
 import java.nio.file.Files
 import kotlin.test.AfterTest
@@ -13,19 +18,23 @@ import kotlin.test.assertTrue
 
 /**
  * Android's credential verbs, as far as they are said off the device: the
- * fields, the SteamID rule, the refusal of a browser's intent, and what a
- * steam write or clear drops of the cache. The router and RaService only
- * hand this the intent's parts and the Config's write.
+ * fields, the SteamID rule, the refusal of a browser's intent, what a steam
+ * write or clear drops of the cache, and the answer a write leaves where the
+ * theme reads it. The router and RaService only hand this the intent's parts
+ * and the Config's write.
  */
 class CredentialVerbsTest {
 
     private lateinit var sandbox: File
     private lateinit var cacheDir: File
+    /** Where RaService has a write answered: credentials/{jobId}.json under the data root. */
+    private lateinit var answer: File
     private val logged = mutableListOf<String>()
 
     @BeforeTest fun setUp() {
         sandbox = Files.createTempDirectory("credential-verbs").toFile()
         cacheDir = File(sandbox, "cache/steam")
+        answer = File(sandbox, "credentials/steamcreds_1760400000000_4242.json")
         BridgeLog.current = object : BridgeLog {
             override fun d(tag: String, msg: String) { logged += "$tag: $msg" }
             override fun i(tag: String, msg: String) { logged += "$tag: $msg" }
@@ -114,7 +123,7 @@ class CredentialVerbsTest {
     @Test fun `a key written over another drops every account's library and unlock lists, not the schemas`() {
         keep()
         val written = mutableListOf<Map<String, String>>()
-        CredentialVerbs.set(fieldsOf("steamApiKey" to KEY), cacheDir) { written += it }
+        assertTrue(CredentialVerbs.set(fieldsOf("steamApiKey" to KEY), cacheDir, answer) { written += it })
 
         assertEquals(listOf(mapOf("steamApiKey" to KEY)), written)
         assertEquals(listOf("schema/440.english.json"), kept())
@@ -123,7 +132,7 @@ class CredentialVerbsTest {
 
     @Test fun `a SteamID written drops them too`() {
         keep()
-        CredentialVerbs.set(fieldsOf("steamId" to OTHER_ID), cacheDir) {}
+        CredentialVerbs.set(fieldsOf("steamId" to OTHER_ID), cacheDir, answer) {}
         assertEquals(listOf("schema/440.english.json"), kept())
     }
 
@@ -131,10 +140,14 @@ class CredentialVerbsTest {
         keep()
         var writes = 0
         CredentialVerbs.set(fieldsOf("user" to "someone", "apiKey" to "ra-key", "sgdbKey" to "k",
-                                     "ssDevId" to "d", "igdbClientId" to "i"), cacheDir) { writes++ }
+                                     "ssDevId" to "d", "igdbClientId" to "i"), cacheDir, answer) { writes++ }
         // A SteamID that is not one is not written, so it drops nothing either.
-        CredentialVerbs.set(fieldsOf("user" to "someone", "steamId" to "123"), cacheDir) { writes++ }
-        CredentialVerbs.set(fieldsOf(), cacheDir) { writes++ }
+        CredentialVerbs.set(fieldsOf("user" to "someone", "steamId" to "123"), cacheDir, answer) { writes++ }
+        assertEquals(listOf("ra"), updated(answered()))
+        // Nothing is answered as the daemon answers it, with an error.
+        assertFalse(CredentialVerbs.set(fieldsOf(), cacheDir, answer) { writes++ })
+        assertEquals(mapOf("schemaVersion" to SchemaVersion.CURRENT, "status" to "error",
+                           "error" to CredentialVerbs.NOTHING_TO_WRITE), answered().toMap())
 
         assertEquals(2, writes, "a request with nothing in it was written")
         assertEquals(everything, kept())
@@ -160,14 +173,70 @@ class CredentialVerbsTest {
     @Test fun `the key is in no line logged, whatever happens to it`() {
         keep()
         CredentialVerbs.admits(CredentialVerbs.SET, setOf(CredentialVerbs.CATEGORY_BROWSABLE))
-        CredentialVerbs.set(fieldsOf("steamApiKey" to KEY, "steamId" to STEAM_ID, "apiKey" to KEY), cacheDir) {}
-        CredentialVerbs.set(fieldsOf("steamApiKey" to KEY, "steamId" to KEY), cacheDir) {}
+        CredentialVerbs.set(fieldsOf("steamApiKey" to KEY, "steamId" to STEAM_ID, "apiKey" to KEY), cacheDir, answer) {}
+        CredentialVerbs.set(fieldsOf("steamApiKey" to KEY, "steamId" to KEY), cacheDir, answer) {}
         CredentialVerbs.clear("steam", cacheDir) { true }
         CredentialVerbs.clear(KEY, cacheDir) { false }
 
         assertEquals(5, logged.size, logged.toString())
         assertTrue(logged.none { KEY in it }, logged.toString())
         assertTrue("set-credentials: blocks updated: [ra, steam]" in logged.map { it.substringAfter(": ") })
+    }
+
+    // ── The answer ──────────────────────────────────────────────────────────
+
+    private fun answered(): JSONObject = JSONObject(answer.readText())
+
+    private fun updated(json: JSONObject): List<String> =
+        json.getJSONArray("updated").let { a -> (0 until a.length()).map { a.getString(it) } }
+
+    /** Every file under the data root that holds [text] in its bytes or its name, by its path there. */
+    private fun holding(text: String): List<String> =
+        sandbox.walkTopDown().filter { it.isFile && (text in it.readText() || text in it.path) }
+            .map { it.relativeTo(sandbox).path }.sorted().toList()
+
+    @Test fun `a write is answered as the daemon answers it, with the blocks it wrote and no value`() {
+        keep()
+        val config = Config(BridgePaths(sandbox))
+        val fields = fieldsOf("user" to "someone", "apiKey" to KEY, "steamApiKey" to KEY, "steamId" to STEAM_ID)
+        val took = CredentialVerbs.set(fields, cacheDir, answer) { f ->
+            config.writeCredentials(raUser = f["user"], raApiKey = f["apiKey"],
+                                    steamApiKey = f["steamApiKey"], steamId = f["steamId"])
+        }
+
+        assertTrue(took)
+        val json = answered()
+        // The daemon's /credentials answer, key for key.
+        assertEquals(setOf("schemaVersion", "status", "updated"), json.keySet())
+        assertEquals(SchemaVersion.CURRENT, json.getInt("schemaVersion"))
+        assertEquals("ok", json.getString("status"))
+        assertEquals(listOf("ra", "steam"), updated(json))
+        // The key landed, and it is in that file and in no other, nor in a name.
+        assertEquals(KEY, config.load().steam?.apiKey)
+        assertEquals(listOf("config/credentials.json"), holding(KEY))
+        assertTrue(logged.none { KEY in it }, logged.toString())
+        assertEquals(listOf("schema/440.english.json"), kept())
+    }
+
+    @Test fun `a write that throws is answered with an error that holds no value, and does not take`() {
+        keep()
+        var tried = 0
+        val took = CredentialVerbs.set(fieldsOf("steamApiKey" to KEY, "steamId" to STEAM_ID), cacheDir, answer) {
+            tried++
+            // What org.json throws on a file it cannot read holds the file's text.
+            throw JSONException("A JSONObject text must begin with '{' at 1 [character 2 line 1]: $KEY")
+        }
+
+        assertFalse(took, "a write that threw was taken for one that did not")
+        assertEquals(1, tried)
+        assertEquals(mapOf("schemaVersion" to SchemaVersion.CURRENT, "status" to "error",
+                           "error" to CredentialVerbs.WRITE_FAILED), answered().toMap())
+        assertEquals(emptyList(), holding(KEY))
+        assertTrue(logged.none { KEY in it }, logged.toString())
+        assertEquals(listOf("set-credentials: the write failed (JSONException)"),
+                     logged.map { it.substringAfter(": ").removeSuffix(" null") })
+        // Nothing was written, so what is kept still answers for the key that is there.
+        assertEquals(everything, kept())
     }
 
     private companion object {

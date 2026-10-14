@@ -19,7 +19,15 @@ class PathsFileNameTest {
             assertTrue("'$name' was refused", Paths.isFileName(name))
             // And it stays in the folder it is written in.
             assertEquals(Paths.PENDING, Paths.pending(name).parentFile)
+            assertEquals(Paths.CREDENTIAL_ANSWERS, Paths.credentialAnswer(name).parentFile)
         }
+    }
+
+    /** BridgeApi.credentialsResult reads dataRoot + "/credentials/" + jobId + ".json". */
+    @Test fun `a credentials answer is where the theme's file transport reads one`() {
+        assertEquals(java.io.File("/sdcard/PegasusData/credentials/steamcreds_1760400000000_4242.json"),
+                     Paths.credentialAnswer("steamcreds_1760400000000_4242"))
+        assertEquals(java.io.File("/sdcard/PegasusData/config/credentials.json"), Paths.CREDENTIALS)
     }
 
     @Test fun `a name that reaches out of its folder, or none, is not`() {

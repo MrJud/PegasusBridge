@@ -40,12 +40,15 @@ class RaService : Service() {
 
         scope.launch {
             Paths.ensureAll()
+            // A set-credentials whose write did not take is not marked done as
+            // one that did. Every other verb is marked as it always was.
+            var failed = false
             try {
                 when (verb) {
                     VERB_PROFILE          -> handleProfile(intent, jobId)
                     VERB_DETAIL           -> handleDetail(intent, jobId)
                     VERB_SEARCH_GAMES     -> handleSearchGames(intent, jobId)
-                    VERB_SET_CREDENTIALS  -> handleSetCredentials(intent, jobId)
+                    VERB_SET_CREDENTIALS  -> failed = !handleSetCredentials(intent, jobId)
                     VERB_MATCH            -> handleMatch(intent, jobId)
                     VERB_CONSOLES         -> handleConsoles(jobId)
                     VERB_CRED_STATUS      -> handleCredentialsStatus(jobId)
@@ -53,9 +56,10 @@ class RaService : Service() {
                     else                  -> Log.w(TAG, "Unknown verb: $verb")
                 }
             } catch (e: Exception) {
+                if (verb == VERB_SET_CREDENTIALS) failed = true
                 Log.e(TAG, "RaService error for verb=$verb", e)
             } finally {
-                Paths.markDone(jobId)
+                if (failed) Paths.markFailed(jobId) else Paths.markDone(jobId)
                 stopSelf(startId)
             }
         }
@@ -174,11 +178,13 @@ class RaService : Service() {
 
     // Accepts any subset of the credential fields; absent ones leave their block
     // in credentials.json untouched, so the theme can save one settings field at
-    // a time. What is taken, and what a steam write drops, is CredentialVerbs'.
-    // Never log the values.
-    private fun handleSetCredentials(intent: Intent, jobId: String) {
+    // a time. What is taken, what a steam write drops and the answer in
+    // credentials/{jobId}.json, the daemon's /credentials answer, are
+    // CredentialVerbs'. Never log the values. Returns whether the write took.
+    private fun handleSetCredentials(intent: Intent, jobId: String): Boolean {
         val fields = CredentialVerbs.fields { intent.getStringExtra(it) }
-        CredentialVerbs.set(fields, Paths.cache(SteamAccountCache.DIR)) { f ->
+        return CredentialVerbs.set(fields, Paths.cache(SteamAccountCache.DIR),
+                                   Paths.credentialAnswer(jobId)) { f ->
             Config.writeCredentials(
                 raUser           = f["user"],
                 raApiKey         = f["apiKey"],

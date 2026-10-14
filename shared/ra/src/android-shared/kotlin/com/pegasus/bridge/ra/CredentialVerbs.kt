@@ -1,7 +1,11 @@
 package com.pegasus.bridge.ra
 
 import com.pegasus.bridge.core.BridgeLog
+import com.pegasus.bridge.core.BridgePaths
+import com.pegasus.bridge.core.SchemaVersion
 import com.pegasus.bridge.core.SteamAccountCache
+import org.json.JSONArray
+import org.json.JSONObject
 import java.io.File
 
 /**
@@ -12,8 +16,8 @@ import java.io.File
  * RaService call this and keep only what needs Android. The desktop daemon
  * has its own `/credentials` and does not come here.
  *
- * No line logged here holds a value. It names the verb, or the blocks a write
- * changed, and no more.
+ * No line logged here, and no answer written, holds a value. It names the
+ * verb, or the blocks a write changed, and no more.
  */
 object CredentialVerbs {
 
@@ -34,6 +38,12 @@ object CredentialVerbs {
         "igdbClientId", "igdbClientSecret",                               // igdb
         "ssDevId", "ssDevPassword", "ssUser", "ssPassword", "ssSoftname", // screenScraper
         "steamApiKey", "steamId")                                         // steam
+
+    /** What an answer says when the write did not take. It names no field and holds no value. */
+    const val WRITE_FAILED = "the credentials could not be written"
+
+    /** What it says when a request had nothing that could be written, as the daemon says it. */
+    const val NOTHING_TO_WRITE = "no credential fields supplied"
 
     private const val TAG = "CredentialVerbs"
 
@@ -92,13 +102,48 @@ object CredentialVerbs {
      * named by the SteamID and answered from for ten minutes without Steam
      * being asked, so a key typed over another would go on being answered
      * for by the old one. The daemon's `/credentials` does the same.
+     *
+     * Then answers at [answer], `credentials/{jobId}.json`, where the theme's
+     * file transport reads a credentials job, as the daemon's `/credentials`
+     * answers over HTTP: `{schemaVersion, status: "ok", updated}`, the blocks
+     * written. When [write] threw, `status: "error"` and [WRITE_FAILED]; when
+     * there was nothing to write, [NOTHING_TO_WRITE]. Neither the answer nor
+     * the line logged holds a value, nor the exception's message: org.json
+     * puts the text it could not read in its own.
+     *
+     * Returns whether the write took, so that RaService does not mark a job
+     * done as one that did.
      */
-    fun set(fields: Map<String, String>, cacheDir: File?, write: (Map<String, String>) -> Unit) {
-        if (fields.isEmpty()) return
-        write(fields)
+    fun set(fields: Map<String, String>, cacheDir: File?, answer: File,
+            write: (Map<String, String>) -> Unit): Boolean {
+        if (fields.isEmpty()) {
+            writeAnswer(answer, error = NOTHING_TO_WRITE)
+            return false
+        }
+        try {
+            write(fields)
+        } catch (e: Exception) {
+            BridgeLog.w(TAG, "$SET: the write failed (${e.javaClass.simpleName})")
+            writeAnswer(answer, error = WRITE_FAILED)
+            return false
+        }
         val blocks = blocks(fields)
         if ("steam" in blocks) SteamAccountCache.forget(cacheDir)
+        writeAnswer(answer, updated = blocks)
         BridgeLog.d(TAG, "$SET: blocks updated: $blocks")
+        return true
+    }
+
+    /**
+     * Writes a `set-credentials` answer at [file]: `status: "ok"` and the
+     * [updated] blocks, or `status: "error"` and [error], which is one of
+     * the sentences above and never a value.
+     */
+    fun writeAnswer(file: File, updated: List<String> = emptyList(), error: String? = null) {
+        val json = JSONObject().put("schemaVersion", SchemaVersion.CURRENT)
+        if (error == null) json.put("status", "ok").put("updated", JSONArray(updated))
+        else json.put("status", "error").put("error", error)
+        BridgePaths.writeAtomic(file, json.toString())
     }
 
     /**

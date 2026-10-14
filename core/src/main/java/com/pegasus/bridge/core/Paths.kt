@@ -45,6 +45,13 @@ object Paths {
      * else.
      */
     val REPLACED      = File(ROOT, "replaced")
+    /**
+     * The answers to `set-credentials`, where the theme's file transport reads
+     * one: `credentials/{jobId}.json`, BridgeApi's credentialsResult. They name
+     * the blocks a write changed and hold no value; the values are in
+     * [CREDENTIALS], under `config/`.
+     */
+    val CREDENTIAL_ANSWERS = File(ROOT, "credentials")
 
     /** What the ROM scan found, keyed by title+platform. Same name as the daemon's. */
     val discoveryIndex = File(METADATA, "_index.json")
@@ -61,6 +68,7 @@ object Paths {
     fun pending(jobId: String)    = File(PENDING,    "$jobId.json")
     fun pegasus(jobId: String)    = File(PEGASUS,    "$jobId.json")
     fun done(jobId: String)       = File(DONE,       "$jobId.done")
+    fun credentialAnswer(jobId: String) = File(CREDENTIAL_ANSWERS, "$jobId.json")
 
     /**
      * Marks a job finished.
@@ -71,6 +79,15 @@ object Paths {
      * out its timeout on a job that already finished.
      */
     fun markDone(jobId: String) = done(jobId).writeText("done")
+
+    /**
+     * Marks a job finished that did not do what it was asked: the same
+     * marker, holding `error` where [markDone]'s holds `done`. A theme that
+     * waits for the marker alone stops waiting as it would, and what failed
+     * is in the job's answer. RaService writes it for a `set-credentials`
+     * whose write did not take.
+     */
+    fun markFailed(jobId: String) = done(jobId).writeText("error")
 
     /**
      * Whether [name], taken from a request, may name a file in one of the
@@ -92,7 +109,7 @@ object Paths {
     fun ensureAll() {
         listOf(CONFIG, METADATA, MEDIA, SEARCH, SEARCH_RA, SCRAPE, DOWNLOAD,
                PENDING, DONE, PROFILE, COMPLETION, CACHE, ARTWORK,
-               PEGASUS, REPLACED).forEach { it.mkdirs() }
+               PEGASUS, REPLACED, CREDENTIAL_ANSWERS).forEach { it.mkdirs() }
     }
 
     /**

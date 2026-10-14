@@ -1,0 +1,8 @@
+<resources>
+    <!-- What launch-gamenative says when it starts nothing. Short: each is a toast. -->
+    <string name="gamenative_not_installed">GameNative is not installed</string>
+    <string name="gamenative_not_started">GameNative could not be started</string>
+    <string name="gamenative_no_access">Pegasus Bridge has no all-files access</string>
+    <string name="gamenative_not_a_game">Not a GameNative game</string>
+    <string name="gamenative_not_a_game_named">Not a GameNative game: %1$s</string>
+</resources>

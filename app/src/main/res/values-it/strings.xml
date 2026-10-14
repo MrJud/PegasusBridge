@@ -1,0 +1,7 @@
+<resources>
+    <string name="gamenative_not_installed">GameNative non è installato</string>
+    <string name="gamenative_not_started">Impossibile avviare GameNative</string>
+    <string name="gamenative_no_access">Pegasus Bridge non ha l\'accesso a tutti i file</string>
+    <string name="gamenative_not_a_game">Non è un gioco di GameNative</string>
+    <string name="gamenative_not_a_game_named">Non è un gioco di GameNative: %1$s</string>
+</resources>

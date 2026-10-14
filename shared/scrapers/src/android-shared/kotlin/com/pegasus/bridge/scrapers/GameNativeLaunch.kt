@@ -277,6 +277,97 @@ object GameNativeLaunch {
         return Result.Ok(Request(appId, source))
     }
 
+    // ── What the launch verb does with an intent ────────────────────────────
+    //
+    // The Android shell's router is an activity, and no test on a build machine
+    // reaches an activity. So what it decides is decided here, where one does:
+    // the router hands over what the intent holds and does what it is told.
+
+    /** The category a browser puts on every intent it sends for a page. */
+    const val CATEGORY_BROWSABLE = "android.intent.category.BROWSABLE"
+
+    /** The most of a file's name a user is shown, in characters. */
+    const val MAX_SHOWN_NAME = 48
+
+    sealed interface Verdict {
+        /** Start GameNative with this. */
+        data class Start(val request: Request) : Verdict
+
+        /** Do nothing and say nothing: a page in a browser asked. */
+        data object Ignore : Verdict
+
+        /** The Bridge may not read the storage markers are on. Not the file's fault, and not said as if it were. */
+        data object NoAccess : Verdict
+
+        /**
+         * Not a marker. [name] is the file's, made fit to show a user and
+         * empty when no file was named; [reason] is for the log.
+         */
+        data class NotAGame(val name: String, val reason: String) : Verdict
+    }
+
+    /**
+     * What to do with a `launch-gamenative` intent.
+     *
+     * [categories] are the intent's. The router's filter takes BROWSABLE,
+     * so a web page can start the router too, with an `intent:` URL, and
+     * such a URL can carry extras. A browser marks what it sends for a page
+     * with [CATEGORY_BROWSABLE]. Pegasus' launch line does not, and neither
+     * does a theme, so an intent that has it is taken for a page's and is
+     * dropped before anything else of it is read.
+     *
+     * [readPath] reads the extra that names the file. It is not called for
+     * an intent that is dropped, and it may throw: extras are a parcel the
+     * sender wrote, and one written to hurt throws as it is opened. What it
+     * throws is a file that was not named.
+     *
+     * [canReadStorage] is whether the Bridge has all-files access. Without
+     * it every marker reads as a file that is not there, which would be said
+     * of the file and is true of the Bridge.
+     */
+    fun verdict(
+        categories: Set<String>?,
+        canReadStorage: Boolean,
+        readPath: () -> String?,
+        allowedRoots: List<String> = MARKER_ROOTS,
+        forbiddenRoots: List<String> = FORBIDDEN_ROOTS
+    ): Verdict {
+        if (categories != null && CATEGORY_BROWSABLE in categories) return Verdict.Ignore
+        if (!canReadStorage) return Verdict.NoAccess
+        val path = try { readPath() } catch (e: Exception) { null }
+        return when (val answer = fromMarkerFile(path, allowedRoots, forbiddenRoots)) {
+            is Result.Ok       -> Verdict.Start(answer.request)
+            is Result.Rejected -> Verdict.NotAGame(shownName(path), answer.reason)
+        }
+    }
+
+    /**
+     * The last segment of [path], for a user to read in a toast: no more than
+     * [MAX_SHOWN_NAME] characters of it, and none of the ones that are not for
+     * showing. A control character, a line or paragraph separator, half a
+     * surrogate pair, and the format characters, which are where the ones that
+     * turn the reading order round are.
+     */
+    fun shownName(path: String?): String {
+        if (path == null) return ""
+        val name = path.substring(path.lastIndexOf('/') + 1)
+        val shown = StringBuilder()
+        var count = 0
+        var i = 0
+        while (i < name.length) {
+            val c = name.codePointAt(i)
+            i += Character.charCount(c)
+            when (Character.getType(c)) {
+                Character.CONTROL.toInt(), Character.FORMAT.toInt(), Character.SURROGATE.toInt(),
+                Character.LINE_SEPARATOR.toInt(), Character.PARAGRAPH_SEPARATOR.toInt() -> continue
+            }
+            if (count == MAX_SHOWN_NAME) { shown.append('\u2026'); break }
+            shown.appendCodePoint(c)
+            count++
+        }
+        return shown.toString().trim()
+    }
+
     /**
      * The `am start` line the intent corresponds to.
      *

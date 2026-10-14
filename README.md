@@ -302,6 +302,7 @@ Point the installer at a theme it did not detect with
 | undo that | `GET /emulators/revert?directory=` | `revert-emulator` |
 | copy one picture into the library | `GET /export/media?source=&file=&kind=` | `export-media` |
 | write the scraped metadata | `POST /export/metadata?directory=` | `export-metadata` |
+| start a GameNative game from its marker file | — | `launch-gamenative` |
 | what has been exported, and undo it | `GET /export/status`, `GET /export/revert` | `export-status`, `export-revert` |
 | which emulators could run this | `GET /launch/options?file=` or `?directory=` | `launch-options` |
 | remember a choice | `GET /launch/select?file=&emulator=` | `launch-select` |
@@ -443,6 +444,76 @@ when the APK is built, so a package added to this file afterwards may be
 installed and still not be found. The Bridge cannot fix that from inside the
 file, so it says so: `config.visibilityWarning` names the packages affected.
 Correcting an emulator the build already knows about is unaffected.
+
+### GameNative games — Android
+
+[GameNative](https://github.com/utkarshdalal/GameNative) runs Steam, GOG, Epic
+and Amazon games on Android, and games added to it by hand. It keeps a folder of
+marker files for a frontend to list, one per installed game, and keeps the
+folder current by itself. A file's name is the game's title, its extension is
+the store, and what it holds is the number GameNative starts the game by:
+`Hollow Knight.steam` holds `367520`.
+
+| extension | `game_source` | the number |
+| --- | --- | --- |
+| `.steam` | `STEAM` | the Steam appid |
+| `.gog` | `GOG` | GameNative's own |
+| `.epic` | `EPIC` | GameNative's own |
+| `.amazon` | `AMAZON` | GameNative's own |
+| `.pcgame` | `CUSTOM_GAME` | GameNative's own |
+
+Pegasus lists the folder as a collection once this is in it as
+`metadata.pegasus.txt`:
+
+```
+collection: Windows
+shortname: windows
+extensions: steam, gog, epic, amazon, pcgame
+launch: am start
+  -a android.intent.action.VIEW
+  -d pegasus-data://launch-gamenative
+  --es file "{file.path}"
+```
+
+A launch then goes from Pegasus to the Bridge and from the Bridge to
+GameNative, and a theme calls `game.launch()` as for any other game.
+`launch-gamenative` reads the file and starts `app.gamenative/.MainActivity`
+with the action `app.gamenative.LAUNCH_GAME`, the number as the integer extra
+`app_id` and the store as `game_source`. It writes no `pending` and no `done`
+file and answers nothing. A launch while a game is running reaches the running
+GameNative, which changes game by itself.
+
+The path is a string from another app, and nothing of it is passed on. The verb
+starts nothing when:
+
+- the intent has the category `BROWSABLE`, which is how a web page would send
+  it. Pegasus' launch line does not set it. Such an intent is dropped unread and
+  nothing is shown;
+- the path is missing, longer than 1024 characters, holds a NUL or is not
+  absolute;
+- it is not under `/storage/`, or is under `/storage/emulated/0/PegasusData` or
+  `/storage/emulated/0/Android`;
+- its extension is none of the five, compared in lower case;
+- it is not its own canonical form: a link, a `.`, a `..` or a doubled slash is
+  in it;
+- there is no regular file at it;
+- the file holds more than 16 bytes;
+- what it holds is not an app id. Space, tab, CR and LF are stripped at both
+  ends, and what is left has to be `[1-9][0-9]{0,9}` and no more than
+  2147483647.
+
+What the user gets is a toast, in English or Italian. *GameNative is not
+installed*. *Pegasus Bridge has no all-files access*, when that is what is
+missing, since without it every marker reads as a file that is not there. *Not a
+GameNative game*, with the file's name, for every path refused above; which of
+the reasons it was is a line in Logcat under `DataLayerRouter`.
+
+Only a `.steam` number means anything outside the install that wrote it. It is
+the `appId` the `steam-account` source below takes, which is how a theme shows
+the Steam achievements of a game in this collection.
+
+Measured on 2026-10-13 with GameNative 1.2.1, whose folder on that device was
+`Emulation/Roms/windows` on the SD card.
 
 ### Sources
 

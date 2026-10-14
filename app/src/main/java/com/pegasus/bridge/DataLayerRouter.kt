@@ -1,9 +1,16 @@
 package com.pegasus.bridge
 
+import android.Manifest
 import android.app.Activity
+import android.content.ActivityNotFoundException
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.net.Uri
+import android.os.Build
 import android.os.Bundle
+import android.os.Environment
+import android.util.Log
+import android.widget.Toast
 import com.pegasus.bridge.core.Paths
 import com.pegasus.bridge.core.SchemaVersion
 import com.pegasus.bridge.hasher.HasherService
@@ -11,6 +18,7 @@ import com.pegasus.bridge.media.MediaService
 import com.pegasus.bridge.pegasus.PegasusService
 import com.pegasus.bridge.ra.RaConsoleMap
 import com.pegasus.bridge.ra.RaService
+import com.pegasus.bridge.scrapers.GameNativeLaunch
 import com.pegasus.bridge.video.VideoPlayerActivity
 import com.pegasus.bridge.video.VideoService
 import org.json.JSONObject
@@ -213,6 +221,10 @@ class DataLayerRouter : Activity() {
                     putExtra(VideoService.EXTRA_JOB_ID,   jobId)
                 })
             }
+            // A Pegasus collection's launch line, for a folder of GameNative's
+            // marker files. No pending and no done: nobody is waiting for an
+            // answer, and what went wrong is said on the screen.
+            "launch-gamenative" -> launchGameNative()
             /**
              * The verbs that reach into the user's own library — emulator
              * discovery, the two exports and the launch choice.
@@ -240,6 +252,75 @@ class DataLayerRouter : Activity() {
     }
 
     /**
+     * Starts the GameNative game a marker file stands for.
+     *
+     * The file is named by the string extra `file`, which Pegasus fills with
+     * `{file.path}`. What is done with it is GameNativeLaunch's to say, and
+     * tested there: an intent a browser sent is dropped unread, the path is
+     * held to being a marker in a folder of games, and the extra is read
+     * inside a try, since a parcel written to hurt throws as it is opened.
+     * Left to this are the two things only an activity has, the intent and
+     * the screen.
+     *
+     * NEW_TASK and no other flag. A second launch while a game is running
+     * reaches the running GameNative, which changes game by itself.
+     */
+    private fun launchGameNative() {
+        val verdict = GameNativeLaunch.verdict(
+            categories     = intent.categories,
+            canReadStorage = hasAllFilesAccess(),
+            readPath       = { intent.getStringExtra(EXTRA_FILE) })
+
+        when (verdict) {
+            is GameNativeLaunch.Verdict.Ignore ->
+                Log.w(TAG, "launch-gamenative: dropped, it came through a browser")
+            is GameNativeLaunch.Verdict.NoAccess -> {
+                Log.w(TAG, "launch-gamenative: no all-files access")
+                say(getString(R.string.gamenative_no_access))
+            }
+            is GameNativeLaunch.Verdict.NotAGame -> {
+                Log.w(TAG, "launch-gamenative: refused, ${verdict.reason}")
+                say(if (verdict.name.isEmpty()) getString(R.string.gamenative_not_a_game)
+                    else getString(R.string.gamenative_not_a_game_named, verdict.name))
+            }
+            is GameNativeLaunch.Verdict.Start -> {
+                // Named by its component, so no <queries> entry is needed to
+                // reach it: that is for asking which packages there are.
+                val start = Intent(GameNativeLaunch.ACTION)
+                    .setClassName(GameNativeLaunch.PACKAGE, GameNativeLaunch.ACTIVITY)
+                    .addCategory(GameNativeLaunch.CATEGORY)
+                    // An Int and a String. An id sent as a String is read
+                    // there as -1 and refused.
+                    .putExtra(GameNativeLaunch.EXTRA_APP_ID, verdict.request.appId)
+                    .putExtra(GameNativeLaunch.EXTRA_GAME_SOURCE, verdict.request.source.name)
+                    .setFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                try {
+                    startActivity(start)
+                } catch (e: ActivityNotFoundException) {
+                    Log.w(TAG, "launch-gamenative: GameNative is not installed")
+                    say(getString(R.string.gamenative_not_installed))
+                } catch (e: SecurityException) {
+                    Log.w(TAG, "launch-gamenative: GameNative would not be started")
+                    say(getString(R.string.gamenative_not_started))
+                }
+            }
+        }
+    }
+
+    /**
+     * Whether the Bridge may read the storage the markers are on. From
+     * Android 11 that is all-files access; before it, the storage permission.
+     */
+    private fun hasAllFilesAccess(): Boolean =
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) Environment.isExternalStorageManager()
+        else checkSelfPermission(Manifest.permission.READ_EXTERNAL_STORAGE) == PackageManager.PERMISSION_GRANTED
+
+    // The application's context: this activity is finished before the toast is gone.
+    private fun say(text: String) {
+        Toast.makeText(applicationContext, text, Toast.LENGTH_LONG).show()
+    }
+
+    /**
      * Writes pending+done stub (no real work) so the theme's polling loop doesn't hang
      * on malformed URIs or truly unknown verbs.
      */
@@ -258,5 +339,10 @@ class DataLayerRouter : Activity() {
                 .toString()
         )
         Paths.markDone(jobId)
+    }
+
+    private companion object {
+        const val TAG = "DataLayerRouter"
+        const val EXTRA_FILE = "file"
     }
 }

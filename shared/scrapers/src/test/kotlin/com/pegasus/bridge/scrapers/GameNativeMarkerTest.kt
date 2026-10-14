@@ -387,6 +387,83 @@ class GameNativeMarkerTest {
         assertEquals(reasons.toSet() - MarkerRefusal.UNREADABLE.reason, seen)
     }
 
+    // ── What the verb does with an intent ───────────────────────────────────
+
+    private val DEFAULT = setOf("android.intent.category.DEFAULT")
+    private val BROWSABLE = setOf("android.intent.category.DEFAULT", "android.intent.category.BROWSABLE")
+
+    private fun verdict(categories: Set<String>?, canReadStorage: Boolean, readPath: () -> String?) =
+        GameNativeLaunch.verdict(categories, canReadStorage, readPath, allowed, forbidden)
+
+    @Test fun `a marker named by an intent is a game to start`() {
+        val file = marker("Hollow Knight.steam")
+        val start = GameNativeLaunch.Verdict.Start(Request(367520, Source.STEAM, ""))
+        // Pegasus' launch line gives the intent no category at all.
+        assertEquals(start, verdict(null, true) { file.path })
+        assertEquals(start, verdict(emptySet(), true) { file.path })
+        assertEquals(start, verdict(DEFAULT, true) { file.path })
+    }
+
+    @Test fun `an intent a browser sent is dropped, and its extra is never read`() {
+        val file = marker("Hollow Knight.steam")
+        var read = 0
+        val readPath = { read++; file.path }
+        assertEquals(GameNativeLaunch.Verdict.Ignore, verdict(BROWSABLE, true, readPath))
+        assertEquals(GameNativeLaunch.Verdict.Ignore, verdict(BROWSABLE, false, readPath))
+        assertEquals(GameNativeLaunch.Verdict.Ignore, verdict(setOf(GameNativeLaunch.CATEGORY_BROWSABLE), true, readPath))
+        assertEquals(0, read)
+        assertEquals("android.intent.category.BROWSABLE", GameNativeLaunch.CATEGORY_BROWSABLE)
+    }
+
+    @Test fun `without all-files access that is what is said, whatever the file`() {
+        val file = marker("Hollow Knight.steam")
+        assertEquals(GameNativeLaunch.Verdict.NoAccess, verdict(null, false) { file.path })
+        assertEquals(GameNativeLaunch.Verdict.NoAccess, verdict(null, false) { "/nowhere/Not There.steam" })
+        assertEquals(GameNativeLaunch.Verdict.NoAccess, verdict(null, false) { null })
+    }
+
+    @Test fun `an extra that throws as it is read is a file that was not named`() {
+        marker("Hollow Knight.steam")
+        val missing = GameNativeLaunch.Verdict.NotAGame("", MarkerRefusal.MISSING.reason)
+        assertEquals(missing, verdict(null, true) { throw IllegalStateException("a parcel written to hurt") })
+        assertEquals(missing, verdict(null, true) { throw ClassCastException("not a String") })
+        assertEquals(missing, verdict(null, true) { null })
+    }
+
+    @Test fun `a refused file is named by its last segment and nothing before it`() {
+        val file = marker("Hollow Knight.txt")
+        assertEquals(GameNativeLaunch.Verdict.NotAGame("Hollow Knight.txt", MarkerRefusal.EXTENSION.reason),
+                     verdict(null, true) { file.path })
+        assertEquals(GameNativeLaunch.Verdict.NotAGame("credentials.json", MarkerRefusal.OUTSIDE.reason),
+                     verdict(null, true) { "/data/secret folder/credentials.json" })
+        assertEquals(GameNativeLaunch.Verdict.NotAGame("", MarkerRefusal.EXTENSION.reason),
+                     verdict(null, true) { games.path + "/" })
+    }
+
+    @Test fun `a name is shown short, and without what is not for showing`() {
+        assertEquals("", GameNativeLaunch.shownName(null))
+        assertEquals("", GameNativeLaunch.shownName(""))
+        assertEquals("Hollow Knight.steam", GameNativeLaunch.shownName("/storage/1A2B-3C4D/Roms/Hollow Knight.steam"))
+        assertEquals("Hollow Knight.steam", GameNativeLaunch.shownName("Hollow Knight.steam"))
+        assertEquals("STEINS;GATE.steam", GameNativeLaunch.shownName("/a/STEINS;GATE.steam"))
+        assertEquals("Pok\u00E9mon \u30B2\u30FC\u30E0.steam", GameNativeLaunch.shownName("/a/Pok\u00E9mon \u30B2\u30FC\u30E0.steam"))
+        // A line feed, a carriage return, a tab, a NUL, an escape and a delete.
+        assertEquals("twolines.steam", GameNativeLaunch.shownName("/a/two\n\r\t\u0000\u001B\u007Flines.steam"))
+        // A right-to-left override, a zero-width space, a byte-order mark, a line separator.
+        assertEquals("gnp.exe", GameNativeLaunch.shownName("/a/\u202Egnp\u200B\uFEFF\u2028.exe"))
+        // Half a surrogate pair goes, a whole one stays and counts as one.
+        assertEquals("ab", GameNativeLaunch.shownName("/a/a\uD83Db"))
+        assertEquals("a\uD83C\uDFAEb", GameNativeLaunch.shownName("/a/a\uD83C\uDFAEb"))
+
+        val max = GameNativeLaunch.MAX_SHOWN_NAME
+        assertEquals("x".repeat(max), GameNativeLaunch.shownName("/a/" + "x".repeat(max)))
+        assertEquals("x".repeat(max) + "\u2026", GameNativeLaunch.shownName("/a/" + "x".repeat(max + 1)))
+        assertEquals("x".repeat(max) + "\u2026", GameNativeLaunch.shownName("/a/" + "x".repeat(100_000)))
+        assertEquals("\uD83C\uDFAE".repeat(max) + "\u2026", GameNativeLaunch.shownName("/a/" + "\uD83C\uDFAE".repeat(max + 5)))
+        // What is not shown is not counted.
+        assertEquals("x".repeat(max), GameNativeLaunch.shownName("/a/" + "x\u0007".repeat(max)))
+    }
+
     // ── The folders of a real device ────────────────────────────────────────
 
     // No /storage on a machine that builds this, so nothing here is read: what

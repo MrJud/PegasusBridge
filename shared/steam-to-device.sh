@@ -6,10 +6,10 @@
 #   ./steam-to-device.sh --remove [--serial SERIAL]
 #
 # The block is the user's own Steam Web API key and SteamID, which the
-# `steam-account` source needs. On the PC a theme's settings screen writes it,
-# through the daemon. On Android nothing on the device writes it: the verbs
-# there travel as intents, which is no place for a key. So it is read here,
-# out of the PC Bridge's credentials.json, and put into the device's
+# `steam-account` source needs. A theme's settings screen writes it, through
+# the daemon on the PC and through set-credentials on Android. This is for
+# whoever would rather not type the key on the device: it is read here, out of
+# the PC Bridge's credentials.json, and put into the device's
 # /sdcard/PegasusData/config/credentials.json with adb.
 #
 #   --prefix DIR        the PC Bridge's data root, as install.sh's --prefix

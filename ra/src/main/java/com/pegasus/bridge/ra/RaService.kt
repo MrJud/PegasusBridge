@@ -10,6 +10,7 @@ import android.util.Log
 import com.pegasus.bridge.core.Config
 import com.pegasus.bridge.core.Paths
 import com.pegasus.bridge.core.SchemaVersion
+import com.pegasus.bridge.core.SteamAccountCache
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.NonCancellable
@@ -173,40 +174,26 @@ class RaService : Service() {
 
     // Accepts any subset of the credential fields; absent ones leave their block
     // in credentials.json untouched, so the theme can save one settings field at
-    // a time. Never log the values.
+    // a time. What is taken, and what a steam write drops, is CredentialVerbs'.
+    // Never log the values.
     private fun handleSetCredentials(intent: Intent, jobId: String) {
-        val user   = intent.getStringExtra(EXTRA_USER)
-        val apiKey = intent.getStringExtra(EXTRA_API_KEY)
-        val sgdb   = intent.getStringExtra(EXTRA_SGDB_KEY)
-        val igdbId = intent.getStringExtra(EXTRA_IGDB_CLIENT_ID)
-        val igdbSc = intent.getStringExtra(EXTRA_IGDB_CLIENT_SECRET)
-        val ssDev  = intent.getStringExtra(EXTRA_SS_DEV_ID)
-        val ssDevP = intent.getStringExtra(EXTRA_SS_DEV_PASSWORD)
-        val ssUser = intent.getStringExtra(EXTRA_SS_USER)
-        val ssPass = intent.getStringExtra(EXTRA_SS_PASSWORD)
-        val ssSoft = intent.getStringExtra(EXTRA_SS_SOFTNAME)
-
-        Config.writeCredentials(
-            raUser           = user,
-            raApiKey         = apiKey,
-            sgdbKey          = sgdb,
-            igdbClientId     = igdbId,
-            igdbClientSecret = igdbSc,
-            ssDevId          = ssDev,
-            ssDevPassword    = ssDevP,
-            ssUser           = ssUser,
-            ssPassword       = ssPass,
-            ssSoftname       = ssSoft
-        )
-
-        val touched = listOfNotNull(
-            if (!user.isNullOrEmpty() || !apiKey.isNullOrEmpty()) "ra" else null,
-            if (!sgdb.isNullOrEmpty()) "steamGridDb" else null,
-            if (!igdbId.isNullOrEmpty() || !igdbSc.isNullOrEmpty()) "igdb" else null,
-            if (listOf(ssDev, ssDevP, ssUser, ssPass, ssSoft).any { !it.isNullOrEmpty() })
-                "screenScraper" else null
-        )
-        Log.d(TAG, "SetCredentials job done, blocks updated: $touched")
+        val fields = CredentialVerbs.fields { intent.getStringExtra(it) }
+        CredentialVerbs.set(fields, Paths.cache(SteamAccountCache.DIR)) { f ->
+            Config.writeCredentials(
+                raUser           = f["user"],
+                raApiKey         = f["apiKey"],
+                sgdbKey          = f["sgdbKey"],
+                igdbClientId     = f["igdbClientId"],
+                igdbClientSecret = f["igdbClientSecret"],
+                ssDevId          = f["ssDevId"],
+                ssDevPassword    = f["ssDevPassword"],
+                ssUser           = f["ssUser"],
+                ssPassword       = f["ssPassword"],
+                ssSoftname       = f["ssSoftname"],
+                steamApiKey      = f["steamApiKey"],
+                steamId          = f["steamId"]
+            )
+        }
     }
 
     /**
@@ -264,14 +251,13 @@ class RaService : Service() {
 
     private fun handleClearCredentials(intent: Intent, jobId: String) {
         val block = intent.getStringExtra(EXTRA_BLOCK).orEmpty()
-        val ok = Config.clearBlock(block)
+        val ok = CredentialVerbs.clear(block, Paths.cache(SteamAccountCache.DIR), Config::clearBlock)
         Paths.searchRa(jobId).writeText(JSONObject()
             .put("schemaVersion", SchemaVersion.CURRENT)
             .put("status", if (ok) "ok" else "error")
             .put("cleared", if (ok) block else "")
             .put("credentials", Config.status())
             .toString())
-        Log.d(TAG, "ClearCredentials '$block' -> $ok")
     }
 
     private fun writeSearchError(jobId: String, msg: String) {
@@ -310,15 +296,7 @@ class RaService : Service() {
         const val EXTRA_VERB       = "verb"
         const val EXTRA_JOB_ID     = "jobId"
         const val EXTRA_USER       = "user"
-        const val EXTRA_API_KEY    = "apiKey"
-        const val EXTRA_SGDB_KEY           = "sgdbKey"
-        const val EXTRA_IGDB_CLIENT_ID     = "igdbClientId"
-        const val EXTRA_IGDB_CLIENT_SECRET = "igdbClientSecret"
-        const val EXTRA_SS_DEV_ID       = "ssDevId"
-        const val EXTRA_SS_DEV_PASSWORD = "ssDevPassword"
-        const val EXTRA_SS_USER         = "ssUser"
-        const val EXTRA_SS_PASSWORD     = "ssPassword"
-        const val EXTRA_SS_SOFTNAME     = "ssSoftname"
+        // set-credentials' extras are named as its fields are: CredentialVerbs.FIELDS.
         const val EXTRA_GAME_ID    = "gameId"
         const val EXTRA_CONSOLE_ID = "consoleId"
         const val EXTRA_TERM       = "term"

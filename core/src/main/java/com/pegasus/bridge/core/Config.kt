@@ -98,10 +98,9 @@ object Config {
         ssUser: String? = null,
         ssPassword: String? = null,
         ssSoftname: String? = null,
-        // Parameters as the daemon's copy has them, and with no caller: the
-        // set-credentials verb does not carry them. Its fields travel in the
-        // intent's URI, which is no place for the key. The block is put in the
-        // file from the PC, over the cable, by shared/steam-to-device.sh.
+        // From set-credentials, which holds the SteamID to 17 digits before it
+        // comes here; or put in the file from the PC, over the cable, by
+        // shared/steam-to-device.sh.
         steamApiKey: String? = null,
         steamId: String? = null
     ) {
@@ -208,10 +207,9 @@ object Config {
                 .put("steamId", c.steam?.steamId.orEmpty()))
     }
 
-    // No "steam", which the daemon's copy has. clear-credentials is a verb any
-    // app on the device can send, and nothing on the device writes that block:
-    // it is put there and taken away over the cable, by the same script.
-    private val KNOWN_BLOCKS = setOf("ra", "steamGridDb", "igdb", "screenScraper")
+    // The blocks clear-credentials may take away. Internal for the test, which
+    // has no file to clear one in.
+    internal val KNOWN_BLOCKS = setOf("ra", "steamGridDb", "igdb", "screenScraper", "steam")
 
     // Atomic write: write temp file then rename to avoid torn reads during overlap phase
     fun saveToken(source: String, token: String, expiresAt: Long) {

@@ -16,6 +16,7 @@ import com.pegasus.bridge.core.SchemaVersion
 import com.pegasus.bridge.hasher.HasherService
 import com.pegasus.bridge.media.MediaService
 import com.pegasus.bridge.pegasus.PegasusService
+import com.pegasus.bridge.ra.CredentialVerbs
 import com.pegasus.bridge.ra.RaConsoleMap
 import com.pegasus.bridge.ra.RaService
 import com.pegasus.bridge.scrapers.GameNativeLaunch
@@ -146,7 +147,10 @@ class DataLayerRouter : Activity() {
                     putExtra(RaService.EXTRA_JOB_ID, jobId)
                 })
             }
+            // Neither credential verb acts on an intent a browser sent: see
+            // CredentialVerbs.admits. Dropped, with no pending and no done.
             "clear-credentials" -> {
+                if (!CredentialVerbs.admits(verb, intent.categories)) return
                 val block = uri.getQueryParameter("block") ?: return stub(jobId, verb)
                 startForegroundService(Intent(this, RaService::class.java).apply {
                     putExtra(RaService.EXTRA_VERB,   RaService.VERB_CRED_CLEAR)
@@ -155,35 +159,20 @@ class DataLayerRouter : Activity() {
                 })
             }
             "set-credentials" -> {
+                if (!CredentialVerbs.admits(verb, intent.categories)) return
                 // Every field is optional — the theme saves one settings entry at
                 // a time and the service merges it into credentials.json. Reject
-                // only a request that carries nothing at all.
-                val user   = uri.getQueryParameter("user")
-                val apiKey = uri.getQueryParameter("apiKey")
-                val sgdb   = uri.getQueryParameter("sgdbKey")
-                val igdbId = uri.getQueryParameter("igdbClientId")
-                val igdbSc = uri.getQueryParameter("igdbClientSecret")
-                val ssDev  = uri.getQueryParameter("ssDevId")
-                val ssDevP = uri.getQueryParameter("ssDevPassword")
-                val ssUser = uri.getQueryParameter("ssUser")
-                val ssPass = uri.getQueryParameter("ssPassword")
-                val ssSoft = uri.getQueryParameter("ssSoftname")
-                if (listOfNotNull(user, apiKey, sgdb, igdbId, igdbSc,
-                                  ssDev, ssDevP, ssUser, ssPass, ssSoft).all { it.isEmpty() })
-                    return stub(jobId, verb)
+                // only a request that carries nothing that can be written: no
+                // field, empty ones, or a steamId alone that is not 17 digits.
+                // The steam key travels here as the RetroAchievements key does.
+                // ActivityTaskManager logs the URI without its query (measured
+                // on Android 13).
+                val fields = CredentialVerbs.fields { uri.getQueryParameter(it) }
+                if (fields.isEmpty()) return stub(jobId, verb)
 
                 startForegroundService(Intent(this, RaService::class.java).apply {
                     putExtra(RaService.EXTRA_VERB, RaService.VERB_SET_CREDENTIALS)
-                    user?.let   { putExtra(RaService.EXTRA_USER, it) }
-                    apiKey?.let { putExtra(RaService.EXTRA_API_KEY, it) }
-                    sgdb?.let   { putExtra(RaService.EXTRA_SGDB_KEY, it) }
-                    igdbId?.let { putExtra(RaService.EXTRA_IGDB_CLIENT_ID, it) }
-                    igdbSc?.let { putExtra(RaService.EXTRA_IGDB_CLIENT_SECRET, it) }
-                    ssDev?.let  { putExtra(RaService.EXTRA_SS_DEV_ID, it) }
-                    ssDevP?.let { putExtra(RaService.EXTRA_SS_DEV_PASSWORD, it) }
-                    ssUser?.let { putExtra(RaService.EXTRA_SS_USER, it) }
-                    ssPass?.let { putExtra(RaService.EXTRA_SS_PASSWORD, it) }
-                    ssSoft?.let { putExtra(RaService.EXTRA_SS_SOFTNAME, it) }
+                    for ((name, value) in fields) putExtra(name, value)
                     putExtra(RaService.EXTRA_JOB_ID, jobId)
                 })
             }

@@ -552,24 +552,37 @@ answered with `status: "ok"` and a `results` object, and what happened is
 `results.state`. `status: "error"` means the op or a parameter was wrong, and
 nothing else.
 
-Both shells answer it, from one copy of the code, and what differs is how the
-`steam` block gets into `credentials.json`:
+Both shells answer it, from one copy of the code, and on both the `steam` block
+of `credentials.json` is written from the theme's settings, as the
+RetroAchievements key is:
 
 ```json
 "steam": { "apiKey": "…", "steamId": "7656119…" }
 ```
 
 On the desktop the two are fields of `POST /credentials`, `steamApiKey` and
-`steamId`, and `/credentials/clear?block=steam` forgets them. On Android nothing
-on the device writes the block. `set-credentials` does not take the two fields,
-since its fields travel in the URI of an intent, which is no place for a key,
-and `clear-credentials` does not know the block, since any app can send that
-verb. The block is copied from the PC over the cable, by a command run on the
-PC, and taken away the same way. `credentials-status` reports it on both, as
-`configured` and `steamId`, never the key.
+`steamId`, and `/credentials/clear?block=steam` forgets them. On Android they
+are the same two fields of `set-credentials`, and `clear-credentials?block=steam`
+forgets them. Each is optional and an empty one is ignored, as every other
+field of that verb; a `steamId` that is not 17 digits is not written there,
+and a request that carries nothing else is answered as one that carries
+nothing, with an error in `pending/{jobId}.json`. `credentials-status` reports
+the block on both, as `configured` and `steamId`, never the key: after the done
+marker of a `set-credentials`, that `steamId` is how a theme sees the one it
+sent was taken. The key travels in the intent's URI as the RetroAchievements
+key does; Android 13 logs such a URI without its query.
 
-That command is `shared/steam-to-device.sh`, run from a checkout of this
-repository with the device on the cable and USB debugging allowed:
+Neither credential verb acts on an intent a browser sent. The router's filter
+takes `BROWSABLE`, so a web page can reach it with an `intent:` URL, and a
+browser marks what it sends that way with the category `BROWSABLE`; a theme
+does not set it. Such a `set-credentials` or `clear-credentials` is dropped:
+nothing is written or cleared, no `pending` and no `done` file is made, and the
+log says only which verb it was.
+
+The block can also be copied from the PC over the cable, for whoever prefers
+that to typing the key on the device, and taken away the same way. The command
+is `shared/steam-to-device.sh`, run from a checkout of this repository with the
+device on the cable and USB debugging allowed:
 
 ```bash
 shared/steam-to-device.sh                      # the block of ~/.local/share/pegasus-bridge
@@ -658,11 +671,11 @@ first such; its `state` stays the one that ended the request, so after `offline`
 it reads `state: "offline"`, `stale: true`, and the old counts in `items`.
 
 What is kept of an account, its library and its unlock lists, is dropped when a
-Steam key or SteamID is written through `/credentials` and when the `steam`
-block is cleared. The files are named by the SteamID, and would otherwise answer
-for a key that is no longer the one in use. The schemas stay. On a device it is
-`steam-to-device.sh` that drops them, after it has written the block and after
-it has removed it.
+Steam key or SteamID is written, through `/credentials` or `set-credentials`,
+and when the `steam` block is cleared. The files are named by the SteamID, and
+would otherwise answer for a key that is no longer the one in use. The schemas
+stay. `steam-to-device.sh` drops them too, after it has written the block and
+after it has removed it.
 
 `/ra/match` is the one worth knowing about. Ask it *which RetroAchievements game
 this is*, with the path of the game's file, and it answers with what the scan

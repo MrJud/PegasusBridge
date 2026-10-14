@@ -13,7 +13,7 @@ import org.junit.Test
  * builds the app there is no file for it to read and none it can write. What
  * can be held from here is the report of a block that is not there: that
  * `status` has an entry for Steam, and that the entry has no field a key
- * could be in. And that the block is not one a verb can clear.
+ * could be in. And that the block is one clear-credentials can take away.
  */
 class ConfigSteamBlockTest {
 
@@ -28,11 +28,12 @@ class ConfigSteamBlockTest {
         assertEquals("", steam.getString("steamId"))
     }
 
-    // clear-credentials is a verb any app on the device can send. The block
-    // is put on a device and taken off it over the cable, so the verb is not
-    // to know it. An unknown block is refused before any file is looked at,
-    // which is why this needs no file either.
-    @Test fun `clear-credentials does not know the steam block`() {
-        assertFalse(Config.clearBlock("steam"))
+    // The theme's settings write the block through set-credentials and take
+    // it away through clear-credentials, as the RetroAchievements one. A
+    // block clearBlock knows is cleared in the file, which there is none of
+    // here, so it is the set that is held: steam in it, and nothing new.
+    @Test fun `clear-credentials knows the steam block`() {
+        assertEquals(setOf("ra", "steamGridDb", "igdb", "screenScraper", "steam"), Config.KNOWN_BLOCKS)
+        assertFalse(Config.clearBlock("romm"))
     }
 }

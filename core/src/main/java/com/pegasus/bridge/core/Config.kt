@@ -105,12 +105,7 @@ object Config {
         steamId: String? = null
     ) {
         val current = Paths.CREDENTIALS
-        val json = if (current.exists()) {
-            try { JSONObject(current.readText()) } catch (e: Exception) { JSONObject() }
-        } else {
-            JSONObject()
-        }
-        if (!json.has("schemaVersion")) json.put("schemaVersion", SchemaVersion.CURRENT)
+        val json = readOrEmpty(current)
 
         if (!raUser.isNullOrEmpty() || !raApiKey.isNullOrEmpty()) {
             val ra = json.optJSONObject("ra") ?: JSONObject()
@@ -163,13 +158,15 @@ object Config {
      * the Bridge, not the theme, is where credentials live. Writing blanks could
      * not express this: writeCredentials deliberately ignores them.
      */
-    fun clearBlock(block: String): Boolean {
+    fun clearBlock(block: String): Boolean = clearBlock(block, Paths.CREDENTIALS)
+
+    // The file a parameter, for the test: the build machine has no /sdcard.
+    internal fun clearBlock(block: String, file: File): Boolean {
         if (block !in KNOWN_BLOCKS) return false
-        val current = Paths.CREDENTIALS
-        val json = if (current.exists()) JSONObject(current.readText()) else JSONObject()
+        val json = readOrEmpty(file)
         json.remove(block)
         json.put("updatedAt", System.currentTimeMillis() / 1000L)
-        atomicWrite(current, json.toString(2))
+        atomicWrite(file, json.toString(2))
         return true
     }
 
@@ -214,14 +211,32 @@ object Config {
     // Atomic write: write temp file then rename to avoid torn reads during overlap phase
     fun saveToken(source: String, token: String, expiresAt: Long) {
         val current = Paths.CREDENTIALS
-        val json = if (current.exists()) JSONObject(current.readText()) else JSONObject()
-        if (!json.has("schemaVersion")) json.put("schemaVersion", SchemaVersion.CURRENT)
+        val json = readOrEmpty(current)
         val block = json.optJSONObject(source) ?: JSONObject()
         block.put("cachedToken", token)
         block.put("cachedTokenExp", expiresAt)
         json.put(source, block)
         json.put("updatedAt", System.currentTimeMillis() / 1000L)
         atomicWrite(current, json.toString(2))
+    }
+
+    /**
+     * The credentials in [file] as an object to change: an empty one when the
+     * file is not there or cannot be read, as the daemon's copy reads it.
+     *
+     * Never the parse's exception. Android's org.json puts the text it could
+     * not read into the message (`… at character 9 of {"steam":{"apiKey":…`),
+     * and RaService logs an exception with its message: a file cut short, or
+     * not an object, would put every key it holds in the log.
+     */
+    internal fun readOrEmpty(file: File): JSONObject {
+        val json = if (file.exists()) {
+            try { JSONObject(file.readText()) } catch (e: Exception) { JSONObject() }
+        } else {
+            JSONObject()
+        }
+        if (!json.has("schemaVersion")) json.put("schemaVersion", SchemaVersion.CURRENT)
+        return json
     }
 
     private fun atomicWrite(target: File, content: String) {

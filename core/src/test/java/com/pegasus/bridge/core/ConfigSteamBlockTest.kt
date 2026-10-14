@@ -29,9 +29,38 @@ class ConfigSteamBlockTest {
 
         assertNull(Config.load().steam)
         val steam = Config.status().getJSONObject("steam")
-        assertEquals(setOf("configured", "steamId"), steam.keySet())
+        assertEquals(setOf("configured", "hasKey", "steamId"), steam.keySet())
         assertFalse(steam.getBoolean("configured"))
+        assertFalse(steam.getBoolean("hasKey"))
         assertEquals("", steam.getString("steamId"))
+    }
+
+    // A key stored without a SteamID is not configured, but the theme must not
+    // read it as no key: it would ask again for the half that is there.
+    @Test fun `a steam key without a SteamID is reported as a key, not as configured`() {
+        val st = Config.status(Credentials(steam = SteamCreds(KEY, "")))
+        val steam = st.getJSONObject("steam")
+        assertFalse(steam.getBoolean("configured"))
+        assertTrue(steam.getBoolean("hasKey"))
+        assertEquals("", steam.getString("steamId"))
+        assertFalse(KEY in st.toString())
+    }
+
+    @Test fun `a steam key and a SteamID are configured`() {
+        val st = Config.status(Credentials(steam = SteamCreds(KEY, "76561198000000001")))
+        val steam = st.getJSONObject("steam")
+        assertTrue(steam.getBoolean("configured"))
+        assertTrue(steam.getBoolean("hasKey"))
+        assertEquals("76561198000000001", steam.getString("steamId"))
+        assertFalse(KEY in st.toString())
+    }
+
+    @Test fun `no steam key is neither a key nor configured, a SteamID alone included`() {
+        for (c in listOf(Credentials(), Credentials(steam = SteamCreds("", "76561198000000001")))) {
+            val steam = Config.status(c).getJSONObject("steam")
+            assertFalse(steam.getBoolean("configured"))
+            assertFalse(steam.getBoolean("hasKey"))
+        }
     }
 
     // The theme's settings write the block through set-credentials and take

@@ -126,6 +126,41 @@ class ConfigTest {
         assertEquals("MrJud", ra.getString("user"), "the username is still reported")
     }
 
+    // A key stored without a SteamID is not configured, but the theme must not
+    // read it as no key: it would ask again for the half that is there.
+    @Test fun `a steam key without a SteamID is reported as a key, not as configured`() {
+        config.writeCredentials(steamApiKey = STEAM_KEY)
+        val st = config.status()
+        val steam = st.getJSONObject("steam")
+        assertFalse(steam.getBoolean("configured"))
+        assertTrue(steam.getBoolean("hasKey"))
+        assertEquals("", steam.getString("steamId"))
+        assertFalse(st.toString().contains(STEAM_KEY), "the key must never appear in status")
+    }
+
+    @Test fun `a steam key and a SteamID are configured`() {
+        config.writeCredentials(steamApiKey = STEAM_KEY, steamId = "76561198000000001")
+        val st = config.status()
+        val steam = st.getJSONObject("steam")
+        assertTrue(steam.getBoolean("configured"))
+        assertTrue(steam.getBoolean("hasKey"))
+        assertEquals("76561198000000001", steam.getString("steamId"))
+        assertEquals(setOf("configured", "hasKey", "steamId"), steam.keySet())
+        assertFalse(st.toString().contains(STEAM_KEY), "the key must never appear in status")
+    }
+
+    @Test fun `no steam key is neither a key nor configured, a SteamID alone included`() {
+        val none = config.status().getJSONObject("steam")
+        assertFalse(none.getBoolean("configured"))
+        assertFalse(none.getBoolean("hasKey"))
+        assertEquals("", none.getString("steamId"))
+
+        config.writeCredentials(steamId = "76561198000000001")
+        val idOnly = config.status().getJSONObject("steam")
+        assertFalse(idOnly.getBoolean("configured"))
+        assertFalse(idOnly.getBoolean("hasKey"), "a SteamID is not a key")
+    }
+
     @Test fun `clearing a block forgets it and leaves the others`() {
         config.writeCredentials(raUser = "MrJud", raApiKey = "KEY", sgdbKey = "SGKEY")
 
@@ -279,5 +314,9 @@ class ConfigTest {
         assertNull(withDefaults("""{ "screenScraper": { "devId": "X" } }""")
                        .load().screenScraper, "a pair needs both halves")
         assertNull(withDefaults("not json at all").load().screenScraper)
+    }
+
+    private companion object {
+        const val STEAM_KEY = "SENTINEL-STEAM-KEY"
     }
 }

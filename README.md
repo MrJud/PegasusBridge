@@ -577,7 +577,10 @@ forgets them. Each is optional and an empty one is ignored, as every other
 field of that verb; a `steamId` that is not 17 digits is not written there,
 and a request that carries nothing else is answered as one that carries
 nothing, with an error in `pending/{jobId}.json`. `credentials-status` reports
-the block on both, as `configured` and `steamId`, never the key. The key
+the block on both, as `configured`, `hasKey` and `steamId`, never the key.
+`configured` wants the key and the SteamID both; `hasKey` is true when a key
+is stored, with a SteamID or without, so a settings screen that has the key
+and lacks the SteamID asks only for the SteamID. The key
 travels in the intent's URI as the RetroAchievements key does; Android 13 logs
 such a URI without its query.
 

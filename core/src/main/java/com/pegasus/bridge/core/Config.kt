@@ -174,8 +174,11 @@ object Config {
      * Which credentials are configured, and the RA username. Presence only —
      * never the secrets. This is what a theme binds its settings UI to.
      */
-    fun status(): JSONObject {
-        val c = load()
+    fun status(): JSONObject = status(load())
+
+    // Of the credentials given, for the test, which has no file at the path
+    // load() reads.
+    internal fun status(c: Credentials): JSONObject {
         return JSONObject()
             .put("ra", JSONObject()
                 .put("configured", c.ra?.user?.isNotEmpty() == true && c.ra.apiKey.isNotEmpty())
@@ -197,10 +200,13 @@ object Config {
                 .put("user", c.screenScraper?.ssid.orEmpty()))
             // Presence, and the one identifier a settings screen needs to show
             // which account is set up. The id is on the account's public profile
-            // page; the key is never here.
+            // page; the key is never here. `hasKey` apart from `configured`: a key
+            // stored without a SteamID is half a setup, and the half that is there
+            // should not be asked for again.
             .put("steam", JSONObject()
                 .put("configured", c.steam?.apiKey?.isNotEmpty() == true
                                 && c.steam.steamId.isNotEmpty())
+                .put("hasKey", c.steam?.apiKey?.isNotBlank() == true)
                 .put("steamId", c.steam?.steamId.orEmpty()))
     }
 

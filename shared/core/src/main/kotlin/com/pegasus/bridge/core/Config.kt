@@ -349,9 +349,12 @@ class Config(
             // The three optional integrations. Each reports presence and the one
             // non-secret identifier a settings screen needs to show which account
             // or server is configured — never a key, a token or a password.
+            // `hasKey` apart from `configured`: a key stored without a SteamID is
+            // half a setup, and the half that is there should not be asked for again.
             .put("steam", JSONObject()
                 .put("configured", c.steam?.apiKey?.isNotEmpty() == true
                                 && c.steam.steamId.isNotEmpty())
+                .put("hasKey", c.steam?.apiKey?.isNotBlank() == true)
                 .put("steamId", c.steam?.steamId.orEmpty()))
             .put("romm", JSONObject()
                 .put("configured", c.romm?.baseUrl?.isNotEmpty() == true)
